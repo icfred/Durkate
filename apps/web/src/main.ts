@@ -1,9 +1,14 @@
+import "@fontsource/jetbrains-mono/400.css";
+import "@fontsource/jetbrains-mono/700.css";
+
 import { Button, color, FocusManager, Panel, spacing, typography } from "@durak/ui";
 import { Application, Container, Text } from "pixi.js";
 
 const mountId = "app";
 const mount = document.getElementById(mountId);
 if (!mount) throw new Error(`#${mountId} not found in index.html`);
+
+await loadFonts();
 
 const app = new Application();
 await app.init({
@@ -91,3 +96,16 @@ const layout = (): void => {
 };
 layout();
 app.renderer.on("resize", layout);
+
+async function loadFonts(): Promise<void> {
+  const family = "JetBrains Mono";
+  const faces = [
+    `${typography.weight.regular} ${typography.size.md}px "${family}"`,
+    `${typography.weight.bold} ${typography.size.md}px "${family}"`,
+  ];
+  try {
+    await Promise.all(faces.map((face) => document.fonts.load(face)));
+  } catch (err) {
+    console.warn(`[web] font load failed for ${family}, using fallback`, err);
+  }
+}

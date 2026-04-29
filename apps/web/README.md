@@ -15,8 +15,10 @@ server state over websocket and to local Zustand stores for UI state.
   primitives in `@durak/ui`.
 - **Game view store**: receives snapshots + events from the server and
   drives the table renderer.
-- **Boot**: parses URL once for room links, initializes Pixi, mounts the
-  initial screen, subscribes to ws.
+- **Boot**: parses URL once for room links, awaits `@fontsource/jetbrains-mono`
+  via `document.fonts.load` so Pixi text renders in the right family,
+  initializes Pixi, mounts the initial screen, subscribes to ws. A font-load
+  failure logs a warning and falls back to `"Courier New", monospace`.
 
 ## Public API
 
