@@ -213,3 +213,52 @@ describe("generateRoomCode", () => {
     expect(code).toBe("AAAA");
   });
 });
+
+function setLocalStorage(value: object | undefined): void {
+  if (value === undefined) {
+    delete (globalThis as { localStorage?: unknown }).localStorage;
+  } else {
+    (globalThis as { localStorage?: unknown }).localStorage = value;
+  }
+}
+
+describe("audio mute", () => {
+  let store: Map<string, string>;
+
+  beforeEach(() => {
+    store = new Map();
+    setLocalStorage({
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        store.set(key, value);
+      },
+    });
+    appStore.getState().setMuted(false);
+  });
+
+  afterEach(() => {
+    setLocalStorage(undefined);
+  });
+
+  it("toggleMute flips the muted flag", () => {
+    expect(appStore.getState().audio.muted).toBe(false);
+    appStore.getState().toggleMute();
+    expect(appStore.getState().audio.muted).toBe(true);
+    appStore.getState().toggleMute();
+    expect(appStore.getState().audio.muted).toBe(false);
+  });
+
+  it("persists mute state to localStorage on toggle", () => {
+    appStore.getState().toggleMute();
+    expect(store.get("durak.audio.muted")).toBe("1");
+    appStore.getState().toggleMute();
+    expect(store.get("durak.audio.muted")).toBe("0");
+  });
+
+  it("hydrates muted from localStorage on store init", async () => {
+    store.set("durak.audio.muted", "1");
+    vi.resetModules();
+    const fresh = await import("./store.js");
+    expect(fresh.appStore.getState().audio.muted).toBe(true);
+  });
+});

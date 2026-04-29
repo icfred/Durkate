@@ -1,5 +1,6 @@
 import { Button, color, FocusManager, Panel, spacing, typography } from "@durak/ui";
 import { Container, Text } from "pixi.js";
+import { attachButtonHover, withClickSound } from "../audio/index.js";
 import type { Mode } from "../store.js";
 import type { Screen } from "./types.js";
 
@@ -55,8 +56,9 @@ export class MainMenuScreen extends Container implements Screen {
       label: "PLAY VS BOT",
       width: buttonW,
       height: buttonH,
-      onActivate: () => options.onPlay("bot"),
+      onActivate: withClickSound(() => options.onPlay("bot")),
     });
+    attachButtonHover(playBot);
     playBot.x = Math.round((PANEL_W - buttonW) / 2);
     playBot.y = stackY;
     this.panel.addChild(playBot);
@@ -65,8 +67,9 @@ export class MainMenuScreen extends Container implements Screen {
       label: "PLAY VS FRIEND",
       width: buttonW,
       height: buttonH,
-      onActivate: () => options.onPlay("friend"),
+      onActivate: withClickSound(() => options.onPlay("friend")),
     });
+    attachButtonHover(playFriend);
     playFriend.x = Math.round((PANEL_W - buttonW) / 2);
     playFriend.y = stackY + buttonH + spacing.md;
     this.panel.addChild(playFriend);
