@@ -1,6 +1,31 @@
 import { describe, expect, it } from "vitest";
 import type { JoinRoom, LeaveRoom, RequestRematch, SubmitAction } from "./client";
-import { clientMessageSchema, parseClientMessage } from "./zod";
+import type { ErrorMessage, EventsMessage, RoomStateMessage, SnapshotMessage } from "./server";
+import type { Snapshot } from "./snapshot";
+import {
+  clientMessageSchema,
+  parseClientMessage,
+  parseServerMessage,
+  serverMessageSchema,
+} from "./zod";
+
+const ACE_OF_SPADES = { suit: "spades", rank: 14 } as const;
+
+function makeSnapshot(): Snapshot {
+  return {
+    phase: "in-round",
+    playerCount: 2,
+    handCounts: [6, 6],
+    talonCount: 23,
+    trump: ACE_OF_SPADES,
+    table: [],
+    attacker: 0,
+    defender: 1,
+    discard: [],
+    seat: 0,
+    you: { seat: 0, hand: [ACE_OF_SPADES] },
+  };
+}
 
 describe("clientMessageSchema round-trip", () => {
   it("accepts JoinRoom", () => {
@@ -74,5 +99,95 @@ describe("clientMessageSchema rejects malformed input", () => {
   it("rejects non-object input", () => {
     expect(() => clientMessageSchema.parse("LeaveRoom")).toThrow();
     expect(() => clientMessageSchema.parse(null)).toThrow();
+  });
+});
+
+describe("serverMessageSchema round-trip", () => {
+  it("accepts Snapshot", () => {
+    const msg: SnapshotMessage = { type: "Snapshot", snapshot: makeSnapshot() };
+    expect(serverMessageSchema.parse(msg)).toEqual(msg);
+  });
+
+  it("accepts Events with engine Event union", () => {
+    const msg: EventsMessage = {
+      type: "Events",
+      events: [
+        { type: "GAME_STARTED", trump: ACE_OF_SPADES, attacker: 0 },
+        {
+          type: "CARD_PLAYED",
+          by: 0,
+          role: "ATTACK",
+          card: ACE_OF_SPADES,
+        },
+        {
+          type: "PILE_TAKEN",
+          by: 1,
+          cards: [ACE_OF_SPADES],
+          attacker: 1,
+          defender: 0,
+        },
+        {
+          type: "ROUND_ENDED",
+          discarded: [],
+          attacker: 1,
+          defender: 0,
+        },
+      ],
+    };
+    expect(serverMessageSchema.parse(msg)).toEqual(msg);
+  });
+
+  it("accepts Error", () => {
+    const msg: ErrorMessage = { type: "Error", code: "BAD_ACTION", message: "nope" };
+    expect(serverMessageSchema.parse(msg)).toEqual(msg);
+  });
+
+  it("accepts RoomState", () => {
+    const msg: RoomStateMessage = {
+      type: "RoomState",
+      roomId: "ABCD",
+      seats: [{ name: "fred" }, { name: null }],
+      you: 0,
+    };
+    expect(serverMessageSchema.parse(msg)).toEqual(msg);
+  });
+
+  it("parseServerMessage exposes the same parser", () => {
+    expect(parseServerMessage({ type: "Error", code: "X", message: "y" })).toEqual({
+      type: "Error",
+      code: "X",
+      message: "y",
+    });
+  });
+});
+
+describe("serverMessageSchema rejects malformed input", () => {
+  it("rejects unknown discriminator", () => {
+    expect(() => serverMessageSchema.parse({ type: "Nope" })).toThrow();
+  });
+
+  it("rejects Snapshot with missing trump", () => {
+    const bad = { type: "Snapshot", snapshot: { ...makeSnapshot(), trump: undefined } };
+    expect(() => serverMessageSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects Events with invalid event type", () => {
+    expect(() =>
+      serverMessageSchema.parse({
+        type: "Events",
+        events: [{ type: "BLEW_UP" }],
+      }),
+    ).toThrow();
+  });
+
+  it("rejects RoomState with non-string roomId", () => {
+    expect(() =>
+      serverMessageSchema.parse({
+        type: "RoomState",
+        roomId: 42,
+        seats: [],
+        you: null,
+      }),
+    ).toThrow();
   });
 });

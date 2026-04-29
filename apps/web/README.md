@@ -24,6 +24,11 @@ server state over websocket and to local Zustand stores for UI state.
   so Pixi text renders in the right family, then initializes Pixi,
   parses `#room=…`, starts the router. A font-load failure logs a
   warning and falls back to `"Courier New", monospace`.
+- **Connection**: `createConnectionController` subscribes to
+  `appStore.phase` and opens a single websocket while the user is in
+  `lobby` or `game`; closing on return to `menu` or `gameover`. Status
+  drives `appStore.connection`; `submitAction` flows through the
+  controller-registered sender.
 
 ## Sandbox
 
@@ -50,6 +55,37 @@ in the console) until the ws-client is wired.
 5. Calls `router.setView(width, height)` and `router.start()`. Re-runs
    `setView` on Pixi `resize`.
 
+## Networking
+
+- `src/net/wsClient.ts` owns the raw websocket. `connect()` returns a
+  `{ send, close }` handle and dispatches inbound frames into typed
+  handlers. Outbound `ClientMessage` is validated with
+  `clientMessageSchema`; inbound `ServerMessage` is parsed with
+  `serverMessageSchema` from `@durak/protocol`. Bad frames close the
+  socket with code `4400`; the local close uses code `4000`.
+- **Reconnect**: on unexpected close, the client retries with
+  exponential backoff (`100ms * 2^(n-1)`, capped at 5000ms). Up to 5
+  attempts, then it surfaces `status: "error"`. A `4400` close is
+  terminal - no reconnect.
+- **Status surface**: handlers receive
+  `(status, { attempts, error? })`; the connection controller forwards
+  this into `appStore.connection`. There is no separate observable -
+  consumers read the store. This was chosen over a `status$` subject
+  because the store already has the right shape for downstream UI.
+- `src/net/connection.ts` reconciles store phase with an active
+  connection: lobby/game opens (or no-ops if already open for the same
+  room), menu/gameover closes. It also `setSender`-s the wsClient's
+  `send` so `appStore.submitAction` can call it.
+- **Drop vs queue**: actions submitted while `connection.status !==
+  "open"` are dropped with a `console.warn`. We don't queue because the
+  server is authoritative and a stale action replayed across a
+  reconnect would race with whatever state the server already shipped.
+- **Auth token**: stubbed as `""` until the server lands a real session
+  endpoint. The wsClient still passes the field; the server is free to
+  ignore it for now.
+- **WS URL**: `import.meta.env.VITE_WS_URL` if set, otherwise
+  `${ws|wss}://${location.host}/ws`.
+
 ## Focus manager lifecycle
 
 Each screen owns its own `FocusManager` and follows a strict
@@ -74,7 +110,9 @@ This is an app, not a library. Entry point: `src/main.ts`.
   `@durak/ui`.
 - All keyboard nav goes through the per-screen `FocusManager`.
 - Game state changes never come from local logic - always from server
-  messages (no networking yet; lobby actions are placeholders).
+  messages. The store's `submitAction` is the only path; it forwards
+  through the active wsClient sender or drops with a warn when the
+  socket is not `open`.
 - `appStore` is a `zustand/vanilla` store. Pixi screens subscribe via
   `appStore.subscribe()`; there is no React in the bundle.
 
