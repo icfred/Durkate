@@ -1,4 +1,5 @@
 import type { AddressInfo } from "node:net";
+import { bot } from "@durak/engine";
 import type {
   ErrorMessage,
   EventsMessage,
@@ -337,6 +338,68 @@ describe("gateway /ws/:roomId: game loop integration", () => {
 
     c.close();
     await nextClose(c);
+  });
+
+  it("vs-bot mode: human plays a full game, sees only their own hand, never blocks on the bot", async () => {
+    const { wsUrl, built } = await start();
+    const room = built.registry.create({ mode: "bot", botIterationCap: 1000 });
+    const human = room.addPlayer("alice");
+
+    const ws = new WebSocket(wsUrl(`/ws/${room.id}?token=${human.token}`));
+    const q = new MessageQueue(ws);
+    await nextOpen(ws);
+    await findUntil(q, isRoomState);
+
+    // The first Snapshot is the post-START_GAME state. After that, depending
+    // on whether the bot opens the first attack, the human may receive zero
+    // or more bot follow-up Snapshot+Events pairs before it's their turn.
+    const initialSnap = await findUntil(q, isSnapshot);
+    expect(initialSnap.snapshot.seat).toBe(0);
+    expect(initialSnap.snapshot.you.seat).toBe(0);
+    expect(initialSnap.snapshot.you.hand.length).toBe(6);
+
+    // Drain whatever Events/Snapshots the bot driver produced before the
+    // human gets to act.
+    let safety = 0;
+    while (room.currentState()?.phase === "in-round" && safety < 4000) {
+      const state = room.currentState();
+      if (!state || state.phase !== "in-round") break;
+      // The bot driver runs synchronously inside applyAction/start, so by
+      // the time the room yields control the active actor is the human.
+      if (state.attacker !== 0 && state.table.length === 0) {
+        // Defensive: shouldn't happen because bot driver flushed.
+        throw new Error("bot turn leaked through to the human");
+      }
+      const action = bot.choose(state);
+      ws.send(JSON.stringify({ type: "SubmitAction", action }));
+      // Wait until the room transitions out of in-round, or the active
+      // actor is the human again. We don't poll messages here — we wait
+      // for the state machine to settle.
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      safety++;
+    }
+
+    expect(room.currentState()?.phase).toBe("game-over");
+
+    // All snapshots delivered to the human only ever expose seat 0's hand.
+    const drained = q.drain();
+    const allMessages = [initialSnap, ...drained];
+    for (const m of allMessages) {
+      if (m.type !== "Snapshot") continue;
+      expect(m.snapshot.seat).toBe(0);
+      expect(m.snapshot.you.seat).toBe(0);
+      // Snapshot type-level guards (in @durak/protocol/snapshot.ts) already
+      // forbid `hands`/`talon`/`rng` fields. Re-check here so an accidental
+      // structural widening on the wire would still fail this test.
+      const keys = Object.keys(m.snapshot);
+      expect(keys).not.toContain("hands");
+      expect(keys).not.toContain("talon");
+      expect(keys).not.toContain("rng");
+    }
+
+    ws.close();
+    await nextClose(ws);
   });
 
   it("gateway.send delivers a per-seat message to the connected client", async () => {

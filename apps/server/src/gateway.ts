@@ -153,7 +153,10 @@ export async function registerGateway(
 
         switch (msg.type) {
           case "JoinRoom":
-            app.log.info({ roomId, seat, name: msg.name }, "ws: join-room");
+            app.log.info(
+              { roomId, seat, name: msg.name, mode: msg.mode ?? "human" },
+              "ws: join-room",
+            );
             broadcastRoomState(room);
             break;
           case "LeaveRoom":

@@ -44,6 +44,7 @@ export const joinRoomSchema = z.object({
   type: z.literal("JoinRoom"),
   roomId: z.string().min(1),
   name: z.string().min(1),
+  mode: z.enum(["human", "bot"]).optional(),
 });
 
 export const leaveRoomSchema = z.object({

@@ -33,6 +33,16 @@ describe("clientMessageSchema round-trip", () => {
     expect(clientMessageSchema.parse(msg)).toEqual(msg);
   });
 
+  it("accepts JoinRoom with mode: 'human'", () => {
+    const msg: JoinRoom = { type: "JoinRoom", roomId: "abc", name: "fred", mode: "human" };
+    expect(clientMessageSchema.parse(msg)).toEqual(msg);
+  });
+
+  it("accepts JoinRoom with mode: 'bot'", () => {
+    const msg: JoinRoom = { type: "JoinRoom", roomId: "abc", name: "fred", mode: "bot" };
+    expect(clientMessageSchema.parse(msg)).toEqual(msg);
+  });
+
   it("accepts LeaveRoom", () => {
     const msg: LeaveRoom = { type: "LeaveRoom" };
     expect(clientMessageSchema.parse(msg)).toEqual(msg);
@@ -80,6 +90,17 @@ describe("clientMessageSchema rejects malformed input", () => {
   it("rejects JoinRoom with wrong-typed roomId", () => {
     expect(() =>
       clientMessageSchema.parse({ type: "JoinRoom", roomId: 42, name: "fred" }),
+    ).toThrow();
+  });
+
+  it("rejects JoinRoom with unknown mode", () => {
+    expect(() =>
+      clientMessageSchema.parse({
+        type: "JoinRoom",
+        roomId: "abc",
+        name: "fred",
+        mode: "spectator",
+      }),
     ).toThrow();
   });
 
