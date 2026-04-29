@@ -52,11 +52,18 @@ Two ways to recover the API track in real work:
    resolve titles to `upload.wikimedia.org` URLs, bake them into
    `seed_urls.py`. This is what we did to populate the curated list.
 2. **Wikimedia UA policy.** Wikimedia explicitly authorises programmatic
-   API access by clients that follow their User-Agent policy. A real
-   scraper would carry a project-identifying UA, register a contact
-   email, and document the API allowance in code, treating robots.txt
-   as advisory for the API endpoint specifically. We did *not* take
-   that route in the spike — the ticket said respect robots.txt.
+   API access by clients that follow their User-Agent policy
+   (https://meta.wikimedia.org/wiki/User-Agent_policy). A real scraper
+   carries a project-identifying UA and a reasonable throttle, treating
+   robots.txt as advisory for the API endpoint specifically.
+
+   **Opt-in (DUR-27):** `scrape_wikimedia.py --allow-api` constructs the
+   `HttpClient` with `ignore_robots=True`, citing the UA policy URL in
+   its help text. Default remains strict; you have to type the flag.
+   Verified: `--asset-type avatar --count 3 --allow-api` saves 3 PD
+   files; without the flag, 0 fetched and `refusal_summary: {"robots":
+   2}`. Don't enable for other hosts without reading their equivalent
+   policy first.
 
 Also observed: the API returns a "too many requests" HTML page after a
 handful of curl probes within ~10s, even with a polite UA. So even with
