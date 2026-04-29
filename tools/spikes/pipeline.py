@@ -72,7 +72,11 @@ def variants_for(target_size: tuple[int, int]) -> list[CrushVariant]:
 
 def gather_inputs(asset_type: str) -> list[Path]:
     candidates: list[Path] = []
-    for root in (INPUTS_ROOT / "curated" / asset_type, INPUTS_ROOT / "wikimedia" / asset_type):
+    for root in (
+        INPUTS_ROOT / "curated" / asset_type,
+        INPUTS_ROOT / "wikimedia" / asset_type,
+        INPUTS_ROOT / "met" / asset_type,
+    ):
         if root.is_dir():
             for path in sorted(root.iterdir()):
                 if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp"}:

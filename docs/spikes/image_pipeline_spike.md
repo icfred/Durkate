@@ -70,6 +70,42 @@ handful of curl probes within ~10s, even with a polite UA. So even with
 robots permission, real ingest needs queue-aware backoff, not just a
 fixed 500ms throttle.
 
+### Met Museum Open Access track (`spikes.scrape_met`) — DUR-27
+
+**Verdict: best source we have. Recommended for cards, motifs,
+portraits, and decorative art.**
+
+The Met exposes a free no-key REST API at `collectionapi.metmuseum.org`.
+~492K objects are released under CC0 via their Open Access program.
+robots.txt 404s on the API host and on `images.metmuseum.org` (image
+CDN), which the scraper treats as permissive per spec.
+
+Two input modes:
+
+```
+# explicit object IDs from museum URLs
+uv run --directory tools python -m spikes.scrape_met \
+  --asset-type card_back --ids 475536,475566
+
+# search the whole collection, take the first N hits
+uv run --directory tools python -m spikes.scrape_met \
+  --asset-type card_back --search "Cloisters Playing Cards" --limit 8
+```
+
+The scraper fetches `/objects/{id}`, gates on `isPublicDomain: True`,
+saves `primaryImage` (and optionally `additionalImages` when
+`--include-additional` is set). Manifest captures title, artist, date,
+credit line, and the museum object URL.
+
+Verified live: `--ids 475536,475566` saves both Cloisters Playing
+Cards (15th century, hand-painted). Search `"Cloisters Playing Cards"
+--limit 8` returns 172 candidate object IDs and saves the first 8.
+
+The card_back grid in `docs/spikes/img/grid__card_back__seed7.png` is
+the Cloisters cards crushed through `tok+fs` and friends — the medieval
+warm-tone source material maps directly onto our palette without
+fighting it.
+
 ### Hard-rule hygiene
 
 - robots.txt fetched with our UA (the Python stdlib `RobotFileParser`
@@ -140,7 +176,7 @@ Reading them left to right against an `original` cell.
 | Background / scene | 320×180, 480×270 | `bilinear-then-nearest + tokens + fs + vignette` | Pre-blur tames busy source detail before snapping to grid. |
 | Texture | 256×256 | `nearest + tokens + bayer8` | Bayer keeps the "hand-printed" feel; FS would smooth the grain. |
 | Motif / decorative | 64×64 to 256×256 | `nearest + tokens + fs` | Tile-friendly. Skip vignette/scanline. |
-| Card-back inspiration | 96×144 | (no curated examples in this spike) | Catalog is empty; needs a source pass before recommending a default. |
+| Card-back inspiration | 96×144 | `nearest + tokens + fs` (Met Cloisters set) | The medieval warm-tone source maps cleanly onto our palette. See `grid__card_back__seed7.png`. |
 
 ## Determinism gate
 
