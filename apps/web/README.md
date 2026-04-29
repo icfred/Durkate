@@ -25,6 +25,15 @@ server state over websocket and to local Zustand stores for UI state.
   parses `#room=…`, starts the router. A font-load failure logs a
   warning and falls back to `"Courier New", monospace`.
 
+## Sandbox
+
+`?sandbox=game` boots straight into `GameScreen` against a hand-rolled
+fixture `Snapshot`, bypassing the lobby. Pick a fixture with
+`?sandbox=game&fixture=<name>`; valid names are `fresh`, `midround`,
+`takepile`, `gameover`. Defaults to `fresh`. Useful for visual review
+without a server. Actions go to the no-op `submitAction` (logs a warning
+in the console) until the ws-client is wired.
+
 ## Boot flow
 
 `src/main.ts`:
@@ -36,8 +45,8 @@ server state over websocket and to local Zustand stores for UI state.
 4. Builds the `ScreenRouter` with a factory keyed on `state.phase`:
    - `menu` -> `MainMenuScreen`
    - `lobby` -> `LobbyScreen`
-   - `game`, `gameover` -> `PlaceholderScreen` (filled in by later
-     tickets).
+   - `game` -> `GameScreen` (renders `appStore.snapshot`)
+   - `gameover` -> `PlaceholderScreen` (rematch UI is a later ticket).
 5. Calls `router.setView(width, height)` and `router.start()`. Re-runs
    `setView` on Pixi `resize`.
 
