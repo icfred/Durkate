@@ -1,0 +1,19 @@
+{
+  "source": "packages/ui/src/tokens.ts",
+  "colors": {
+    "bg": "#14110f",
+    "bgRaised": "#1d1916",
+    "bgSunken": "#0c0a09",
+    "surface": "#2a2420",
+    "surfaceFocus": "#3a3128",
+    "border": "#4a3f33",
+    "borderFocus": "#c9a36a",
+    "text": "#e8dccb",
+    "textMuted": "#8a7d6a",
+    "textInverse": "#14110f",
+    "accent": "#c9a36a",
+    "accentHot": "#e8c386",
+    "danger": "#8b3a2b",
+    "stamp": "#a83232"
+  }
+}

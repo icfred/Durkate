@@ -42,6 +42,10 @@ __pycache__/
 .venv/
 .python-version
 
+# Spike scratch (DUR-24)
+tools/spikes/inputs/
+tools/spikes/out/
+
 # Husky internals (auto-generated)
 .husky/_/
 
