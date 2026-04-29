@@ -2,7 +2,13 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import type { Card, Suit } from "./cards";
 import { createRng } from "./rng";
-import { type InRoundState, initialState, type State, type TablePair } from "./state";
+import {
+  type GameOverState,
+  type InRoundState,
+  initialState,
+  type State,
+  type TablePair,
+} from "./state";
 import { type Action, beats, type Event, type StepResult, step } from "./step";
 
 const cardKey = (c: Card) => `${c.suit}-${c.rank}`;
@@ -26,6 +32,7 @@ function mkInRound(opts: {
   talon?: Card[];
   attacker?: number;
   defender?: number;
+  trumpCard?: Card | null;
 }): InRoundState {
   const playerCount = opts.hands.length;
   const attacker = opts.attacker ?? 0;
@@ -35,7 +42,8 @@ function mkInRound(opts: {
     rng: createRng(0).state,
     hands: opts.hands.map((h) => [...h]),
     talon: opts.talon ?? [],
-    trump: opts.trump,
+    trumpSuit: opts.trump.suit,
+    trumpCard: opts.trumpCard === undefined ? opts.trump : opts.trumpCard,
     table: (opts.table ?? []).map((p) => ({ ...p })),
     attacker,
     defender: opts.defender ?? (attacker + 1) % playerCount,
@@ -56,7 +64,8 @@ describe("step START_GAME", () => {
 
   it("sets the trump card and leaves talon size 36 - 6*N - 1", () => {
     const s = deal(2026, 2);
-    expect(s.trump).toBeDefined();
+    expect(s.trumpCard).not.toBeNull();
+    expect(s.trumpSuit).toBe(s.trumpCard?.suit);
     expect(s.talon).toHaveLength(36 - 6 * 2 - 1);
   });
 
@@ -69,7 +78,7 @@ describe("step START_GAME", () => {
   it("picks the player with the lowest trump as attacker", () => {
     const s = deal(2026, 2);
     const trumps = s.hands.map((hand) =>
-      hand.filter((c) => c.suit === s.trump.suit).map((c) => c.rank),
+      hand.filter((c) => c.suit === s.trumpSuit).map((c) => c.rank),
     );
     const lowestPerHand = trumps.map((ranks) =>
       ranks.length === 0 ? Number.POSITIVE_INFINITY : Math.min(...ranks),
@@ -89,7 +98,7 @@ describe("step START_GAME", () => {
     expect(events).toHaveLength(1);
     expect(events[0]).toEqual({
       type: "GAME_STARTED",
-      trump: state.trump,
+      trump: state.trumpCard,
       attacker: state.attacker,
     });
   });
@@ -120,7 +129,8 @@ describe("step START_GAME", () => {
     fc.assert(
       fc.property(fc.integer(), (seed) => {
         const s = deal(seed, 2);
-        const all = [...s.hands.flat(), ...s.talon, s.trump];
+        if (!s.trumpCard) throw new Error("expected trumpCard after deal");
+        const all = [...s.hands.flat(), ...s.talon, s.trumpCard];
         expect(all).toHaveLength(36);
         expect(new Set(all.map(cardKey)).size).toBe(36);
       }),
@@ -486,7 +496,8 @@ describe("step TAKE_PILE", () => {
   it("moves the table cards into the defender's hand and clears the table", () => {
     const state = mkInRound({
       trump,
-      hands: [[card("clubs", 6)], [card("diamonds", 9)]],
+      trumpCard: null,
+      hands: [[card("clubs", 6), card("clubs", 7)], [card("diamonds", 9)]],
       table: [
         { attack: card("spades", 7), defense: card("spades", 8) },
         { attack: card("clubs", 10) },
@@ -575,6 +586,7 @@ describe("step END_ROUND", () => {
   it("moves the table cards into discard and rotates roles one seat", () => {
     const state = mkInRound({
       trump,
+      trumpCard: null,
       hands: [[card("clubs", 6)], [card("diamonds", 9)]],
       table: [
         { attack: card("spades", 7), defense: card("spades", 8) },
@@ -656,24 +668,35 @@ describe("step exhaustiveness", () => {
   });
 });
 
-function totalCards(s: InRoundState): number {
+function totalCards(s: InRoundState | GameOverState): number {
   let defenseCount = 0;
-  for (const p of s.table) if (p.defense) defenseCount++;
+  const tableLength = s.phase === "in-round" ? s.table.length : 0;
+  if (s.phase === "in-round") {
+    for (const p of s.table) if (p.defense) defenseCount++;
+  }
+  const talonLength = s.phase === "in-round" ? s.talon.length : 0;
   return (
-    s.hands.flat().length + s.table.length + defenseCount + s.talon.length + 1 + s.discard.length
+    s.hands.flat().length +
+    tableLength +
+    defenseCount +
+    talonLength +
+    (s.trumpCard ? 1 : 0) +
+    s.discard.length
   );
 }
 
-function uniqueCardCount(s: InRoundState): number {
+function uniqueCardCount(s: InRoundState | GameOverState): number {
   const keys = new Set<string>();
   for (const card of s.hands.flat()) keys.add(cardKey(card));
-  for (const p of s.table) {
-    keys.add(cardKey(p.attack));
-    if (p.defense) keys.add(cardKey(p.defense));
+  if (s.phase === "in-round") {
+    for (const p of s.table) {
+      keys.add(cardKey(p.attack));
+      if (p.defense) keys.add(cardKey(p.defense));
+    }
+    for (const card of s.talon) keys.add(cardKey(card));
   }
-  for (const card of s.talon) keys.add(cardKey(card));
   for (const card of s.discard) keys.add(cardKey(card));
-  keys.add(cardKey(s.trump));
+  if (s.trumpCard) keys.add(cardKey(s.trumpCard));
   return keys.size;
 }
 
@@ -748,7 +771,7 @@ describe("step invariants under random legal play (property)", () => {
 
           for (const choice of choices) {
             if (s.phase !== "in-round") break;
-            const action = pickLegalAction(s, choice, s.trump.suit);
+            const action = pickLegalAction(s, choice, s.trumpSuit);
             if (!action) break;
             const r = step(s, action);
             if (!r.ok) {
@@ -775,7 +798,7 @@ describe("step invariants under random legal play (property)", () => {
           if (s.phase !== "in-round") return;
           for (const choice of choices) {
             if (s.phase !== "in-round") break;
-            const action = pickLegalAction(s, choice, s.trump.suit);
+            const action = pickLegalAction(s, choice, s.trumpSuit);
             if (!action) break;
             const r = step(s, action);
             if (!r.ok) throw new Error(`rejection: ${r.reason}`);
@@ -783,7 +806,7 @@ describe("step invariants under random legal play (property)", () => {
             if (s.phase !== "in-round") break;
             for (const p of s.table) {
               if (p.defense) {
-                expect(beats(p.defense, p.attack, s.trump.suit)).toBe(true);
+                expect(beats(p.defense, p.attack, s.trumpSuit)).toBe(true);
               }
             }
           }
@@ -801,7 +824,7 @@ describe("step invariants under random legal play (property)", () => {
       if (s.phase !== "in-round") continue;
       for (let i = 0; i < 200; i++) {
         if (s.phase !== "in-round") break;
-        const action = pickLegalAction(s, seed * 31 + i, s.trump.suit);
+        const action = pickLegalAction(s, seed * 31 + i, s.trumpSuit);
         if (!action) break;
         if (action.type === "TAKE_PILE") seenTakePile = true;
         if (action.type === "END_ROUND") seenEndRound = true;
@@ -820,6 +843,7 @@ describe("step golden trace (multi-round play through TAKE_PILE and END_ROUND)",
     const trump = card("hearts", 11);
     const start = mkInRound({
       trump,
+      trumpCard: null,
       hands: [
         [card("spades", 7), card("spades", 9), card("clubs", 8)],
         [card("spades", 8), card("diamonds", 14), card("clubs", 13)],
@@ -886,5 +910,503 @@ describe("step golden trace (multi-round play through TAKE_PILE and END_ROUND)",
         },
       ],
     ]);
+  });
+});
+
+describe("step talon replenishment", () => {
+  const trump = card("hearts", 11);
+
+  it("draws attacker first, defender last (Podkidnoy 1v1)", () => {
+    const state = mkInRound({
+      trump,
+      talon: [
+        card("spades", 6),
+        card("spades", 9),
+        card("spades", 10),
+        card("clubs", 7),
+        card("clubs", 11),
+        card("diamonds", 6),
+      ],
+      hands: [[card("clubs", 6)], [card("diamonds", 7)]],
+      table: [{ attack: card("spades", 7), defense: card("spades", 8) }],
+      attacker: 0,
+      defender: 1,
+    });
+    const { state: next, events } = expectOk(step(state, { type: "END_ROUND", by: 0 }));
+    expect(next.hands[0]).toEqual([
+      card("clubs", 6),
+      card("spades", 6),
+      card("spades", 9),
+      card("spades", 10),
+      card("clubs", 7),
+      card("clubs", 11),
+    ]);
+    expect(next.hands[1]).toEqual([card("diamonds", 7), card("diamonds", 6), trump]);
+    expect(next.talon).toEqual([]);
+    expect(next.trumpCard).toBeNull();
+    expect(next.trumpSuit).toBe(trump.suit);
+    expect(events.filter((e) => e.type === "TALON_DRAWN")).toEqual([
+      {
+        type: "TALON_DRAWN",
+        by: 0,
+        cards: [
+          card("spades", 6),
+          card("spades", 9),
+          card("spades", 10),
+          card("clubs", 7),
+          card("clubs", 11),
+        ],
+      },
+      {
+        type: "TALON_DRAWN",
+        by: 1,
+        cards: [card("diamonds", 6), trump],
+      },
+    ]);
+  });
+
+  it("attacker first, others in seat order, defender last (3 players)", () => {
+    const fivePlus = (suit: Card["suit"], base: number): Card[] => [
+      card(suit, base as Card["rank"]),
+      card(suit, (base + 1) as Card["rank"]),
+      card(suit, (base + 2) as Card["rank"]),
+      card(suit, (base + 3) as Card["rank"]),
+      card(suit, (base + 4) as Card["rank"]),
+    ];
+    const state = mkInRound({
+      trump,
+      talon: [card("spades", 6), card("spades", 9), card("spades", 10)],
+      hands: [fivePlus("clubs", 6), fivePlus("diamonds", 6), fivePlus("hearts", 6)],
+      table: [{ attack: card("spades", 7), defense: card("spades", 8) }],
+      attacker: 0,
+      defender: 1,
+    });
+    const { state: next, events } = expectOk(step(state, { type: "END_ROUND", by: 0 }));
+    const drawnSeats = events
+      .filter((e): e is Extract<Event, { type: "TALON_DRAWN" }> => e.type === "TALON_DRAWN")
+      .map((e) => e.by);
+    expect(drawnSeats).toEqual([0, 2, 1]);
+    expect(next.hands[0]?.at(-1)).toEqual(card("spades", 6));
+    expect(next.hands[2]?.at(-1)).toEqual(card("spades", 9));
+    expect(next.hands[1]?.at(-1)).toEqual(card("spades", 10));
+  });
+
+  it("does not draw past 6 cards", () => {
+    const state = mkInRound({
+      trump,
+      talon: [
+        card("spades", 6),
+        card("spades", 9),
+        card("spades", 10),
+        card("clubs", 7),
+        card("clubs", 11),
+      ],
+      hands: [
+        [
+          card("clubs", 6),
+          card("clubs", 8),
+          card("diamonds", 8),
+          card("diamonds", 9),
+          card("diamonds", 10),
+          card("diamonds", 11),
+        ],
+        [card("hearts", 6)],
+      ],
+      table: [{ attack: card("spades", 7), defense: card("spades", 8) }],
+      attacker: 0,
+      defender: 1,
+    });
+    const { state: next } = expectOk(step(state, { type: "END_ROUND", by: 0 }));
+    expect(next.hands[0]).toHaveLength(6);
+    expect(next.hands[1]).toHaveLength(6);
+  });
+
+  it("consumes trumpCard last when talon is otherwise empty", () => {
+    const state = mkInRound({
+      trump,
+      talon: [card("clubs", 7)],
+      hands: [
+        [
+          card("clubs", 6),
+          card("clubs", 8),
+          card("clubs", 9),
+          card("clubs", 10),
+          card("clubs", 12),
+        ],
+        [card("diamonds", 7)],
+      ],
+      table: [{ attack: card("spades", 7), defense: card("spades", 8) }],
+      attacker: 0,
+      defender: 1,
+    });
+    const { state: next, events } = expectOk(step(state, { type: "END_ROUND", by: 0 }));
+    expect(next.hands[0]).toEqual([
+      card("clubs", 6),
+      card("clubs", 8),
+      card("clubs", 9),
+      card("clubs", 10),
+      card("clubs", 12),
+      card("clubs", 7),
+    ]);
+    expect(next.hands[1]).toEqual([card("diamonds", 7), trump]);
+    expect(next.trumpCard).toBeNull();
+    expect(next.trumpSuit).toBe(trump.suit);
+    const drawn = events.filter(
+      (e): e is Extract<Event, { type: "TALON_DRAWN" }> => e.type === "TALON_DRAWN",
+    );
+    expect(drawn.map((e) => e.by)).toEqual([0, 1]);
+    expect(drawn[1]?.cards).toEqual([trump]);
+  });
+
+  it("emits TALON_DRAWN only for seats that actually drew", () => {
+    const state = mkInRound({
+      trump,
+      trumpCard: null,
+      talon: [card("clubs", 7)],
+      hands: [
+        [card("clubs", 6)],
+        [
+          card("diamonds", 7),
+          card("diamonds", 8),
+          card("diamonds", 9),
+          card("diamonds", 10),
+          card("diamonds", 11),
+          card("diamonds", 12),
+        ],
+      ],
+      table: [{ attack: card("spades", 7), defense: card("spades", 8) }],
+      attacker: 0,
+      defender: 1,
+    });
+    const { events } = expectOk(step(state, { type: "END_ROUND", by: 0 }));
+    const drawn = events.filter((e) => e.type === "TALON_DRAWN");
+    expect(drawn).toEqual([{ type: "TALON_DRAWN", by: 0, cards: [card("clubs", 7)] }]);
+  });
+
+  it("uses pre-rotation roles for draw order on TAKE_PILE (3 players)", () => {
+    const state = mkInRound({
+      trump,
+      talon: [card("spades", 9), card("spades", 10), card("spades", 13)],
+      hands: [
+        [
+          card("clubs", 6),
+          card("clubs", 8),
+          card("clubs", 9),
+          card("clubs", 10),
+          card("clubs", 12),
+        ],
+        [card("diamonds", 6), card("diamonds", 8), card("diamonds", 9), card("diamonds", 10)],
+        [
+          card("hearts", 6),
+          card("hearts", 8),
+          card("hearts", 9),
+          card("hearts", 10),
+          card("hearts", 12),
+        ],
+      ],
+      table: [{ attack: card("spades", 7) }],
+      attacker: 0,
+      defender: 1,
+    });
+    const { events } = expectOk(step(state, { type: "TAKE_PILE", by: 1 }));
+    const drawnSeats = events
+      .filter((e) => e.type === "TALON_DRAWN")
+      .map((e) => (e as Extract<Event, { type: "TALON_DRAWN" }>).by);
+    expect(drawnSeats).toEqual([0, 2, 1]);
+  });
+
+  it("does not replenish below 6 if the player already had 6+ cards", () => {
+    const fullHand = [
+      card("clubs", 6),
+      card("clubs", 8),
+      card("diamonds", 8),
+      card("diamonds", 9),
+      card("diamonds", 10),
+      card("diamonds", 11),
+      card("diamonds", 12),
+    ];
+    const state = mkInRound({
+      trump,
+      talon: [card("spades", 9)],
+      hands: [fullHand, [card("hearts", 6)]],
+      table: [{ attack: card("spades", 7), defense: card("spades", 8) }],
+      attacker: 0,
+      defender: 1,
+    });
+    const { state: next } = expectOk(step(state, { type: "END_ROUND", by: 0 }));
+    expect(next.hands[0]).toEqual(fullHand);
+    expect(next.hands[1]).toEqual([card("hearts", 6), card("spades", 9), trump]);
+  });
+});
+
+describe("step game-over detection", () => {
+  const trump = card("hearts", 11);
+
+  it("transitions to game-over with the durak being the only player still holding cards", () => {
+    const state = mkInRound({
+      trump,
+      trumpCard: null,
+      talon: [],
+      hands: [[card("clubs", 6)], []],
+      table: [{ attack: card("spades", 7), defense: card("spades", 8) }],
+      attacker: 0,
+      defender: 1,
+    });
+    const result = step(state, { type: "END_ROUND", by: 0 });
+    if (!result.ok) throw new Error(`unexpected: ${result.reason}`);
+    expect(result.state.phase).toBe("game-over");
+    if (result.state.phase !== "game-over") throw new Error("type guard");
+    expect(result.state.durak).toBe(0);
+    expect(result.state.hands[0]).toEqual([card("clubs", 6)]);
+    expect(result.state.hands[1]).toEqual([]);
+    expect(result.events.at(-1)).toEqual({ type: "GAME_OVER", durak: 0 });
+  });
+
+  it("declares a draw when every player empties on the same transition", () => {
+    const state = mkInRound({
+      trump,
+      trumpCard: null,
+      talon: [],
+      hands: [[], []],
+      table: [{ attack: card("spades", 7), defense: card("spades", 8) }],
+      attacker: 0,
+      defender: 1,
+    });
+    const result = step(state, { type: "END_ROUND", by: 0 });
+    if (!result.ok) throw new Error(`unexpected: ${result.reason}`);
+    expect(result.state.phase).toBe("game-over");
+    if (result.state.phase !== "game-over") throw new Error("type guard");
+    expect(result.state.durak).toBeNull();
+    expect(result.events.at(-1)).toEqual({ type: "GAME_OVER", durak: null });
+  });
+
+  it("does not fire game-over while the talon still has cards", () => {
+    const state = mkInRound({
+      trump,
+      talon: [card("clubs", 7), card("clubs", 8), card("clubs", 9)],
+      hands: [
+        [
+          card("clubs", 6),
+          card("diamonds", 6),
+          card("diamonds", 7),
+          card("diamonds", 8),
+          card("diamonds", 9),
+        ],
+        [
+          card("hearts", 6),
+          card("hearts", 7),
+          card("hearts", 8),
+          card("hearts", 9),
+          card("hearts", 10),
+        ],
+      ],
+      table: [{ attack: card("spades", 7), defense: card("spades", 8) }],
+      attacker: 0,
+      defender: 1,
+    });
+    const { state: next } = expectOk(step(state, { type: "END_ROUND", by: 0 }));
+    expect(next.phase).toBe("in-round");
+    if (next.phase !== "in-round") return;
+    expect(next.talon.length + (next.trumpCard ? 1 : 0)).toBeGreaterThan(0);
+  });
+
+  it("does not fire game-over while two players still have cards", () => {
+    const state = mkInRound({
+      trump,
+      trumpCard: null,
+      talon: [],
+      hands: [[card("clubs", 6)], [card("diamonds", 9)]],
+      table: [{ attack: card("spades", 7), defense: card("spades", 8) }],
+      attacker: 0,
+      defender: 1,
+    });
+    const { state: next } = expectOk(step(state, { type: "END_ROUND", by: 0 }));
+    expect(next.phase).toBe("in-round");
+  });
+
+  it("rejects further actions once in game-over phase", () => {
+    const state = mkInRound({
+      trump,
+      trumpCard: null,
+      talon: [],
+      hands: [[card("clubs", 6)], []],
+      table: [{ attack: card("spades", 7), defense: card("spades", 8) }],
+      attacker: 0,
+      defender: 1,
+    });
+    const result = step(state, { type: "END_ROUND", by: 0 });
+    if (!result.ok || result.state.phase !== "game-over") throw new Error("setup failed");
+    expect(step(result.state, { type: "ATTACK", by: 0, card: card("clubs", 6) })).toEqual({
+      ok: false,
+      reason: "WRONG_PHASE",
+    });
+    expect(step(result.state, { type: "TIMEOUT", by: 0 })).toEqual({
+      ok: false,
+      reason: "WRONG_PHASE",
+    });
+  });
+});
+
+describe("step TIMEOUT", () => {
+  const trump = card("hearts", 11);
+
+  it("on defender-side timeout: defender takes the pile", () => {
+    const state = mkInRound({
+      trump,
+      trumpCard: null,
+      talon: [],
+      hands: [[card("clubs", 6), card("clubs", 7)], [card("diamonds", 9)]],
+      table: [{ attack: card("spades", 7) }],
+      attacker: 0,
+      defender: 1,
+    });
+    const { state: next, events } = expectOk(step(state, { type: "TIMEOUT", by: 1 }));
+    expect(next.hands[1]).toEqual([card("diamonds", 9), card("spades", 7)]);
+    expect(next.table).toEqual([]);
+    expect(events[0]?.type).toBe("PILE_TAKEN");
+  });
+
+  it("on attacker-side timeout: attacker ends the round", () => {
+    const state = mkInRound({
+      trump,
+      trumpCard: null,
+      talon: [],
+      hands: [[card("clubs", 6)], [card("diamonds", 9)]],
+      table: [{ attack: card("spades", 7), defense: card("spades", 8) }],
+      attacker: 0,
+      defender: 1,
+    });
+    const { state: next, events } = expectOk(step(state, { type: "TIMEOUT", by: 0 }));
+    expect(next.table).toEqual([]);
+    expect(next.discard).toEqual([card("spades", 7), card("spades", 8)]);
+    expect(events[0]?.type).toBe("ROUND_ENDED");
+  });
+
+  it("rejects when the attacker times out with undefended attacks", () => {
+    const state = mkInRound({
+      trump,
+      trumpCard: null,
+      talon: [],
+      hands: [[card("clubs", 6)], [card("diamonds", 9)]],
+      table: [{ attack: card("spades", 7) }],
+      attacker: 0,
+      defender: 1,
+    });
+    expect(step(state, { type: "TIMEOUT", by: 0 })).toEqual({
+      ok: false,
+      reason: "ATTACKS_UNDEFENDED",
+    });
+  });
+
+  it("rejects when the defender times out with an empty table", () => {
+    const state = mkInRound({
+      trump,
+      hands: [[card("clubs", 6)], [card("diamonds", 9)]],
+      table: [],
+      attacker: 0,
+      defender: 1,
+    });
+    expect(step(state, { type: "TIMEOUT", by: 1 })).toEqual({
+      ok: false,
+      reason: "TABLE_EMPTY",
+    });
+  });
+
+  it("rejects an out-of-range seat", () => {
+    const state = mkInRound({
+      trump,
+      hands: [[card("clubs", 6)], [card("diamonds", 9)]],
+      table: [{ attack: card("spades", 7) }],
+      attacker: 0,
+      defender: 1,
+    });
+    expect(step(state, { type: "TIMEOUT", by: 5 })).toEqual({
+      ok: false,
+      reason: "INVALID_SEAT",
+    });
+  });
+
+  it("rejects a seat that is neither attacker nor defender (3 players)", () => {
+    const state = mkInRound({
+      trump,
+      hands: [[card("clubs", 6)], [card("diamonds", 9)], [card("hearts", 14)]],
+      table: [{ attack: card("spades", 7) }],
+      attacker: 0,
+      defender: 1,
+    });
+    expect(step(state, { type: "TIMEOUT", by: 2 })).toEqual({
+      ok: false,
+      reason: "TIMEOUT_NOT_ACTIVE_SEAT",
+    });
+  });
+
+  it("rejects when phase is not in-round", () => {
+    expect(step(initialState({ seed: 1 }), { type: "TIMEOUT", by: 0 })).toEqual({
+      ok: false,
+      reason: "WRONG_PHASE",
+    });
+  });
+});
+
+describe("step full-game property", () => {
+  it("a randomized 1v1 game completes with exactly one durak (or draw) and conserves cards", () => {
+    fc.assert(
+      fc.property(fc.integer({ min: 1, max: 20000 }), (seed) => {
+        let s: State = deal(seed, 2);
+        if (s.phase !== "in-round") throw new Error("expected in-round after deal");
+        let steps = 0;
+        const STEP_CAP = 4000;
+        while (s.phase === "in-round" && steps < STEP_CAP) {
+          const action = pickLegalAction(s, seed * 31 + steps, s.trumpSuit);
+          if (!action) throw new Error("no legal action available before game-over");
+          const r = step(s, action);
+          if (!r.ok) throw new Error(`unexpected rejection: ${r.reason}`);
+          s = r.state;
+          if (s.phase === "in-round") {
+            expect(totalCards(s)).toBe(36);
+            expect(uniqueCardCount(s)).toBe(36);
+          }
+          steps++;
+        }
+        expect(s.phase).toBe("game-over");
+        if (s.phase !== "game-over") return;
+        expect(totalCards(s)).toBe(36);
+        expect(uniqueCardCount(s)).toBe(36);
+        const withCards = s.hands.filter((h) => h.length > 0).length;
+        if (s.durak === null) {
+          expect(withCards).toBe(0);
+        } else {
+          expect(withCards).toBe(1);
+          expect(s.hands[s.durak]?.length).toBeGreaterThan(0);
+        }
+      }),
+      { numRuns: 200 },
+    );
+  });
+});
+
+describe("step golden full-game trace", () => {
+  it("produces a byte-identical event trace from a fixed seed (deterministic chooser)", () => {
+    const runOnce = () => {
+      let s: State = deal(7, 2);
+      const allEvents: Event[] = [];
+      let steps = 0;
+      while (s.phase === "in-round" && steps < 4000) {
+        if (s.phase !== "in-round") break;
+        const action = pickLegalAction(s, 7 * 31 + steps, s.trumpSuit);
+        if (!action) throw new Error("no legal action");
+        const r = step(s, action);
+        if (!r.ok) throw new Error(`rejection: ${r.reason}`);
+        for (const e of r.events) allEvents.push(e);
+        s = r.state;
+        steps++;
+      }
+      return { steps, finalPhase: s.phase, events: allEvents };
+    };
+    const a = runOnce();
+    const b = runOnce();
+    expect(JSON.stringify(b)).toBe(JSON.stringify(a));
+    expect(a.finalPhase).toBe("game-over");
+    expect(a.events.at(-1)?.type).toBe("GAME_OVER");
   });
 });

@@ -2,6 +2,7 @@ export { buildDeck, type Card, RANKS, type Rank, SUITS, type Suit } from "./card
 export { shuffle } from "./deck";
 export { createRng, type Rng, type RngState, rngFromState } from "./rng";
 export {
+  type GameOverState,
   type InitOpts,
   type InRoundState,
   initialState,
