@@ -151,14 +151,20 @@ const ERROR_FRAME: ErrorMessage = {
 };
 
 describe("buildSocketUrl", () => {
-  it("encodes roomId and token as query params", () => {
-    expect(buildSocketUrl("ws://host/ws", "ABCD", "tok")).toBe(
-      "ws://host/ws?roomId=ABCD&token=tok",
-    );
+  it("places roomId as a path segment and token as a query param", () => {
+    expect(buildSocketUrl("ws://host/ws", "ABCD", "tok")).toBe("ws://host/ws/ABCD?token=tok");
   });
 
   it("omits the token when empty", () => {
-    expect(buildSocketUrl("ws://host/ws", "ABCD", "")).toBe("ws://host/ws?roomId=ABCD");
+    expect(buildSocketUrl("ws://host/ws", "ABCD", "")).toBe("ws://host/ws/ABCD");
+  });
+
+  it("handles a serverUrl with a trailing slash", () => {
+    expect(buildSocketUrl("ws://host/ws/", "ABCD", "tok")).toBe("ws://host/ws/ABCD?token=tok");
+  });
+
+  it("encodes special characters in the roomId", () => {
+    expect(buildSocketUrl("ws://host/ws", "A B/C", "")).toBe("ws://host/ws/A%20B%2FC");
   });
 });
 

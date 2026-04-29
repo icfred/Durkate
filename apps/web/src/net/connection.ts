@@ -27,7 +27,7 @@ export function createConnectionController(
   const { store, serverUrl } = options;
   const resolveToken = options.resolveToken ?? (() => "");
   const connectImpl = options.connectImpl ?? connect;
-  let active: { conn: WsConnection; roomId: string } | null = null;
+  let active: { conn: WsConnection | null; roomId: string } | null = null;
 
   const handlers: WsClientHandlers = {
     onSnapshot: (msg) => {
@@ -66,14 +66,19 @@ export function createConnectionController(
 
   const openFor = (roomId: string) => {
     closeActive();
+    // Reserve `active` before connecting. `connectImpl` synchronously fires
+    // setStatus("connecting"), which triggers a store-subscriber re-entry
+    // into `reconcile`. If `active` is still null at that point, reconcile
+    // calls `openFor` again — infinite recursion.
+    active = { conn: null, roomId };
     const conn = connectImpl({ roomId, token: resolveToken(roomId), serverUrl, handlers });
+    active.conn = conn;
     store.getState().setSender(conn.send);
-    active = { conn, roomId };
   };
 
   const closeActive = () => {
     if (!active) return;
-    active.conn.close();
+    active.conn?.close();
     active = null;
     store.getState().setSender(null);
   };

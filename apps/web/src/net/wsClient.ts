@@ -53,8 +53,9 @@ const CLOSE_CODE_BAD_FRAME = 4400;
 const CLOSE_CODE_CLIENT_LEAVE = 4000;
 
 export function buildSocketUrl(serverUrl: string, roomId: string, token: string): string {
+  // The server route is `/ws/:roomId` — roomId is a path segment, not a query param.
   const url = new URL(serverUrl);
-  url.searchParams.set("roomId", roomId);
+  url.pathname = `${url.pathname.replace(/\/$/, "")}/${encodeURIComponent(roomId)}`;
   if (token.length > 0) url.searchParams.set("token", token);
   return url.toString();
 }
