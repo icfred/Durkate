@@ -7,10 +7,24 @@ import { LobbyScreen } from "./LobbyScreen.js";
 
 function collectText(container: Container, out: string[] = []): string[] {
   for (const child of container.children) {
+    if (!child.visible) continue;
     if (child instanceof Text) out.push(child.text);
     if (child instanceof Container) collectText(child, out);
   }
   return out;
+}
+
+function findContainerWithText(container: Container, label: string): Container | null {
+  if (container.children.some((c) => c instanceof Text && (c as Text).text === label)) {
+    return container;
+  }
+  for (const child of container.children) {
+    if (child instanceof Container) {
+      const inner = findContainerWithText(child as Container, label);
+      if (inner) return inner;
+    }
+  }
+  return null;
 }
 
 function makeRoom(occupants: (string | null)[], you: number | null = 0): RoomMembership {
@@ -80,13 +94,81 @@ describe("LobbyScreen friend mode", () => {
       onJoin: vi.fn(),
       copyToClipboard: copy,
     });
-    const copyButton = screen.children[0]?.children.find(
-      (child): child is Container =>
-        child instanceof Container && collectText(child as Container).includes("COPY LINK"),
-    );
+    const copyButton = findContainerWithText(screen, "COPY LINK");
     if (!copyButton) throw new Error("copy button not found");
     (copyButton as unknown as { activate(): void }).activate();
     expect(copy).toHaveBeenCalledWith("https://durak/#room=ABCD");
+    screen.dispose();
+  });
+});
+
+describe("LobbyScreen creation overlay", () => {
+  it('shows "CREATING ROOM..." and hides the room code while creating', () => {
+    const screen = new LobbyScreen({
+      mode: "bot",
+      roomCode: "",
+      shareUrl: "",
+      initialRoom: null,
+      initialCreation: { status: "creating" },
+      onJoin: vi.fn(),
+    });
+    expect(collectText(screen)).toContain("CREATING ROOM...");
+    expect(collectText(screen)).not.toContain("STARTING VS BOT");
+    screen.dispose();
+  });
+
+  it('shows error and a "RETRY" button when creation fails', () => {
+    const screen = new LobbyScreen({
+      mode: "bot",
+      roomCode: "",
+      shareUrl: "",
+      initialRoom: null,
+      initialCreation: { status: "error", error: "boom" },
+      onJoin: vi.fn(),
+      onRetry: vi.fn(),
+    });
+    const labels = collectText(screen);
+    expect(labels.join("|")).toContain("COULD NOT CREATE ROOM");
+    expect(labels.join("|")).toContain("boom");
+    expect(labels).toContain("RETRY");
+    screen.dispose();
+  });
+
+  it("transitions creating -> ready via subscribeCreation", () => {
+    const listeners: ((s: { status: string; error?: string }) => void)[] = [];
+    const screen = new LobbyScreen({
+      mode: "bot",
+      roomCode: "",
+      shareUrl: "",
+      initialRoom: null,
+      initialCreation: { status: "creating" },
+      subscribeCreation: (cb) => {
+        listeners.push(cb as (s: { status: string }) => void);
+        return () => undefined;
+      },
+      onJoin: vi.fn(),
+    });
+    expect(collectText(screen)).toContain("CREATING ROOM...");
+    for (const cb of listeners) cb({ status: "ready" });
+    expect(collectText(screen)).toContain("STARTING VS BOT");
+    screen.dispose();
+  });
+
+  it("invokes onRetry when the RETRY button activates", () => {
+    const onRetry = vi.fn();
+    const screen = new LobbyScreen({
+      mode: "bot",
+      roomCode: "",
+      shareUrl: "",
+      initialRoom: null,
+      initialCreation: { status: "error", error: "boom" },
+      onJoin: vi.fn(),
+      onRetry,
+    });
+    const retryButton = findContainerWithText(screen, "RETRY");
+    if (!retryButton) throw new Error("retry button not found");
+    (retryButton as unknown as { activate(): void }).activate();
+    expect(onRetry).toHaveBeenCalledOnce();
     screen.dispose();
   });
 });

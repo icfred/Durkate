@@ -33,10 +33,21 @@ export interface RoomMembership {
   you: SeatIndex | null;
 }
 
+export type RoomCreationState =
+  | { status: "idle" }
+  | { status: "creating" }
+  | { status: "ready" }
+  | { status: "error"; error: string };
+
 export interface AppState {
   phase: Phase;
   mode: Mode | undefined;
   roomCode: string | undefined;
+  /** Seat-bound token used when opening the ws to this room. */
+  currentToken: string | null;
+  /** Token to embed in the share URL for "play vs friend" hosts. */
+  shareToken: string | null;
+  roomCreation: RoomCreationState;
   snapshot: Snapshot | null;
   events: Event[];
   eventsTotal: number;
@@ -47,9 +58,13 @@ export interface AppState {
   submitAction: (action: Action) => void;
   requestRematch: () => void;
   showMenu(): void;
-  showLobby(args: { mode: Mode; roomCode: string }): void;
+  showLobby(args: { mode: Mode; roomCode: string; token?: string | null }): void;
   showGame(args?: { mode?: Mode; roomCode?: string }): void;
   showGameOver(data: GameOverData): void;
+  beginRoomCreation(mode: Mode): void;
+  roomCreated(args: { roomId: string; hostToken: string; shareToken?: string | null }): void;
+  roomCreationFailed(error: string): void;
+  enterLobbyAsJoiner(args: { roomCode: string; token: string }): void;
   setSnapshot(snapshot: Snapshot | null): void;
   appendEvents(events: Event[]): void;
   setConnectionStatus(status: ConnectionStatus, info: { attempts: number; error?: string }): void;
@@ -60,6 +75,7 @@ export interface AppState {
 }
 
 const INITIAL_CONNECTION: ConnectionState = { status: "idle", attempts: 0 };
+const INITIAL_ROOM_CREATION: RoomCreationState = { status: "idle" };
 
 const MUTED_STORAGE_KEY = "durak.audio.muted";
 
@@ -103,6 +119,9 @@ export const appStore = createStore<AppState>((set, get) => {
     phase: "menu",
     mode: undefined,
     roomCode: undefined,
+    currentToken: null,
+    shareToken: null,
+    roomCreation: INITIAL_ROOM_CREATION,
     snapshot: null,
     events: [],
     eventsTotal: 0,
@@ -116,13 +135,23 @@ export const appStore = createStore<AppState>((set, get) => {
         phase: "menu",
         mode: undefined,
         roomCode: undefined,
+        currentToken: null,
+        shareToken: null,
+        roomCreation: INITIAL_ROOM_CREATION,
         snapshot: null,
         events: [],
         eventsTotal: 0,
         room: null,
         gameover: undefined,
       }),
-    showLobby: ({ mode, roomCode }) => set({ phase: "lobby", mode, roomCode, gameover: undefined }),
+    showLobby: ({ mode, roomCode, token }) =>
+      set({
+        phase: "lobby",
+        mode,
+        roomCode,
+        currentToken: token ?? null,
+        gameover: undefined,
+      }),
     showGame: (args) =>
       set((state) => ({
         phase: "game",
@@ -130,6 +159,35 @@ export const appStore = createStore<AppState>((set, get) => {
         roomCode: args?.roomCode ?? state.roomCode,
       })),
     showGameOver: (data) => set({ phase: "gameover", gameover: data }),
+    beginRoomCreation: (mode) =>
+      set({
+        phase: "lobby",
+        mode,
+        roomCode: undefined,
+        currentToken: null,
+        shareToken: null,
+        roomCreation: { status: "creating" },
+        gameover: undefined,
+        room: null,
+      }),
+    roomCreated: ({ roomId, hostToken, shareToken }) =>
+      set({
+        roomCode: roomId,
+        currentToken: hostToken,
+        shareToken: shareToken ?? null,
+        roomCreation: { status: "ready" },
+      }),
+    roomCreationFailed: (error) => set({ roomCreation: { status: "error", error } }),
+    enterLobbyAsJoiner: ({ roomCode, token }) =>
+      set({
+        phase: "lobby",
+        mode: "friend",
+        roomCode,
+        currentToken: token,
+        shareToken: null,
+        roomCreation: { status: "ready" },
+        gameover: undefined,
+      }),
     setSnapshot: (snapshot) => set({ snapshot }),
     setRoomMembership: (room) => set({ room }),
     appendEvents: (events) =>
@@ -181,20 +239,21 @@ export const appStore = createStore<AppState>((set, get) => {
   return internal;
 });
 
-const ROOM_CODE_PATTERN = /#room=([A-Za-z0-9]+)/;
+const HASH_ROOM = /(?:^|[#&])room=([A-Za-z0-9_-]+)/;
+const HASH_TOKEN = /(?:^|[#&])t=([A-Za-z0-9_-]+)/;
 
 export function parseHashRoom(hash: string): string | null {
-  const match = ROOM_CODE_PATTERN.exec(hash);
-  const code = match?.[1];
-  return code ? code.toUpperCase() : null;
+  const match = HASH_ROOM.exec(hash);
+  return match?.[1] ?? null;
 }
 
-const ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+export function parseHashJoin(hash: string): { roomCode: string; token: string } | null {
+  const room = parseHashRoom(hash);
+  const tokenMatch = HASH_TOKEN.exec(hash);
+  if (room === null || !tokenMatch?.[1]) return null;
+  return { roomCode: room, token: tokenMatch[1] };
+}
 
-export function generateRoomCode(rand: () => number = Math.random): string {
-  let out = "";
-  for (let i = 0; i < 4; i += 1) {
-    out += ROOM_CODE_ALPHABET[Math.floor(rand() * ROOM_CODE_ALPHABET.length)];
-  }
-  return out;
+export function buildShareUrl(origin: string, roomCode: string, joinToken: string): string {
+  return `${origin}/#room=${encodeURIComponent(roomCode)}&t=${encodeURIComponent(joinToken)}`;
 }

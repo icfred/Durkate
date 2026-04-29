@@ -5,7 +5,7 @@ import { connect, type WsClientHandlers, type WsConnection } from "./wsClient.js
 export interface ConnectionControllerOptions {
   store: StoreApi<AppState>;
   serverUrl: string;
-  /** Resolves the per-connection auth token. Stub returns "" until DUR-17 lands a real session. */
+  /** Resolves the per-connection auth token. Defaults to `store.currentToken`. */
   resolveToken?: (roomId: string) => string;
   /** Test seam: replaces the underlying `connect` impl. */
   connectImpl?: typeof connect;
@@ -25,7 +25,7 @@ export function createConnectionController(
   options: ConnectionControllerOptions,
 ): ConnectionController {
   const { store, serverUrl } = options;
-  const resolveToken = options.resolveToken ?? (() => "");
+  const resolveToken = options.resolveToken ?? (() => store.getState().currentToken ?? "");
   const connectImpl = options.connectImpl ?? connect;
   let active: { conn: WsConnection | null; roomId: string } | null = null;
 
@@ -59,7 +59,11 @@ export function createConnectionController(
       const state = store.getState();
       state.setConnectionStatus(status, info);
       if (status === "closed" && state.phase === "game" && state.roomCode && state.mode) {
-        state.showLobby({ mode: state.mode, roomCode: state.roomCode });
+        state.showLobby({
+          mode: state.mode,
+          roomCode: state.roomCode,
+          token: state.currentToken,
+        });
       }
     },
   };
@@ -85,8 +89,8 @@ export function createConnectionController(
 
   const reconcile = (state: AppState) => {
     if (state.phase === "lobby" || state.phase === "game") {
-      const { roomCode } = state;
-      if (!roomCode) {
+      const { roomCode, currentToken } = state;
+      if (!roomCode || !currentToken) {
         closeActive();
         return;
       }

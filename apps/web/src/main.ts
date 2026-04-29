@@ -7,6 +7,7 @@ import { Application } from "pixi.js";
 import { bindMuteShortcut, installAudioGestureUnlock } from "./audio/index.js";
 import { gameOverFixture } from "./fixtures/gameOverFixtures.js";
 import { createConnectionController } from "./net/connection.js";
+import { CreateRoomError, createRoom, httpFromWsUrl } from "./net/rooms.js";
 import { SkinSandboxScreen } from "./sandbox/skins/SkinSandboxScreen.js";
 import { SkinTunerScreen } from "./sandbox/skins/SkinTunerScreen.js";
 import { ScreenRouter } from "./screenRouter.js";
@@ -19,9 +20,10 @@ import type { Screen } from "./screens/types.js";
 import {
   type AppState,
   appStore,
+  buildShareUrl,
   type GameOverData,
-  generateRoomCode,
-  parseHashRoom,
+  type Mode,
+  parseHashJoin,
 } from "./store.js";
 
 const mountId = "app";
@@ -58,28 +60,43 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
 } else {
   applyBootRouting();
 
+  const wsUrl = resolveWsUrl();
+  const httpUrl = resolveHttpServerUrl(wsUrl);
+
+  const startCreate = (mode: Mode) => {
+    void runRoomCreation(mode, httpUrl);
+  };
+
   const router = new ScreenRouter({
     stage: app.stage,
     build(state: AppState): Screen {
       switch (state.phase) {
         case "menu":
           return new MainMenuScreen({
-            onPlay: (mode) => {
-              appStore.getState().showLobby({ mode, roomCode: generateRoomCode() });
-            },
+            onPlay: (mode) => startCreate(mode),
           });
         case "lobby": {
-          const code = state.roomCode ?? generateRoomCode();
           const mode = state.mode ?? "friend";
+          const roomCode = state.roomCode ?? "";
+          const shareUrl =
+            mode === "friend" && state.shareToken
+              ? buildShareUrl(window.location.origin, roomCode, state.shareToken)
+              : `${window.location.origin}/#room=${encodeURIComponent(roomCode)}`;
           return new LobbyScreen({
             mode,
-            roomCode: code,
-            shareUrl: `${window.location.origin}/#room=${code}`,
+            roomCode,
+            shareUrl,
             initialRoom: state.room,
+            initialCreation: state.roomCreation,
             subscribe: (listener) =>
               appStore.subscribe((next, prev) => {
                 if (next.room !== prev.room) listener(next.room);
               }),
+            subscribeCreation: (listener) =>
+              appStore.subscribe((next, prev) => {
+                if (next.roomCreation !== prev.roomCreation) listener(next.roomCreation);
+              }),
+            onRetry: () => startCreate(mode),
             onJoin: (next) => {
               appStore.getState().showLobby({ mode, roomCode: next });
             },
@@ -113,8 +130,7 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
   router.setView(app.screen.width, app.screen.height);
   router.start();
 
-  const serverUrl = resolveWsUrl();
-  const connection = createConnectionController({ store: appStore, serverUrl });
+  const connection = createConnectionController({ store: appStore, serverUrl: wsUrl });
   connection.start();
 
   installAudioGestureUnlock();
@@ -141,9 +157,26 @@ function applyBootRouting(): void {
     appStore.getState().showGameOver(data);
     return;
   }
-  const initialRoom = parseHashRoom(window.location.hash);
-  if (initialRoom) {
-    appStore.getState().showLobby({ mode: "friend", roomCode: initialRoom });
+  const join = parseHashJoin(window.location.hash);
+  if (join) {
+    appStore.getState().enterLobbyAsJoiner(join);
+  }
+}
+
+async function runRoomCreation(mode: Mode, httpUrl: string): Promise<void> {
+  appStore.getState().beginRoomCreation(mode);
+  const apiMode = mode === "bot" ? "bot" : "human";
+  try {
+    const response = await createRoom(apiMode, { serverUrl: httpUrl });
+    appStore.getState().roomCreated({
+      roomId: response.roomId,
+      hostToken: response.hostToken,
+      shareToken: response.joinToken ?? null,
+    });
+  } catch (err) {
+    const message =
+      err instanceof CreateRoomError ? err.message : `unexpected error: ${String(err)}`;
+    appStore.getState().roomCreationFailed(message);
   }
 }
 
@@ -152,6 +185,14 @@ function resolveWsUrl(): string {
   if (typeof fromEnv === "string" && fromEnv.length > 0) return fromEnv;
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${proto}//${window.location.host}/ws`;
+}
+
+function resolveHttpServerUrl(wsUrl: string): string {
+  const fromEnv = import.meta.env.VITE_SERVER_URL;
+  if (typeof fromEnv === "string" && fromEnv.length > 0) return fromEnv;
+  // Default: derive from VITE_WS_URL (or same-origin) so the dev Vite proxy
+  // forwards both /ws and /rooms to the server without manual env setup.
+  return httpFromWsUrl(wsUrl);
 }
 
 async function loadFonts(): Promise<void> {
