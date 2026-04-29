@@ -6,6 +6,7 @@
     { "path": "./packages/protocol" },
     { "path": "./packages/ui" },
     { "path": "./packages/assets" },
+    { "path": "./packages/skins-spike" },
     { "path": "./apps/web" },
     { "path": "./apps/server" }
   ]
