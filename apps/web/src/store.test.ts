@@ -62,6 +62,24 @@ describe("appStore", () => {
     expect(stored[stored.length - 1]).toBe(events[total - 1]);
   });
 
+  it("appendEvents bumps eventsTotal monotonically across overflow", () => {
+    const event: Event = { type: "GAME_STARTED", trump: { suit: "hearts", rank: 6 }, attacker: 0 };
+    expect(appStore.getState().eventsTotal).toBe(0);
+    appStore.getState().appendEvents([event, event]);
+    expect(appStore.getState().eventsTotal).toBe(2);
+    appStore.getState().appendEvents(Array.from({ length: EVENT_BUFFER_SIZE + 3 }, () => event));
+    expect(appStore.getState().eventsTotal).toBe(2 + EVENT_BUFFER_SIZE + 3);
+    expect(appStore.getState().events.length).toBe(EVENT_BUFFER_SIZE);
+  });
+
+  it("showMenu resets eventsTotal to 0", () => {
+    const event: Event = { type: "GAME_STARTED", trump: { suit: "hearts", rank: 6 }, attacker: 0 };
+    appStore.getState().appendEvents([event]);
+    expect(appStore.getState().eventsTotal).toBe(1);
+    appStore.getState().showMenu();
+    expect(appStore.getState().eventsTotal).toBe(0);
+  });
+
   it("setConnectionStatus stores attempts and tracks the optional error", () => {
     appStore.getState().setConnectionStatus("error", { attempts: 3, error: "boom" });
     expect(appStore.getState().connection).toEqual({

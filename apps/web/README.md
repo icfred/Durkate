@@ -169,10 +169,13 @@ six clips (`playCard`, `takePile`, `win`, `lose`, `buttonHover`,
   `onActivate` with a click sound; `attachButtonHover(button)` adds the
   hover sound on `pointerover`. Use both at every `Button` construction
   site.
-- **Game events.** `GameScreen` will subscribe to the engine event ring
-  buffer and play `playCard` on `CARD_PLAYED`, `takePile` on
-  `PILE_TAKEN`, and `win`/`lose` on game-over. The screen and ring
-  buffer land in later tickets; the audio API is ready for them.
+- **Game events.** `GameScreen` subscribes to the `appStore.events` ring
+  buffer (via a `subscribeEvents` callback wired in `main.ts`) and plays
+  `playCard` on `CARD_PLAYED`, `takePile` on `PILE_TAKEN`, and
+  `win`/`lose` on `GAME_OVER` (decided against you / by you; a draw is
+  silent). The wiring uses `appStore.eventsTotal` to deliver only newly
+  appended events, so each event fires sfx exactly once even though
+  `appendEvents` may run many times in a tick.
 
 ## Deployment
 
