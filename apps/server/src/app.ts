@@ -1,7 +1,14 @@
 import Fastify, { type FastifyInstance } from "fastify";
-import { registerGateway } from "./gateway.js";
+import { type Gateway, registerGateway } from "./gateway.js";
+import { RoomRegistry } from "./rooms/RoomRegistry.js";
 
-export async function buildApp(): Promise<FastifyInstance> {
+export interface BuiltApp {
+  app: FastifyInstance;
+  registry: RoomRegistry;
+  gateway: Gateway;
+}
+
+export async function buildApp(): Promise<BuiltApp> {
   const isDev = process.env.NODE_ENV !== "production";
   const app = Fastify({
     logger: isDev
@@ -17,7 +24,8 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   app.get("/health", async () => ({ ok: true }));
 
-  await registerGateway(app);
+  const registry = new RoomRegistry();
+  const gateway = await registerGateway(app, registry);
 
-  return app;
+  return { app, registry, gateway };
 }

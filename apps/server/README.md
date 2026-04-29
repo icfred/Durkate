@@ -23,17 +23,23 @@ This is an app, not a library. Entry point: `src/main.ts`.
 
 Listens on `PORT` (default 3001), `HOST` (default 0.0.0.0).
 
-Current routes (skeleton):
+Current routes:
 - `GET /health` - liveness probe, returns `{ ok: true }`
-- `GET /ws` - WebSocket upgrade. Echoes every inbound message back as
-  `{ type: "ECHO", payload }`. JSON payloads are parsed; non-JSON is
-  echoed as a string.
+- `GET /ws/:roomId?token=...` - WebSocket upgrade. Looks up the room and
+  resolves the seat from the token via `RoomRegistry`. Unknown room or
+  forged token is rejected with a typed `Error` and the socket is
+  closed. Inbound messages are Zod-parsed via
+  `clientMessageSchema`; on parse failure the gateway sends an `Error`
+  with code `BAD_MESSAGE` and closes. `SubmitAction` currently routes to
+  a stub engine that returns a placeholder `Snapshot` so the wire path
+  is exercised end-to-end. `RequestRematch` returns
+  `{ Error, code: NOT_IMPLEMENTED }`. On join, leave, and disconnect the
+  gateway broadcasts `RoomState` to every connected seat. Per-connection
+  rate limiting lands with the engine wiring (DUR-18).
 
 Planned routes (not yet implemented):
 - `POST /rooms` - create a room, returns roomId + seat tokens
 - `GET /rooms/:id` - room metadata (lobby state)
-- `GET /ws/:roomId?token=...` - join a seat in a room (replaces the
-  skeleton `/ws`)
 
 ## Invariants
 
