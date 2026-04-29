@@ -155,13 +155,13 @@ a warn while the connection is not open.
 
 ## Local dev
 
-`pnpm dev` from the repo root runs `dev:server` (port 3001) and
-`dev:web` (port 5173) in parallel. The Vite config (`vite.config.ts`)
-proxies `/rooms`, `/ws`, and `/health` from `:5173` to `:3001`, so the
-client just talks to its own origin and no `VITE_WS_URL` /
-`VITE_SERVER_URL` env override is needed in dev. To proxy to a
-different server (e.g. a remote dev box), set
-`VITE_DEV_PROXY_TARGET=http://other.host:3001`.
+`pnpm dev` from the repo root runs the worker (`wrangler dev` on port
+8787) and the web (Vite on port 5173) in parallel. The Vite config
+(`vite.config.ts`) proxies `/rooms`, `/ws`, and `/health` from `:5173`
+to `:8787`, so the client just talks to its own origin and no
+`VITE_WS_URL` / `VITE_SERVER_URL` env override is needed in dev. To
+proxy to a different server (e.g. a remote dev box), set
+`VITE_DEV_PROXY_TARGET=http://other.host:8787`.
 
 ## Focus manager lifecycle
 
@@ -236,58 +236,66 @@ six clips (`playCard`, `takePile`, `win`, `lose`, `buttonHover`,
 
 ## Deployment
 
-Hosted on [Cloudflare Pages](https://pages.cloudflare.com) as project
-`durak-web`. See `docs/decisions/0007-hosting.md` for why.
+Hosted on [Firebase Hosting](https://firebase.google.com/docs/hosting)
+in the `durak-icfred` Firebase project. See
+`docs/decisions/0007-hosting.md` for why.
 
 ### Pieces
 
-- `apps/web/public/_redirects` - SPA fallback so any path serves
-  `index.html` (room codes use hash routing, but this guards against
-  future path routes too).
-- `apps/web/public/_headers` - long cache for hashed `/assets/*`, basic
-  security headers everywhere else.
+- `firebase.json` (repo root) - Hosting config: `public` points at
+  `apps/web/dist`, SPA rewrite `** → /index.html`, basic security
+  headers everywhere, long cache for `/assets/*`.
+- `.firebaserc` (repo root) - default project alias `durak-icfred`.
 - `.github/workflows/ci.yml` - the `deploy-web` job runs on push to
   `main` after `check` passes. It builds with `VITE_WS_URL` baked in,
-  then `wrangler pages deploy apps/web/dist`.
+  then `firebase deploy --only hosting` via the
+  `FirebaseExtended/action-hosting-deploy@v0` action.
 
 ### Env / variables
 
-- `VITE_WS_URL` (build-time) - the wss URL of the deployed server.
-  Stored as a **GitHub repo variable** (`vars.WEB_WS_URL`), not a
+- `VITE_WS_URL` (build-time) - the wss URL of the deployed worker.
+  Stored as a **GitHub repo variable** (`vars.VITE_WS_URL`), not a
   secret, because it ends up in the public JS bundle. Example:
-  `wss://durak-server.fly.dev`. If unset, `main.ts` falls back to
-  `${ws|wss}://${location.host}/ws` (matches dev when the server is
+  `wss://durak-server.icfred.workers.dev/ws` — the trailing `/ws` is
+  required; `wsClient.buildSocketUrl` appends `/<roomId>` to it.
+  `httpFromWsUrl` drops the path for `POST /rooms`, so the same env
+  serves both routes. If unset, `main.ts` falls back to
+  `${ws|wss}://${location.host}/ws` (matches dev when the worker is
   reverse-proxied).
-- GitHub repo secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`
-  (used by the CI deploy job).
+- GitHub repo secret: `FIREBASE_SERVICE_ACCOUNT` - JSON contents of a
+  Google Cloud service-account key with the Firebase Hosting Admin
+  role on the `durak-icfred` project. The action consumes it directly.
 
 ### First-time provisioning
 
 ```
-wrangler login
-wrangler pages project create durak-web --production-branch main
+firebase login
+firebase use durak-icfred
+firebase deploy --only hosting   # confirms the site is reachable
 ```
 
-Set `WEB_WS_URL` as a repo variable in GitHub
+Generate a CI service account in the Firebase console
+(Project settings → Service accounts → Generate new private key) and
+paste the entire JSON into the `FIREBASE_SERVICE_ACCOUNT` GitHub
+secret. Set `VITE_WS_URL` as a repo variable
 (Settings → Secrets and variables → Actions → Variables).
 
-After that, every push to `main` redeploys via the GitHub Actions
-`deploy-web` job.
+After that, every push to `main` redeploys via the `deploy-web` job.
 
 ### Rollback
 
-Cloudflare Pages keeps every deployment. To roll back:
+Firebase Hosting keeps every release. To roll back:
 
-1. Open the Pages project in the Cloudflare dashboard.
-2. Find a known-good deployment in the history.
-3. Click "Rollback to this deployment".
+1. Open the Firebase console for `durak-icfred` → Hosting.
+2. Find a known-good release in the version history.
+3. Click "Rollback".
 
-Equivalent CLI: `wrangler pages deployment list --project-name durak-web`
-to find an ID, then redeploy via the dashboard. (The CLI does not
-expose a one-shot rollback verb at the time of writing.)
+Equivalent CLI: `firebase hosting:clone <site>:<version> <site>:live`
+to clone a prior version onto the live channel.
 
 ## Related ADRs
 
 - ADR-0004: pure PixiJS client, no React
 - ADR-0005: authoritative server with redacted snapshots and events
-- ADR-0007: public hosting on Fly.io and Cloudflare Pages
+- ADR-0007: hosting on Cloudflare Workers + Durable Objects and Firebase
+  Hosting

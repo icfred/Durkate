@@ -1,6 +1,6 @@
 import { defineConfig } from "vite";
 
-const SERVER_TARGET = process.env.VITE_DEV_PROXY_TARGET ?? "http://127.0.0.1:3001";
+const SERVER_TARGET = process.env.VITE_DEV_PROXY_TARGET ?? "http://127.0.0.1:8787";
 
 export default defineConfig({
   server: {

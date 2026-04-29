@@ -60,3 +60,14 @@ docs/project_vision.md
 
 # Stray binaries (drag-drop artifacts)
 *.zip
+
+# Firebase / Google Cloud service-account credentials
+*-firebase-adminsdk-*.json
+firebase-service-account.json
+gcp-service-account*.json
+.firebaserc.local
+.firebase/
+
+# Wrangler / Cloudflare local state
+.wrangler/
+.dev.vars
