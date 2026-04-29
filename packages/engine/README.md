@@ -115,10 +115,31 @@ Talon replenishment, timeouts, and game-over (DUR-9):
   in draw order) and `GAME_OVER { durak }` (always last in the events
   list of the transition that ends the game).
 
+Bot v1 (DUR-10):
+
+- `bot.choose(state) -> Action`. Pure observer: never reads or mutates
+  `state.rng`, never reads the wall clock. Throws if `state.phase` is not
+  `"in-round"`.
+- Heuristic, in priority order:
+  - **Open attack** (table empty): cheapest card from the attacker's
+    hand. "Cheapest" = lowest non-trump rank first, trumps last; ties
+    break by suit index in `SUITS`.
+  - **Defend** (current undefended target): cheapest card that beats it.
+    Lowest same-suit beat first, lowest trump only when no same-suit
+    beat exists.
+  - **Take pile** when no card beats the target, or when the only beat
+    would burn a trump of rank Q+ on a non-trump attack of rank 8 or
+    lower.
+  - **Throw-in** (table fully covered): cheapest hand card whose rank is
+    on the table, subject to engine constraints (defender has at least
+    one card, bout cap of 6 attacks).
+  - **End round** when no legal throw-in is available.
+- Imported as a namespace: `import { bot } from "@durak/engine";` then
+  `bot.choose(state)`.
+
 Forthcoming (later tickets):
 
 - `validate(state, action) -> Result`
-- `bot.choose(state) -> Action`
 
 ## Invariants
 
