@@ -22,10 +22,21 @@ This package replaces what would normally be a HTML component library
 
 ## Public API
 
-- `Button`, `Panel`, `Modal`, `ListItem`, ... (Pixi `Container` subclasses)
-- `FocusManager` class
-- `tokens` (color, spacing, typography, easing)
-- `mountTextInputOverlay(targetRect, opts)`
+- `Button({ label, width?, height?, onActivate? })` - Pixi `Container`,
+  implements `Focusable`. Hover and keyboard focus share visuals;
+  pointer click and `activate()` both fire `onActivate`.
+- `Panel({ width, height, fill?, border?, borderWidth?, cornerRadius? })`
+  - Pixi `Container`. `resize(w, h)` re-strokes the rect.
+- `FocusManager({ onEscape?, target? })` - keyboard nav. `attach()` /
+  `detach()` (re)bind keydown. `register(node)`, `unregister(node)`,
+  `clear()`, `focusNext()`, `focusPrev()`. Routes arrow keys,
+  Tab/Shift+Tab, Enter/Space, Escape.
+- `Focusable` interface: `setFocus(focused)`, `activate()`.
+- Tokens: `color`, `spacing`, `radius`, `stroke`, `typography`,
+  `easing`, `duration`, plus the bundled `tokens` object and `Tokens`
+  type. Soviet-dark palette per `docs/project_vision.md`.
+- `Modal`, `ListItem`, `mountTextInputOverlay(...)` - planned, not yet
+  implemented.
 
 ## Invariants
 
@@ -41,6 +52,9 @@ This package replaces what would normally be a HTML component library
   no copy/paste). Plan around it.
 - Accessibility (screen readers) is essentially zero. Acceptable for this
   project.
+- Pixi `Container` reserves `label` as an internal field, so the
+  `Button` constructor option is `label` but the internal text node is
+  named differently. Don't rename it back without checking Pixi.
 
 ## Related ADRs
 
