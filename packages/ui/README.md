@@ -30,13 +30,21 @@ This package replaces what would normally be a HTML component library
 - `FocusManager({ onEscape?, target? })` - keyboard nav. `attach()` /
   `detach()` (re)bind keydown. `register(node)`, `unregister(node)`,
   `clear()`, `focusNext()`, `focusPrev()`. Routes arrow keys,
-  Tab/Shift+Tab, Enter/Space, Escape.
+  Tab/Shift+Tab, Enter/Space, Escape. `suspend()` makes the manager
+  ignore keydown events (no `preventDefault`, no node activation)
+  while the listener stays attached; `resume()` restores routing. Both
+  are idempotent. Use this around an HTML overlay (e.g.
+  `mountTextInputOverlay`) so Tab and Enter reach the input.
 - `Focusable` interface: `setFocus(focused)`, `activate()`.
 - Tokens: `color`, `spacing`, `radius`, `stroke`, `typography`,
   `easing`, `duration`, plus the bundled `tokens` object and `Tokens`
   type. Soviet-dark palette per `docs/project_vision.md`.
-- `Modal`, `ListItem`, `mountTextInputOverlay(...)` - planned, not yet
-  implemented.
+- `mountTextInputOverlay({ targetRect, value?, onChange?, onSubmit?,
+  onCancel?, focus? })` - mounts a transparent absolutely-positioned
+  `<input>` on `document.body` over `targetRect`. Returns
+  `{ unmount() }`. When `focus` is supplied, the manager is suspended
+  on mount and resumed on unmount.
+- `Modal`, `ListItem` - planned, not yet implemented.
 
 ## Invariants
 
@@ -55,6 +63,10 @@ This package replaces what would normally be a HTML component library
 - Pixi `Container` reserves `label` as an internal field, so the
   `Button` constructor option is `label` but the internal text node is
   named differently. Don't rename it back without checking Pixi.
+- `mountTextInputOverlay` lives on `document.body` in DOM coordinates,
+  while Pixi renders on the canvas. Pass screen-space coordinates for
+  `targetRect`, not Pixi local-space. Unmount before swapping screens
+  or the overlay leaks across navigations.
 
 ## Related ADRs
 

@@ -15,6 +15,7 @@ export class FocusManager {
   private readonly onEscape: (() => void) | undefined;
   private readonly onKeyDown: (event: KeyboardEvent) => void;
   private attached = false;
+  private suspended = false;
 
   constructor(options: FocusManagerOptions = {}) {
     this.target = options.target ?? window;
@@ -32,6 +33,14 @@ export class FocusManager {
     if (!this.attached) return;
     this.target.removeEventListener("keydown", this.onKeyDown as EventListener);
     this.attached = false;
+  }
+
+  suspend(): void {
+    this.suspended = true;
+  }
+
+  resume(): void {
+    this.suspended = false;
   }
 
   register(node: Focusable): void {
@@ -83,6 +92,7 @@ export class FocusManager {
   }
 
   private handleKeyDown(event: KeyboardEvent): void {
+    if (this.suspended) return;
     switch (event.key) {
       case "ArrowDown":
       case "ArrowRight":
