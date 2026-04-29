@@ -19,6 +19,9 @@ CI does not run this pipeline. Outputs are committed.
 All four are stubs in this scaffold. Real logic lands in follow-up
 tickets.
 
+Exploratory work on scraping + crushing lives in `tools/spikes/` (DUR-24).
+See [docs/spikes/image_pipeline_spike.md](../docs/spikes/image_pipeline_spike.md).
+
 ## Layout
 
 ```
