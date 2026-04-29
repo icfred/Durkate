@@ -8,42 +8,76 @@ server state over websocket and to local Zustand stores for UI state.
 
 ## Key concepts
 
-- **App phase**: top-level state machine - `MENU`, `LOBBY`, `IN_GAME`,
-  `GAME_OVER`. Lives in a Zustand store; the renderer swaps screen
-  Containers on phase change.
-- **Screen**: a Pixi `Container` representing one app phase. Built from
-  primitives in `@durak/ui`.
-- **Game view store**: receives snapshots + events from the server and
-  drives the table renderer.
-- **Boot**: parses URL once for room links, awaits `@fontsource/jetbrains-mono`
-  via `document.fonts.load` so Pixi text renders in the right family,
-  initializes Pixi, mounts the initial screen, subscribes to ws. A font-load
-  failure logs a warning and falls back to `"Courier New", monospace`.
+- **App phase**: top-level state machine - `menu`, `lobby`, `game`,
+  `gameover`. Lives in the `appStore` Zustand store; `ScreenRouter` swaps
+  screen `Container`s when phase, mode, or room code changes.
+- **Screen**: a Pixi `Container` that implements `layout(viewW, viewH)`
+  and `dispose()`. Owns its own `FocusManager`. Built from primitives in
+  `@durak/ui`.
+- **ScreenRouter**: subscribes to `appStore`, rebuilds the active screen
+  on relevant state change, calls `dispose()` + `destroy()` on the old
+  screen before mounting the new one. No fade by default - matches the
+  Tetrio-feel snappy swap.
+- **URL hash**: on boot, `#room=ABCD` deep-links into the lobby with the
+  code prefilled and `mode = "friend"`.
+- **Boot**: awaits `@fontsource/jetbrains-mono` via `document.fonts.load`
+  so Pixi text renders in the right family, then initializes Pixi,
+  parses `#room=…`, starts the router. A font-load failure logs a
+  warning and falls back to `"Courier New", monospace`.
+
+## Boot flow
+
+`src/main.ts`:
+
+1. Loads JetBrains Mono and waits for the regular and bold weights.
+2. Creates the Pixi `Application` against `#app`.
+3. Parses `window.location.hash` for `#room=…`. If present, transitions
+   the store to `lobby` before the router starts.
+4. Builds the `ScreenRouter` with a factory keyed on `state.phase`:
+   - `menu` -> `MainMenuScreen`
+   - `lobby` -> `LobbyScreen`
+   - `game`, `gameover` -> `PlaceholderScreen` (filled in by later
+     tickets).
+5. Calls `router.setView(width, height)` and `router.start()`. Re-runs
+   `setView` on Pixi `resize`.
+
+## Focus manager lifecycle
+
+Each screen owns its own `FocusManager` and follows a strict
+mount/dispose pattern: the manager is `attach()`-ed in the constructor,
+focusable nodes are `register()`-ed there too, and `dispose()` calls
+`detach()` + `clear()` before the router calls `Container.destroy`.
+
+The alternative considered was a single window-attached manager swapped
+between screens. Per-screen managers were chosen because each screen
+already carries its own focus list, and `mountTextInputOverlay` - which
+suspends the manager while the HTML overlay is focused - is then
+trivially scoped to whichever screen mounted the overlay.
 
 ## Public API
 
 This is an app, not a library. Entry point: `src/main.ts`.
 
-`main.ts` currently boots a `Pixi.Application` against `#app`,
-constructs a placeholder "HELLO DURAK" panel from `@durak/ui`
-primitives, and registers a single `Button` with a `FocusManager`.
-The phase machine and Zustand stores wire in on top of this scaffold.
-
 ## Invariants
 
 - No HTML UI components (no React, no Tailwind). Everything visible
-  renders through Pixi.
-- All keyboard nav goes through the FocusManager from `@durak/ui`.
+  renders through Pixi. Text input uses `mountTextInputOverlay` from
+  `@durak/ui`.
+- All keyboard nav goes through the per-screen `FocusManager`.
 - Game state changes never come from local logic - always from server
-  messages.
+  messages (no networking yet; lobby actions are placeholders).
+- `appStore` is a `zustand/vanilla` store. Pixi screens subscribe via
+  `appStore.subscribe()`; there is no React in the bundle.
 
 ## Gotchas
 
-- Pixi is initialized once at boot and lives outside Zustand's React
-  bindings. Subscribe to stores via `store.subscribe()` from inside Pixi
-  containers.
-- Text inputs use the `TextInputOverlay` helper from `@durak/ui` (vanilla
-  DOM `<input>` overlay, no framework).
+- `mountTextInputOverlay` lives on `document.body` in DOM coordinates.
+  The canvas is pinned to `inset: 0`, so Pixi screen-space coordinates
+  match DOM coordinates 1:1 (CSS pixels). `LobbyScreen` re-mounts the
+  overlay on every `layout()` so the `<input>` follows the panel on
+  resize; the typed value is preserved across re-mounts.
+- Placeholder room codes use `Math.random`. The no-`Math.random` rule
+  applies to `packages/engine` only, not the client.
 
 ## Related ADRs
 
