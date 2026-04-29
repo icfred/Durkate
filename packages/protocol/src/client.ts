@@ -4,6 +4,7 @@ export interface JoinRoom {
   type: "JoinRoom";
   roomId: string;
   name: string;
+  mode?: "human" | "bot" | undefined;
 }
 
 export interface LeaveRoom {

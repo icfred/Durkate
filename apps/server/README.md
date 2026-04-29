@@ -18,7 +18,8 @@ redacted snapshots.
   Snapshot`. Strips opponent hand, talon contents, and RNG state. Most
   security-critical file in the project.
 - **Seat**: a position at a room (one human or one bot). Owns a session
-  token issued at join.
+  token issued at join. In a bot room the bot's token is generated for
+  shape parity but is never consumed (no ws connection).
 - **Session token**: opaque string bound to a seat. Required on ws
   upgrade.
 - **Token bucket** (`src/rate-limit.ts`): per-connection rate limit on
@@ -48,6 +49,23 @@ Planned routes (not yet implemented):
 - `POST /rooms` - create a room, returns roomId + seat tokens
 - `GET /rooms/:id` - room metadata (lobby state)
 
+## Room modes
+
+A room is created in one of two modes (default `human`):
+
+- `human`: two human seats, each with a session token, both must
+  connect via ws before the game starts.
+- `bot`: seat 1 is permanently reserved for the rule-based bot from
+  `@durak/engine`. The bot has no ws and no token in use; the room
+  treats it as always attached, so `maybeStartGame` fires as soon as
+  the human at seat 0 connects. The human always sits at seat 0 in a
+  bot room — this is a hard invariant the lobby relies on.
+
+The mode is set at room creation (`registry.create({ mode: "bot" })`)
+and is immutable for the room's lifetime. The protocol's
+`JoinRoom { mode? }` field exists to carry mode through the lobby flow
+once room-creation is exposed over the wire.
+
 ## Game loop
 
 The room is the authoritative game-loop coordinator.
@@ -64,6 +82,16 @@ The room is the authoritative game-loop coordinator.
   per-seat `Snapshot` + `Events` to every connected client, and re-arms
   the turn timer. On rejection the engine's reason is returned and the
   gateway sends a single `Error` to the offending seat.
+- **Bot driver** (vs-bot rooms only): after every `step` that advances
+  state, the room loops `bot.choose(state)` -> `step` while the active
+  actor is the bot seat, broadcasting a `Snapshot` + `Events` pair to
+  the human after each bot decision. The loop ends when the active
+  actor is the human or the game is over. A defensive cap (200
+  iterations by default) guards against runaway loops; tripping it
+  emits a `BOT_LOOP_CAP` `Error` to the human and stops the driver.
+  An illegal bot action (which the rule-based bot does not produce)
+  emits `BOT_ILLEGAL_ACTION`. Bot timeouts ride the existing turn
+  timer; there is no separate bot timer.
 - **Turn timer**: `setTimeout` per turn, default 30 seconds, injectable.
   On expiry the room derives a synthetic action from the current state
   (`TAKE_PILE` if any pair on the table is undefended, otherwise
@@ -92,9 +120,10 @@ The room is the authoritative game-loop coordinator.
 
 ## Gotchas
 
-- Bot delays for player comprehensibility live here, not in the engine.
-  Use a presentation-layer setTimeout before dispatching the bot's chosen
-  action.
+- Bot delays for player comprehensibility are not yet wired; the bot
+  driver fires bot actions synchronously after each human action. A
+  presentation-layer setTimeout will be added when "bot is thinking"
+  pacing matters for the UX.
 - pino is the logger. Use `pino-pretty` in dev for readable output.
 - The turn-timer synthesis is a stand-in for the engine's eventual
   native `TIMEOUT` action; revisit when DUR-9's talon-replenish and

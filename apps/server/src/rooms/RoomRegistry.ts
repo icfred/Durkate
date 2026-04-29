@@ -1,11 +1,11 @@
-import { Room } from "./Room.js";
+import { Room, type RoomOpts } from "./Room.js";
 
 export class RoomRegistry {
   private readonly rooms = new Map<string, Room>();
 
-  create(): Room {
-    let room = new Room();
-    while (this.rooms.has(room.id)) room = new Room();
+  create(opts: RoomOpts = {}): Room {
+    let room = new Room(opts);
+    while (this.rooms.has(room.id)) room = new Room(opts);
     this.rooms.set(room.id, room);
     return room;
   }
