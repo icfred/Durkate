@@ -1,5 +1,6 @@
-import type { Action, Event } from "@durak/engine";
-import type { Container } from "pixi.js";
+import type { Action, Card, Event } from "@durak/engine";
+import type { Snapshot } from "@durak/protocol";
+import type { Container, Text } from "pixi.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as audio from "../audio/index.js";
 import { appStore } from "../store.js";
@@ -152,6 +153,168 @@ describe("GameScreen", () => {
 
     expect(trumpCard).toBeUndefined();
     expect(badge).toBeDefined();
+
+    screen.dispose();
+  });
+
+  it("renders Your turn — attack and the attack key hint on a fresh-deal snapshot", () => {
+    const snapshot = loadFixture("fresh");
+    const screen = new GameScreen({ snapshot, submitAction: vi.fn() });
+    screen.layout(800, 600);
+
+    const turn = findByLabel(screen, "turn-label") as Text | undefined;
+    const hint = findByLabel(screen, "key-hint") as Text | undefined;
+    expect(turn?.text).toBe("Your turn — attack");
+    expect(hint?.text).toBe("Arrow keys: select  •  Enter: attack  •  M: mute");
+
+    const myHand = findByLabel(screen, "my-hand");
+    for (const view of myHand?.children ?? []) {
+      expect((view as Container).alpha).toBe(1);
+    }
+
+    screen.dispose();
+  });
+
+  it("renders Your turn — defend and only beating cards stay full opacity", () => {
+    const snapshot = loadFixture("midround");
+    const screen = new GameScreen({ snapshot, submitAction: vi.fn() });
+    screen.layout(800, 600);
+
+    const turn = findByLabel(screen, "turn-label") as Text | undefined;
+    const hint = findByLabel(screen, "key-hint") as Text | undefined;
+    expect(turn?.text).toBe("Your turn — defend");
+    expect(hint?.text).toBe("Arrow keys: select  •  Enter: defend  •  T: take pile  •  M: mute");
+
+    const myHand = findByLabel(screen, "my-hand");
+    const alphas = (myHand?.children ?? []).map((c) => (c as Container).alpha);
+    // hand: clubs J (beats clubs 8), hearts 9 (trump beats), diamonds 13 (illegal)
+    expect(alphas[0]).toBe(1);
+    expect(alphas[1]).toBe(1);
+    expect(alphas[2]).toBeLessThan(1);
+
+    screen.dispose();
+  });
+
+  it("renders Your turn — throw in or pass when attacker has cards left after the bot defends", () => {
+    const snapshot: Snapshot = {
+      phase: "in-round",
+      playerCount: 2,
+      handCounts: [3, 5],
+      talonCount: 18,
+      trump: { suit: "hearts", rank: 6 },
+      trumpSuit: "hearts",
+      table: [
+        {
+          attack: { suit: "spades", rank: 8 },
+          defense: { suit: "spades", rank: 12 },
+        },
+      ],
+      attacker: 0,
+      defender: 1,
+      discard: [],
+      seat: 0,
+      you: {
+        seat: 0,
+        hand: [
+          { suit: "clubs", rank: 8 } as Card,
+          { suit: "diamonds", rank: 14 } as Card,
+          { suit: "hearts", rank: 11 } as Card,
+        ],
+      },
+    };
+    const screen = new GameScreen({ snapshot, submitAction: vi.fn() });
+    screen.layout(800, 600);
+
+    expect((findByLabel(screen, "turn-label") as Text | undefined)?.text).toBe(
+      "Your turn — throw in or pass",
+    );
+    expect((findByLabel(screen, "key-hint") as Text | undefined)?.text).toBe(
+      "Arrow keys: select  •  Enter: throw in  •  E: end round  •  M: mute",
+    );
+
+    const myHand = findByLabel(screen, "my-hand");
+    const alphas = (myHand?.children ?? []).map((c) => (c as Container).alpha);
+    // clubs 8 throws in (rank on table), diamonds 14 / hearts 11 do not
+    expect(alphas[0]).toBe(1);
+    expect(alphas[1]).toBeLessThan(1);
+    expect(alphas[2]).toBeLessThan(1);
+
+    screen.dispose();
+  });
+
+  it("renders Opponent's turn when defender has beaten all attacks and attacker has the next move", () => {
+    // 2-player: seat is the defender, every attack is already beaten,
+    // so the attacker is the only one who can throw in or end the round.
+    const snapshot: Snapshot = {
+      phase: "in-round",
+      playerCount: 2,
+      handCounts: [4, 4],
+      talonCount: 16,
+      trump: { suit: "hearts", rank: 6 },
+      trumpSuit: "hearts",
+      table: [
+        {
+          attack: { suit: "spades", rank: 7 },
+          defense: { suit: "spades", rank: 9 },
+        },
+      ],
+      attacker: 0,
+      defender: 1,
+      discard: [],
+      seat: 1,
+      you: {
+        seat: 1,
+        hand: [{ suit: "clubs", rank: 9 } as Card],
+      },
+    };
+    const screen = new GameScreen({ snapshot, submitAction: vi.fn() });
+    screen.layout(800, 600);
+
+    expect((findByLabel(screen, "turn-label") as Text | undefined)?.text).toBe("Opponent's turn");
+
+    screen.dispose();
+  });
+
+  it("DEFEND with a non-beating card is blocked client-side", () => {
+    const snapshot = loadFixture("midround");
+    const submitAction = vi.fn<(action: Action) => void>();
+    const screen = new GameScreen({ snapshot, submitAction });
+    screen.layout(800, 600);
+
+    // diamonds 13 cannot beat clubs 8 (different suit, not trump): no action.
+    window.dispatchEvent(press("ArrowRight"));
+    window.dispatchEvent(press("ArrowRight"));
+    window.dispatchEvent(press("Enter"));
+    expect(submitAction).not.toHaveBeenCalled();
+
+    screen.dispose();
+  });
+
+  it("renders an error toast when lastError changes", () => {
+    type ErrorListener = (error: import("../store.js").ServerError | null) => void;
+    const listeners: ErrorListener[] = [];
+    const snapshot = loadFixture("fresh");
+    const screen = new GameScreen({
+      snapshot,
+      submitAction: vi.fn(),
+      subscribeError: (listener) => {
+        listeners.push(listener);
+        return () => {
+          const idx = listeners.indexOf(listener);
+          if (idx >= 0) listeners.splice(idx, 1);
+        };
+      },
+    });
+    screen.layout(800, 600);
+
+    const banner = findByLabel(screen, "error-banner");
+    expect(banner?.visible).toBe(false);
+    for (const listener of listeners) {
+      listener({ code: "DOES_NOT_BEAT", message: "card does not beat", seq: 1 });
+    }
+    expect(banner?.visible).toBe(true);
+    for (const listener of listeners) listener(null);
+    expect(banner?.visible).toBe(false);
 
     screen.dispose();
   });

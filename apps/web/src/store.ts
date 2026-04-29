@@ -28,6 +28,13 @@ export interface AudioState {
   muted: boolean;
 }
 
+export interface ServerError {
+  code: string;
+  message: string;
+  /** Monotonic counter so subscribers can react to repeats of the same error. */
+  seq: number;
+}
+
 export interface RoomMembership {
   seats: RoomSeat[];
   you: SeatIndex | null;
@@ -55,6 +62,7 @@ export interface AppState {
   room: RoomMembership | null;
   gameover: GameOverData | undefined;
   audio: AudioState;
+  lastError: ServerError | null;
   submitAction: (action: Action) => void;
   requestRematch: () => void;
   showMenu(): void;
@@ -72,6 +80,8 @@ export interface AppState {
   setSender(sender: ClientSender | null): void;
   toggleMute(): void;
   setMuted(muted: boolean): void;
+  setError(code: string, message: string): void;
+  clearError(): void;
 }
 
 const INITIAL_CONNECTION: ConnectionState = { status: "idle", attempts: 0 };
@@ -129,6 +139,7 @@ export const appStore = createStore<AppState>((set, get) => {
     room: null,
     gameover: undefined,
     audio: { muted: readMuted() },
+    lastError: null,
     __sender: null,
     showMenu: () =>
       set({
@@ -235,6 +246,11 @@ export const appStore = createStore<AppState>((set, get) => {
       writeMuted(muted);
       set({ audio: { muted } });
     },
+    setError: (code, message) =>
+      set((state) => ({
+        lastError: { code, message, seq: (state.lastError?.seq ?? 0) + 1 },
+      })),
+    clearError: () => set({ lastError: null }),
   };
   return internal;
 });

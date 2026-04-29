@@ -1,14 +1,20 @@
-import type { Action, Card, Event, TablePair } from "@durak/engine";
+import { type Action, beats, type Card, type Event, type TablePair } from "@durak/engine";
 import type { SeatIndex, Snapshot } from "@durak/protocol";
 import { color, type Focusable, FocusManager, spacing, typography } from "@durak/ui";
-import { Container, Graphics, Text } from "pixi.js";
+import { Container, Graphics, Text, Ticker } from "pixi.js";
 import { playSfx } from "../audio/index.js";
+import { appStore, type ServerError } from "../store.js";
 import type { Screen } from "./types.js";
 
 const CARD_W = 60;
 const CARD_H = 88;
 const HAND_GAP = 6;
 const SECTION_PADDING = spacing.lg;
+
+const FLASH_DURATION_MS = 180;
+const ERROR_TOAST_MS = 3000;
+const TURN_PULSE_PERIOD_MS = 1200;
+const ILLEGAL_ALPHA = 0.45;
 
 const SUIT_GLYPH = {
   spades: "♠",
@@ -37,11 +43,16 @@ function cardLabel(card: Card): string {
   return `${RANK_GLYPH[card.rank] ?? String(card.rank)}${SUIT_GLYPH[card.suit]}`;
 }
 
+function cardKey(card: Card): string {
+  return `${card.suit}-${card.rank}`;
+}
+
 class CardView extends Container implements Focusable {
   private readonly bg: Graphics;
   private readonly cornerText: Text;
   private readonly centerText: Text;
   private focused = false;
+  private legalState: "neutral" | "legal" | "illegal" = "neutral";
   readonly card: Card | null;
   readonly faceDown: boolean;
   onActivate: (() => void) | undefined;
@@ -86,6 +97,13 @@ class CardView extends Container implements Focusable {
     this.redraw();
   }
 
+  setLegalState(state: "neutral" | "legal" | "illegal"): void {
+    if (this.legalState === state) return;
+    this.legalState = state;
+    this.alpha = state === "illegal" ? ILLEGAL_ALPHA : 1;
+    this.redraw();
+  }
+
   activate(): void {
     this.onActivate?.();
   }
@@ -93,8 +111,15 @@ class CardView extends Container implements Focusable {
   private redraw(): void {
     const isFace = this.card !== null && !this.faceDown;
     const surface = this.faceDown ? color.surfaceFocus : color.bgRaised;
-    const border = this.focused ? color.borderFocus : color.border;
-    const borderWidth = this.focused ? 3 : 2;
+    let border: number = color.border;
+    let borderWidth = 2;
+    if (this.focused) {
+      border = color.borderFocus;
+      borderWidth = 3;
+    } else if (this.legalState === "legal") {
+      border = color.accent;
+      borderWidth = 2;
+    }
     this.bg
       .clear()
       .roundRect(0, 0, CARD_W, CARD_H, 4)
@@ -109,16 +134,32 @@ class CardView extends Container implements Focusable {
   }
 }
 
+interface FlashState {
+  view: CardView;
+  pivotX: number;
+  pivotY: number;
+  elapsed: number;
+}
+
 export interface GameScreenOptions {
   snapshot: Snapshot | null;
   submitAction: (action: Action) => void;
   subscribe?: (listener: (snapshot: Snapshot | null) => void) => () => void;
   subscribeEvents?: (listener: (events: Event[]) => void) => () => void;
+  /** Test seam: subscribe to lastError changes. Defaults to appStore. */
+  subscribeError?: (listener: (error: ServerError | null) => void) => () => void;
+  /** Test seam: replaces Ticker.shared. */
+  ticker?: Ticker;
 }
 
 export class GameScreen extends Container implements Screen {
   private readonly focus = new FocusManager();
   private readonly waiting: Text;
+  private readonly turnLabel: Text;
+  private readonly keyHint: Text;
+  private readonly errorBanner: Container;
+  private readonly errorBannerBg: Graphics;
+  private readonly errorBannerText: Text;
   private readonly opponentRow: Container;
   private readonly tableRow: Container;
   private readonly leftStack: Container;
@@ -128,14 +169,24 @@ export class GameScreen extends Container implements Screen {
   private readonly extraKeysHandler: (event: KeyboardEvent) => void;
   private readonly subscribeUnsub: (() => void) | null;
   private readonly subscribeEventsUnsub: (() => void) | null;
+  private readonly subscribeErrorUnsub: (() => void) | null;
+  private readonly ticker: Ticker;
+  private readonly tickCallback: () => void;
+  private readonly flashes: FlashState[] = [];
   private snapshot: Snapshot | null;
+  private prevTableKeys: Set<string>;
+  private isInitialRender = true;
   private viewWidth = 0;
   private viewHeight = 0;
+  private turnPulseElapsed = 0;
+  private turnPulseActive = false;
+  private errorVisibleMs = 0;
 
   constructor(options: GameScreenOptions) {
     super();
     this.snapshot = options.snapshot;
     this.submitAction = options.submitAction;
+    this.prevTableKeys = new Set();
 
     this.waiting = new Text({
       text: "WAITING FOR GAME...",
@@ -147,6 +198,51 @@ export class GameScreen extends Container implements Screen {
       },
     });
     this.addChild(this.waiting);
+
+    this.turnLabel = new Text({
+      text: "",
+      style: {
+        fontFamily: typography.family,
+        fontSize: typography.size.md,
+        fontWeight: typography.weight.bold,
+        fill: color.accent,
+        letterSpacing: typography.letterSpacing.wide,
+      },
+    });
+    this.turnLabel.label = "turn-label";
+    this.turnLabel.visible = false;
+    this.addChild(this.turnLabel);
+
+    this.keyHint = new Text({
+      text: "",
+      style: {
+        fontFamily: typography.family,
+        fontSize: typography.size.xs,
+        fill: color.textMuted,
+        letterSpacing: typography.letterSpacing.wide,
+      },
+    });
+    this.keyHint.label = "key-hint";
+    this.keyHint.visible = false;
+    this.addChild(this.keyHint);
+
+    this.errorBanner = new Container();
+    this.errorBanner.label = "error-banner";
+    this.errorBanner.visible = false;
+    this.errorBannerBg = new Graphics();
+    this.errorBannerText = new Text({
+      text: "",
+      style: {
+        fontFamily: typography.family,
+        fontSize: typography.size.sm,
+        fontWeight: typography.weight.bold,
+        fill: color.text,
+        letterSpacing: typography.letterSpacing.wide,
+      },
+    });
+    this.errorBanner.addChild(this.errorBannerBg);
+    this.errorBanner.addChild(this.errorBannerText);
+    this.addChild(this.errorBanner);
 
     this.opponentRow = new Container();
     this.tableRow = new Container();
@@ -174,6 +270,18 @@ export class GameScreen extends Container implements Screen {
       ? options.subscribeEvents((events) => this.handleEvents(events))
       : null;
 
+    const subscribeError =
+      options.subscribeError ??
+      ((listener) =>
+        appStore.subscribe((next, prev) => {
+          if (next.lastError !== prev.lastError) listener(next.lastError);
+        }));
+    this.subscribeErrorUnsub = subscribeError((error) => this.handleError(error));
+
+    this.ticker = options.ticker ?? Ticker.shared;
+    this.tickCallback = () => this.onTick(this.ticker.deltaMS);
+    this.ticker.add(this.tickCallback);
+
     this.focus.attach();
     this.render();
   }
@@ -188,6 +296,9 @@ export class GameScreen extends Container implements Screen {
     window.removeEventListener("keydown", this.extraKeysHandler);
     this.subscribeUnsub?.();
     this.subscribeEventsUnsub?.();
+    this.subscribeErrorUnsub?.();
+    this.ticker.remove(this.tickCallback);
+    this.flashes.length = 0;
     this.focus.detach();
     this.focus.clear();
   }
@@ -222,12 +333,75 @@ export class GameScreen extends Container implements Screen {
     }
   }
 
+  private handleError(error: ServerError | null): void {
+    if (!error) {
+      this.errorBanner.visible = false;
+      this.errorVisibleMs = 0;
+      return;
+    }
+    this.errorBannerText.text = `${error.code}: ${error.message}`;
+    this.drawErrorBanner();
+    this.errorBanner.visible = true;
+    this.errorVisibleMs = 0;
+    this.layoutSections();
+  }
+
+  private drawErrorBanner(): void {
+    const padX = spacing.md;
+    const padY = spacing.sm;
+    const w = Math.round(this.errorBannerText.width + padX * 2);
+    const h = Math.round(this.errorBannerText.height + padY * 2);
+    this.errorBannerBg
+      .clear()
+      .roundRect(0, 0, w, h, 4)
+      .fill({ color: color.bgRaised })
+      .stroke({ color: color.accent, width: 2, alignment: 0 });
+    this.errorBannerText.x = padX;
+    this.errorBannerText.y = padY;
+  }
+
+  private onTick(deltaMs: number): void {
+    if (this.turnPulseActive) {
+      this.turnPulseElapsed = (this.turnPulseElapsed + deltaMs) % TURN_PULSE_PERIOD_MS;
+      const phase = (this.turnPulseElapsed / TURN_PULSE_PERIOD_MS) * Math.PI * 2;
+      this.turnLabel.alpha = 0.7 + 0.3 * (0.5 + 0.5 * Math.cos(phase));
+    }
+
+    if (this.flashes.length > 0) {
+      for (let i = this.flashes.length - 1; i >= 0; i -= 1) {
+        const flash = this.flashes[i];
+        if (!flash) continue;
+        flash.elapsed += deltaMs;
+        const t = Math.min(1, flash.elapsed / FLASH_DURATION_MS);
+        const eased = 1 - (1 - t) * (1 - t) * (1 - t);
+        const scale = 0.85 + 0.15 * eased;
+        flash.view.scale.set(scale);
+        flash.view.alpha = eased;
+        if (t >= 1) {
+          flash.view.scale.set(1);
+          flash.view.alpha = 1;
+          this.flashes.splice(i, 1);
+        }
+      }
+    }
+
+    if (this.errorBanner.visible) {
+      this.errorVisibleMs += deltaMs;
+      if (this.errorVisibleMs >= ERROR_TOAST_MS) {
+        this.errorBanner.visible = false;
+        this.errorVisibleMs = 0;
+        appStore.getState().clearError();
+      }
+    }
+  }
+
   private render(): void {
     this.opponentRow.removeChildren();
     this.tableRow.removeChildren();
     this.leftStack.removeChildren();
     this.rightStack.removeChildren();
     this.myHandRow.removeChildren();
+    this.flashes.length = 0;
     this.focus.clear();
 
     const snapshot = this.snapshot;
@@ -238,6 +412,11 @@ export class GameScreen extends Container implements Screen {
       this.leftStack.visible = false;
       this.rightStack.visible = false;
       this.myHandRow.visible = false;
+      this.turnLabel.visible = false;
+      this.keyHint.visible = false;
+      this.turnPulseActive = false;
+      this.prevTableKeys = new Set();
+      this.isInitialRender = true;
       return;
     }
 
@@ -247,12 +426,19 @@ export class GameScreen extends Container implements Screen {
     this.leftStack.visible = true;
     this.rightStack.visible = true;
     this.myHandRow.visible = true;
+    this.turnLabel.visible = true;
+    this.keyHint.visible = true;
 
     this.renderOpponentHand(snapshot);
     this.renderTable(snapshot);
     this.renderTalonAndTrump(snapshot);
     this.renderDiscard(snapshot);
     this.renderMyHand(snapshot);
+    this.renderTurnLabel(snapshot);
+    this.renderKeyHint(snapshot);
+
+    this.prevTableKeys = collectTableKeys(snapshot.table);
+    this.isInitialRender = false;
   }
 
   private renderOpponentHand(snapshot: Snapshot): void {
@@ -272,13 +458,28 @@ export class GameScreen extends Container implements Screen {
       attackView.x = i * pairColumnWidth;
       attackView.y = 0;
       this.tableRow.addChild(attackView);
+      this.maybeFlash(attackView, pair.attack);
       if (pair.defense) {
         const defenseView = new CardView(pair.defense);
         defenseView.x = i * pairColumnWidth + Math.round(CARD_W * 0.25);
         defenseView.y = Math.round(CARD_H * 0.4);
         this.tableRow.addChild(defenseView);
+        this.maybeFlash(defenseView, pair.defense);
       }
     });
+  }
+
+  private maybeFlash(view: CardView, card: Card): void {
+    if (this.isInitialRender) return;
+    if (this.prevTableKeys.has(cardKey(card))) return;
+    const pivotX = CARD_W / 2;
+    const pivotY = CARD_H / 2;
+    view.pivot.set(pivotX, pivotY);
+    view.x += pivotX;
+    view.y += pivotY;
+    view.scale.set(0.85);
+    view.alpha = 0;
+    this.flashes.push({ view, pivotX, pivotY, elapsed: 0 });
   }
 
   private renderTalonAndTrump(snapshot: Snapshot): void {
@@ -377,9 +578,24 @@ export class GameScreen extends Container implements Screen {
       const view = new CardView(card);
       view.x = i * (CARD_W + HAND_GAP);
       view.onActivate = () => this.tryPlayCard(card);
+      const isLegal = legalPlay(snapshot, card) !== null;
+      view.setLegalState(isLegal ? "legal" : "illegal");
       this.myHandRow.addChild(view);
       this.focus.register(view);
     });
+  }
+
+  private renderTurnLabel(snapshot: Snapshot): void {
+    const text = turnLabelFor(snapshot);
+    this.turnLabel.text = text;
+    const isMyTurn = text.startsWith("Your turn");
+    this.turnPulseActive = isMyTurn;
+    this.turnPulseElapsed = 0;
+    this.turnLabel.alpha = 1;
+  }
+
+  private renderKeyHint(snapshot: Snapshot): void {
+    this.keyHint.text = keyHintFor(snapshot);
   }
 
   private layoutSections(): void {
@@ -391,6 +607,11 @@ export class GameScreen extends Container implements Screen {
     const opW = this.opponentRow.width;
     this.opponentRow.x = Math.round((this.viewWidth - opW) / 2);
     this.opponentRow.y = SECTION_PADDING;
+
+    this.turnLabel.x = Math.round((this.viewWidth - this.turnLabel.width) / 2);
+    this.turnLabel.y = Math.round(
+      this.viewHeight / 2 - CARD_H / 2 - this.turnLabel.height - spacing.sm,
+    );
 
     const tableW = this.tableRow.width;
     this.tableRow.x = Math.round((this.viewWidth - tableW) / 2);
@@ -405,6 +626,15 @@ export class GameScreen extends Container implements Screen {
     const handW = this.myHandRow.width;
     this.myHandRow.x = Math.round((this.viewWidth - handW) / 2);
     this.myHandRow.y = this.viewHeight - SECTION_PADDING - CARD_H;
+
+    this.keyHint.x = Math.round((this.viewWidth - this.keyHint.width) / 2);
+    this.keyHint.y = this.myHandRow.y - this.keyHint.height - spacing.sm;
+
+    if (this.errorBanner.visible) {
+      const bw = this.errorBanner.width;
+      this.errorBanner.x = Math.round((this.viewWidth - bw) / 2);
+      this.errorBanner.y = this.keyHint.y - this.errorBanner.height - spacing.sm;
+    }
   }
 
   private handleKeyDown(event: KeyboardEvent): void {
@@ -434,11 +664,81 @@ function nextSeat(seat: SeatIndex, playerCount: number): SeatIndex {
   return (seat + 1) % playerCount;
 }
 
+function collectTableKeys(table: TablePair[]): Set<string> {
+  const keys = new Set<string>();
+  for (const pair of table) {
+    keys.add(cardKey(pair.attack));
+    if (pair.defense) keys.add(cardKey(pair.defense));
+  }
+  return keys;
+}
+
+function ranksOnTable(table: TablePair[]): Set<number> {
+  const ranks = new Set<number>();
+  for (const pair of table) {
+    ranks.add(pair.attack.rank);
+    if (pair.defense) ranks.add(pair.defense.rank);
+  }
+  return ranks;
+}
+
+function hasLegalThrowIn(snapshot: Snapshot): boolean {
+  const ranks = ranksOnTable(snapshot.table);
+  return snapshot.you.hand.some((card) => ranks.has(card.rank));
+}
+
+function hasLegalDefense(snapshot: Snapshot): boolean {
+  const target = snapshot.table.find((p) => !p.defense);
+  if (!target) return false;
+  return snapshot.you.hand.some((card) => beats(card, target.attack, snapshot.trumpSuit));
+}
+
+function turnLabelFor(snapshot: Snapshot): string {
+  const { seat, attacker, defender, table } = snapshot;
+  if (seat === defender) {
+    const hasUnbeaten = table.some((p) => !p.defense);
+    if (hasUnbeaten) return "Your turn — defend";
+    return "Opponent's turn";
+  }
+  if (seat === attacker) {
+    if (table.length === 0) return "Your turn — attack";
+    return "Your turn — throw in or pass";
+  }
+  return "Opponent's turn";
+}
+
+function keyHintFor(snapshot: Snapshot): string {
+  const { seat, attacker, defender, table } = snapshot;
+  const muteHint = "M: mute";
+  if (seat === attacker) {
+    if (table.length === 0) {
+      return `Arrow keys: select  •  Enter: attack  •  ${muteHint}`;
+    }
+    if (hasLegalThrowIn(snapshot)) {
+      return `Arrow keys: select  •  Enter: throw in  •  E: end round  •  ${muteHint}`;
+    }
+    return `E: end round  •  ${muteHint}`;
+  }
+  if (seat === defender) {
+    if (hasLegalDefense(snapshot)) {
+      return `Arrow keys: select  •  Enter: defend  •  T: take pile  •  ${muteHint}`;
+    }
+    if (table.some((p) => !p.defense)) {
+      return `T: take pile  •  ${muteHint}`;
+    }
+    return muteHint;
+  }
+  return muteHint;
+}
+
 function legalPlay(snapshot: Snapshot, card: Card): Action | null {
   const { seat, attacker, defender, table } = snapshot;
   if (seat === defender) {
     const targetIndex = table.findIndex((p) => !p.defense);
     if (targetIndex < 0) return null;
+    const target = table[targetIndex];
+    if (!target) return null;
+    if (!beats(card, target.attack, snapshot.trumpSuit)) return null;
     return { type: "DEFEND", by: seat, card, target: targetIndex };
   }
   if (seat === attacker) {
@@ -446,16 +746,14 @@ function legalPlay(snapshot: Snapshot, card: Card): Action | null {
       return { type: "ATTACK", by: seat, card };
     }
     // Throw-in: attacker may add a card whose rank already appears on the
-    // table (as an attack or defense). Server enforces the full rule set
-    // (max throw-ins, defender hand size cap); this is a UX gate.
-    const ranksOnTable = new Set<number>();
-    for (const pair of table) {
-      ranksOnTable.add(pair.attack.rank);
-      if (pair.defense) ranksOnTable.add(pair.defense.rank);
-    }
-    if (ranksOnTable.has(card.rank)) {
+    // table. Server enforces full rule set (max throw-ins, defender hand
+    // size cap); this is a UX gate.
+    const ranks = ranksOnTable(table);
+    if (ranks.has(card.rank)) {
       return { type: "THROW_IN", by: seat, card };
     }
   }
   return null;
 }
+
+export { keyHintFor, legalPlay, turnLabelFor };

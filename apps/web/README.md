@@ -38,6 +38,37 @@ server state over websocket and to local Zustand stores for UI state.
   opponent" state until reconnect; `gameover` is sticky and never
   reverts.
 
+## HUD
+
+`GameScreen` overlays the table with a turn-state HUD so the player always
+knows whose turn it is, what's legal, and which keys do what.
+
+- **Turn label** (above the table). Reads `Your turn — attack`, `Your
+  turn — defend`, or `Your turn — throw in or pass` when the local seat
+  is active, otherwise `Opponent's turn`. Pulses on the player's turn
+  via the shared Pixi `Ticker` (alpha wobble, ~1.2s period).
+- **Legal-play tint** on hand cards. `legalPlay(snapshot, card)` is run
+  per card on every snapshot. Legal cards stay full opacity with an
+  accent-color outline; illegal cards drop to ~0.45 alpha with no
+  outline. The defender check uses the engine `beats` helper, so cards
+  that cannot legally beat the open attack are blocked client-side
+  before the action ever leaves the client.
+- **Key-hint strip** (above the hand row). Single line of hints derived
+  from the current snapshot - lists only the keys that do something
+  right now (`Enter`, `T`, `E`, `M`, arrow keys). Hidden while the
+  snapshot is null.
+- **Error toast** (above the key-hint strip). Surfaces server-rejected
+  actions. `connection.ts onError` writes `{code, message}` into
+  `appStore.lastError`; `GameScreen` shows the banner for ~3s and then
+  calls `clearError()`. The previous behavior was a silent
+  `console.error`, which is why illegal client-side actions felt like
+  the game was frozen.
+- **New-card flash**. When a snapshot arrives with new attack/defense
+  cards on the table (vs. the previously-rendered table), the new cards
+  scale up from 0.85x to 1x and fade in over ~180ms via the shared
+  `Ticker`. No tween library; the flash list lives on the screen
+  instance.
+
 ## Sandbox
 
 - `?sandbox=game` boots straight into `GameScreen` against a hand-rolled

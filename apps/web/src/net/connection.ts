@@ -51,6 +51,7 @@ export function createConnectionController(
     },
     onError: (msg) => {
       console.error("[ws] server error", msg.code, msg.message);
+      store.getState().setError(msg.code, msg.message);
     },
     onRoomState: (msg) => {
       store.getState().setRoomMembership({ seats: msg.seats, you: msg.you });
