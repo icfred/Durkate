@@ -1,4 +1,4 @@
-import { type Action, RANKS, SUITS } from "@durak/engine";
+import { type Action, type Event, RANKS, SUITS } from "@durak/engine";
 import { z } from "zod";
 import type { ClientMessage, JoinRoom, LeaveRoom, RequestRematch, SubmitAction } from "./client";
 import type { ErrorMessage, RoomStateMessage, ServerMessage } from "./server";
@@ -122,6 +122,15 @@ const eventSchema = z.discriminatedUnion("type", [
     attacker: z.number().int().nonnegative(),
     defender: z.number().int().nonnegative(),
   }),
+  z.object({
+    type: z.literal("TALON_DRAWN"),
+    by: z.number().int().nonnegative(),
+    cards: z.array(cardSchema),
+  }),
+  z.object({
+    type: z.literal("GAME_OVER"),
+    durak: z.number().int().nonnegative().nullable(),
+  }),
 ]);
 
 export const snapshotMessageSchema = z.object({
@@ -183,6 +192,10 @@ const _roomStateMessageParity: AssertEqual<
   z.infer<typeof roomStateMessageSchema>,
   RoomStateMessage
 > = true;
+// Optional fields on Event (CARD_PLAYED.target) defeat structural equality
+// under exactOptionalPropertyTypes. Asserting the discriminator union is
+// exhaustive catches missing variants without tripping on optionality.
+const _eventTypeParity: AssertEqual<z.infer<typeof eventSchema>["type"], Event["type"]> = true;
 void _actionParity;
 void _joinRoomParity;
 void _leaveRoomParity;
@@ -192,3 +205,4 @@ void _clientParity;
 void _youViewParity;
 void _errorMessageParity;
 void _roomStateMessageParity;
+void _eventTypeParity;

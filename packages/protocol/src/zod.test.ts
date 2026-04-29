@@ -176,6 +176,9 @@ describe("serverMessageSchema round-trip", () => {
           attacker: 1,
           defender: 0,
         },
+        { type: "TALON_DRAWN", by: 0, cards: [ACE_OF_SPADES] },
+        { type: "GAME_OVER", durak: 1 },
+        { type: "GAME_OVER", durak: null },
       ],
     };
     expect(serverMessageSchema.parse(msg)).toEqual(msg);
