@@ -78,4 +78,8 @@ export class Room {
   clientForSeat(seat: SeatIndex): ClientHandle | undefined {
     return this.clients.get(seat);
   }
+
+  publicSeats(): { name: string | null }[] {
+    return this.seats.map((s) => ({ name: s ? s.name : null }));
+  }
 }

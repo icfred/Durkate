@@ -12,7 +12,7 @@ describe("buildApp", () => {
   });
 
   it("GET /health returns 200 { ok: true }", async () => {
-    const app = await buildApp();
+    const { app } = await buildApp();
     close = () => app.close();
     const res = await app.inject({ method: "GET", url: "/health" });
     expect(res.statusCode).toBe(200);
