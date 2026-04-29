@@ -72,6 +72,60 @@ describe("appStore", () => {
     appStore.getState().setConnectionStatus("open", { attempts: 0 });
     expect(appStore.getState().connection).toEqual({ status: "open", attempts: 0 });
   });
+
+  it("transitions to gameover with the supplied data", () => {
+    appStore.getState().showGameOver({ youSeat: 0, durak: 1 });
+    const state = appStore.getState();
+    expect(state.phase).toBe("gameover");
+    expect(state.gameover).toEqual({ youSeat: 0, durak: 1 });
+  });
+
+  it("clears gameover data when returning to the menu", () => {
+    appStore.getState().showGameOver({ youSeat: 0, durak: null });
+    appStore.getState().showMenu();
+    const state = appStore.getState();
+    expect(state.phase).toBe("menu");
+    expect(state.gameover).toBeUndefined();
+  });
+});
+
+describe("appStore.requestRematch", () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    appStore.getState().setSender(null);
+    appStore.getState().setConnectionStatus("idle", { attempts: 0 });
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+    appStore.getState().setSender(null);
+    appStore.getState().setConnectionStatus("idle", { attempts: 0 });
+  });
+
+  it("forwards a RequestRematch through the registered sender when open", () => {
+    const sent: unknown[] = [];
+    appStore.getState().setSender((msg) => sent.push(msg));
+    appStore.getState().setConnectionStatus("open", { attempts: 0 });
+    appStore.getState().requestRematch();
+    expect(sent).toEqual([{ type: "RequestRematch" }]);
+  });
+
+  it("drops with a warn when the connection is not open", () => {
+    const sent: unknown[] = [];
+    appStore.getState().setSender((msg) => sent.push(msg));
+    appStore.getState().setConnectionStatus("connecting", { attempts: 0 });
+    appStore.getState().requestRematch();
+    expect(sent).toEqual([]);
+    expect(warn).toHaveBeenCalledOnce();
+  });
+
+  it("drops with a warn when no sender is registered", () => {
+    appStore.getState().setConnectionStatus("open", { attempts: 0 });
+    appStore.getState().requestRematch();
+    expect(warn).toHaveBeenCalledOnce();
+  });
 });
 
 describe("appStore.submitAction", () => {

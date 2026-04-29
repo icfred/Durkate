@@ -18,6 +18,12 @@ export interface ConnectionState {
 
 export type ClientSender = (msg: ClientMessage) => void;
 
+export interface GameOverData {
+  youSeat: number;
+  durak: number | null;
+  seatNames?: (string | null)[];
+}
+
 export interface AppState {
   phase: Phase;
   mode: Mode | undefined;
@@ -25,10 +31,13 @@ export interface AppState {
   snapshot: Snapshot | null;
   events: Event[];
   connection: ConnectionState;
+  gameover: GameOverData | undefined;
   submitAction: (action: Action) => void;
+  requestRematch: () => void;
   showMenu(): void;
   showLobby(args: { mode: Mode; roomCode: string }): void;
   showGame(args?: { mode?: Mode; roomCode?: string }): void;
+  showGameOver(data: GameOverData): void;
   setSnapshot(snapshot: Snapshot | null): void;
   appendEvents(events: Event[]): void;
   setConnectionStatus(status: ConnectionStatus, info: { attempts: number; error?: string }): void;
@@ -49,16 +58,25 @@ export const appStore = createStore<AppState>((set, get) => {
     snapshot: null,
     events: [],
     connection: INITIAL_CONNECTION,
+    gameover: undefined,
     __sender: null,
     showMenu: () =>
-      set({ phase: "menu", mode: undefined, roomCode: undefined, snapshot: null, events: [] }),
-    showLobby: ({ mode, roomCode }) => set({ phase: "lobby", mode, roomCode }),
+      set({
+        phase: "menu",
+        mode: undefined,
+        roomCode: undefined,
+        snapshot: null,
+        events: [],
+        gameover: undefined,
+      }),
+    showLobby: ({ mode, roomCode }) => set({ phase: "lobby", mode, roomCode, gameover: undefined }),
     showGame: (args) =>
       set((state) => ({
         phase: "game",
         mode: args?.mode ?? state.mode,
         roomCode: args?.roomCode ?? state.roomCode,
       })),
+    showGameOver: (data) => set({ phase: "gameover", gameover: data }),
     setSnapshot: (snapshot) => set({ snapshot }),
     appendEvents: (events) =>
       set((state) => {
@@ -84,6 +102,14 @@ export const appStore = createStore<AppState>((set, get) => {
         return;
       }
       state.__sender({ type: "SubmitAction", action });
+    },
+    requestRematch: () => {
+      const state = get() as InternalState;
+      if (state.connection.status !== "open" || !state.__sender) {
+        console.warn("[store] dropped requestRematch; not connected");
+        return;
+      }
+      state.__sender({ type: "RequestRematch" });
     },
   };
   return internal;
