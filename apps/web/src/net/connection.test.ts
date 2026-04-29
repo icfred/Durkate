@@ -275,6 +275,7 @@ function makeSnapshot(youSeat: 0 | 1): Snapshot {
     handCounts: [6, 6],
     talonCount: 22,
     trump: { suit: "hearts", rank: 6 },
+    trumpSuit: "hearts",
     table: [],
     attacker: 0,
     defender: 1,

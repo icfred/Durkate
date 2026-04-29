@@ -134,6 +134,7 @@ const SNAPSHOT_FRAME: SnapshotMessage = {
     handCounts: [6, 6],
     talonCount: 23,
     trump: ACE_OF_SPADES,
+    trumpSuit: "spades",
     table: [],
     attacker: 0,
     defender: 1,

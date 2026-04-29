@@ -1,10 +1,17 @@
 import type { Snapshot } from "@durak/protocol";
 
-export type FixtureName = "fresh" | "midround" | "takepile" | "gameover";
+export type FixtureName = "fresh" | "midround" | "takepile" | "trumpdrawn" | "gameover";
 
-export const FIXTURE_NAMES: readonly FixtureName[] = ["fresh", "midround", "takepile", "gameover"];
+export const FIXTURE_NAMES: readonly FixtureName[] = [
+  "fresh",
+  "midround",
+  "takepile",
+  "trumpdrawn",
+  "gameover",
+];
 
 const trump = { suit: "hearts", rank: 6 } as const;
+const trumpSuit = "hearts" as const;
 
 const fresh: Snapshot = {
   phase: "in-round",
@@ -12,6 +19,7 @@ const fresh: Snapshot = {
   handCounts: [6, 6],
   talonCount: 23,
   trump,
+  trumpSuit,
   table: [],
   attacker: 0,
   defender: 1,
@@ -36,6 +44,7 @@ const midround: Snapshot = {
   handCounts: [4, 3],
   talonCount: 18,
   trump,
+  trumpSuit,
   table: [
     {
       attack: { suit: "spades", rank: 8 },
@@ -65,6 +74,7 @@ const takepile: Snapshot = {
   handCounts: [3, 2],
   talonCount: 12,
   trump,
+  trumpSuit,
   table: [
     { attack: { suit: "diamonds", rank: 6 } },
     { attack: { suit: "clubs", rank: 6 } },
@@ -86,12 +96,39 @@ const takepile: Snapshot = {
   },
 };
 
+const trumpdrawn: Snapshot = {
+  phase: "in-round",
+  playerCount: 2,
+  handCounts: [4, 4],
+  talonCount: 0,
+  trump: null,
+  trumpSuit,
+  table: [],
+  attacker: 0,
+  defender: 1,
+  discard: [
+    { suit: "spades", rank: 7 },
+    { suit: "clubs", rank: 9 },
+  ],
+  seat: 0,
+  you: {
+    seat: 0,
+    hand: [
+      { suit: "spades", rank: 10 },
+      { suit: "clubs", rank: 11 },
+      { suit: "diamonds", rank: 12 },
+      { suit: "hearts", rank: 14 },
+    ],
+  },
+};
+
 const gameover: Snapshot = {
   phase: "in-round",
   playerCount: 2,
   handCounts: [0, 1],
   talonCount: 0,
   trump,
+  trumpSuit,
   table: [],
   attacker: 1,
   defender: 0,
@@ -112,6 +149,7 @@ const FIXTURES: Record<FixtureName, Snapshot> = {
   fresh,
   midround,
   takepile,
+  trumpdrawn,
   gameover,
 };
 

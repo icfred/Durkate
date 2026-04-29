@@ -116,6 +116,46 @@ describe("GameScreen", () => {
     screen.dispose();
   });
 
+  it("renders the trump card under the talon when trump is face-up", () => {
+    const snapshot = loadFixture("fresh");
+    const screen = new GameScreen({ snapshot, submitAction: vi.fn() });
+    screen.layout(800, 600);
+
+    const talon = findByLabel(screen, "talon");
+    const trumpCard = talon?.children.find((c) => (c as Container).label === "trump-card") as
+      | Container
+      | undefined;
+    const badge = talon?.children.find((c) => (c as Container).label === "trump-badge") as
+      | Container
+      | undefined;
+
+    expect(trumpCard).toBeDefined();
+    expect(badge).toBeUndefined();
+
+    screen.dispose();
+  });
+
+  it("renders a trump-suit badge in place of the card once the trump has been drawn", () => {
+    const snapshot = loadFixture("trumpdrawn");
+    expect(snapshot.trump).toBeNull();
+
+    const screen = new GameScreen({ snapshot, submitAction: vi.fn() });
+    screen.layout(800, 600);
+
+    const talon = findByLabel(screen, "talon");
+    const trumpCard = talon?.children.find((c) => (c as Container).label === "trump-card") as
+      | Container
+      | undefined;
+    const badge = talon?.children.find((c) => (c as Container).label === "trump-badge") as
+      | Container
+      | undefined;
+
+    expect(trumpCard).toBeUndefined();
+    expect(badge).toBeDefined();
+
+    screen.dispose();
+  });
+
   it("re-renders when subscribe pushes a new snapshot", () => {
     const listeners: ((s: import("@durak/protocol").Snapshot | null) => void)[] = [];
     const screen = new GameScreen({

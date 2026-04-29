@@ -18,6 +18,24 @@ function makeSnapshot(): Snapshot {
     handCounts: [6, 6],
     talonCount: 23,
     trump: ACE_OF_SPADES,
+    trumpSuit: "spades",
+    table: [],
+    attacker: 0,
+    defender: 1,
+    discard: [],
+    seat: 0,
+    you: { seat: 0, hand: [ACE_OF_SPADES] },
+  };
+}
+
+function makeTrumpDrawnSnapshot(): Snapshot {
+  return {
+    phase: "in-round",
+    playerCount: 2,
+    handCounts: [4, 4],
+    talonCount: 0,
+    trump: null,
+    trumpSuit: "hearts",
     table: [],
     attacker: 0,
     defender: 1,
@@ -129,6 +147,11 @@ describe("serverMessageSchema round-trip", () => {
     expect(serverMessageSchema.parse(msg)).toEqual(msg);
   });
 
+  it("accepts Snapshot with trump drawn (trump: null, trumpSuit set)", () => {
+    const msg: SnapshotMessage = { type: "Snapshot", snapshot: makeTrumpDrawnSnapshot() };
+    expect(serverMessageSchema.parse(msg)).toEqual(msg);
+  });
+
   it("accepts Events with engine Event union", () => {
     const msg: EventsMessage = {
       type: "Events",
@@ -189,6 +212,16 @@ describe("serverMessageSchema rejects malformed input", () => {
 
   it("rejects Snapshot with missing trump", () => {
     const bad = { type: "Snapshot", snapshot: { ...makeSnapshot(), trump: undefined } };
+    expect(() => serverMessageSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects Snapshot with missing trumpSuit", () => {
+    const bad = { type: "Snapshot", snapshot: { ...makeSnapshot(), trumpSuit: undefined } };
+    expect(() => serverMessageSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects Snapshot with invalid trumpSuit", () => {
+    const bad = { type: "Snapshot", snapshot: { ...makeSnapshot(), trumpSuit: "stars" } };
     expect(() => serverMessageSchema.parse(bad)).toThrow();
   });
 

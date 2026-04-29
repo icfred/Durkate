@@ -16,7 +16,10 @@ validate inbound messages; client uses TS types for outbound.
 - **Snapshot**: per-seat redacted view of in-round state. Mirrors the
   engine `InRoundState` minus `talon` contents (only `talonCount`),
   minus opponent hand contents (only `handCounts`), minus `rng`. Adds
-  `seat` and `you: { hand, seat }`.
+  `seat` and `you: { hand, seat }`. `trump` is the visible trump card
+  under the talon and turns to `null` once it has been drawn into a
+  hand. `trumpSuit` always carries the trump suit so renderers and
+  beats checks have an answer either way.
 
 ## Public API
 

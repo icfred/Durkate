@@ -1,4 +1,4 @@
-import type { Card, TablePair } from "@durak/engine";
+import type { Card, Suit, TablePair } from "@durak/engine";
 
 export type SeatIndex = number;
 
@@ -12,7 +12,11 @@ export interface Snapshot {
   playerCount: number;
   handCounts: number[];
   talonCount: number;
-  trump: Card;
+  // The visible trump card under the talon, or `null` once it has been
+  // drawn into a hand. `trumpSuit` always carries the suit so renderers
+  // and `beats` checks have an answer either way.
+  trump: Card | null;
+  trumpSuit: Suit;
   table: TablePair[];
   attacker: SeatIndex;
   defender: SeatIndex;
