@@ -441,8 +441,21 @@ function legalPlay(snapshot: Snapshot, card: Card): Action | null {
     if (targetIndex < 0) return null;
     return { type: "DEFEND", by: seat, card, target: targetIndex };
   }
-  if (seat === attacker && table.length === 0) {
-    return { type: "ATTACK", by: seat, card };
+  if (seat === attacker) {
+    if (table.length === 0) {
+      return { type: "ATTACK", by: seat, card };
+    }
+    // Throw-in: attacker may add a card whose rank already appears on the
+    // table (as an attack or defense). Server enforces the full rule set
+    // (max throw-ins, defender hand size cap); this is a UX gate.
+    const ranksOnTable = new Set<number>();
+    for (const pair of table) {
+      ranksOnTable.add(pair.attack.rank);
+      if (pair.defense) ranksOnTable.add(pair.defense.rank);
+    }
+    if (ranksOnTable.has(card.rank)) {
+      return { type: "THROW_IN", by: seat, card };
+    }
   }
   return null;
 }
