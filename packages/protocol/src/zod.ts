@@ -1,8 +1,41 @@
-import type { Action } from "@durak/engine";
+import { type Action, RANKS, SUITS } from "@durak/engine";
 import { z } from "zod";
 import type { ClientMessage, JoinRoom, LeaveRoom, RequestRematch, SubmitAction } from "./client";
 
-const actionSchema = z.discriminatedUnion("type", [z.object({ type: z.literal("START_GAME") })]);
+const cardSchema = z
+  .object({
+    suit: z.enum(SUITS),
+    rank: z.union(
+      RANKS.map((r) => z.literal(r)) as [
+        z.ZodLiteral<6>,
+        z.ZodLiteral<7>,
+        z.ZodLiteral<8>,
+        z.ZodLiteral<9>,
+        z.ZodLiteral<10>,
+        z.ZodLiteral<11>,
+        z.ZodLiteral<12>,
+        z.ZodLiteral<13>,
+        z.ZodLiteral<14>,
+      ],
+    ),
+  })
+  .readonly();
+
+const seatSchema = z.number().int().nonnegative();
+
+const actionSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("START_GAME") }),
+  z.object({ type: z.literal("ATTACK"), by: seatSchema, card: cardSchema }),
+  z.object({
+    type: z.literal("DEFEND"),
+    by: seatSchema,
+    card: cardSchema,
+    target: z.number().int().nonnegative(),
+  }),
+  z.object({ type: z.literal("THROW_IN"), by: seatSchema, card: cardSchema }),
+  z.object({ type: z.literal("TAKE_PILE"), by: seatSchema }),
+  z.object({ type: z.literal("END_ROUND"), by: seatSchema }),
+]);
 
 export const joinRoomSchema = z.object({
   type: z.literal("JoinRoom"),
