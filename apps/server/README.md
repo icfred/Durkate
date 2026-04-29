@@ -21,12 +21,19 @@ redacted snapshots.
 
 This is an app, not a library. Entry point: `src/main.ts`.
 
-HTTP routes:
+Listens on `PORT` (default 3001), `HOST` (default 0.0.0.0).
+
+Current routes (skeleton):
+- `GET /health` - liveness probe, returns `{ ok: true }`
+- `GET /ws` - WebSocket upgrade. Echoes every inbound message back as
+  `{ type: "ECHO", payload }`. JSON payloads are parsed; non-JSON is
+  echoed as a string.
+
+Planned routes (not yet implemented):
 - `POST /rooms` - create a room, returns roomId + seat tokens
 - `GET /rooms/:id` - room metadata (lobby state)
-
-WebSocket:
-- `GET /ws/:roomId?token=...` - join a seat in a room
+- `GET /ws/:roomId?token=...` - join a seat in a room (replaces the
+  skeleton `/ws`)
 
 ## Invariants
 
