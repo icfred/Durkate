@@ -25,6 +25,10 @@ export interface Gateway {
   send(roomId: string, seat: SeatIndex, msg: ServerMessage): void;
 }
 
+export interface GatewayOptions {
+  readonly allowedOrigins: readonly string[];
+}
+
 function sendMessage(socket: WebSocket, msg: ServerMessage): void {
   socket.send(JSON.stringify(msg));
 }
@@ -43,9 +47,11 @@ function parseFailureMessage(err: unknown): string {
 export async function registerGateway(
   app: FastifyInstance,
   registry: RoomRegistry,
+  options: GatewayOptions,
 ): Promise<Gateway> {
   await app.register(websocket);
   const sessions = new SessionMap();
+  const allowedOrigins = new Set(options.allowedOrigins);
 
   function broadcastRoomState(room: Room): void {
     const seats = room.publicSeats();
@@ -70,7 +76,17 @@ export async function registerGateway(
 
   app.get<{ Params: JoinParams; Querystring: JoinQuery }>(
     "/ws/:roomId",
-    { websocket: true },
+    {
+      websocket: true,
+      preValidation: async (req, reply) => {
+        if (allowedOrigins.size === 0) return;
+        const origin = req.headers.origin;
+        if (typeof origin !== "string" || !allowedOrigins.has(origin)) {
+          app.log.warn({ origin }, "ws: origin rejected");
+          await reply.code(403).send({ error: "origin not allowed" });
+        }
+      },
+    },
     (socket, req) => {
       const { roomId } = req.params;
       const { token } = req.query;

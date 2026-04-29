@@ -126,7 +126,60 @@ This is an app, not a library. Entry point: `src/main.ts`.
 - Placeholder room codes use `Math.random`. The no-`Math.random` rule
   applies to `packages/engine` only, not the client.
 
+## Deployment
+
+Hosted on [Cloudflare Pages](https://pages.cloudflare.com) as project
+`durak-web`. See `docs/decisions/0007-hosting.md` for why.
+
+### Pieces
+
+- `apps/web/public/_redirects` - SPA fallback so any path serves
+  `index.html` (room codes use hash routing, but this guards against
+  future path routes too).
+- `apps/web/public/_headers` - long cache for hashed `/assets/*`, basic
+  security headers everywhere else.
+- `.github/workflows/ci.yml` - the `deploy-web` job runs on push to
+  `main` after `check` passes. It builds with `VITE_WS_URL` baked in,
+  then `wrangler pages deploy apps/web/dist`.
+
+### Env / variables
+
+- `VITE_WS_URL` (build-time) - the wss URL of the deployed server.
+  Stored as a **GitHub repo variable** (`vars.WEB_WS_URL`), not a
+  secret, because it ends up in the public JS bundle. Example:
+  `wss://durak-server.fly.dev`. If unset, `main.ts` falls back to
+  `${ws|wss}://${location.host}/ws` (matches dev when the server is
+  reverse-proxied).
+- GitHub repo secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`
+  (used by the CI deploy job).
+
+### First-time provisioning
+
+```
+wrangler login
+wrangler pages project create durak-web --production-branch main
+```
+
+Set `WEB_WS_URL` as a repo variable in GitHub
+(Settings → Secrets and variables → Actions → Variables).
+
+After that, every push to `main` redeploys via the GitHub Actions
+`deploy-web` job.
+
+### Rollback
+
+Cloudflare Pages keeps every deployment. To roll back:
+
+1. Open the Pages project in the Cloudflare dashboard.
+2. Find a known-good deployment in the history.
+3. Click "Rollback to this deployment".
+
+Equivalent CLI: `wrangler pages deployment list --project-name durak-web`
+to find an ID, then redeploy via the dashboard. (The CLI does not
+expose a one-shot rollback verb at the time of writing.)
+
 ## Related ADRs
 
 - ADR-0004: pure PixiJS client, no React
 - ADR-0005: authoritative server with redacted snapshots and events
+- ADR-0007: public hosting on Fly.io and Cloudflare Pages

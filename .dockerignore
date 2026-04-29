@@ -1,0 +1,17 @@
+**/node_modules
+**/dist
+**/dist-bundle
+**/coverage
+**/.turbo
+**/.cache
+**/.vite
+**/*.log
+**/*.tsbuildinfo
+.git
+.github
+.husky
+docs
+CLAUDE.md
+PROJECT_CONTEXT.md
+README.md
+**/.env*

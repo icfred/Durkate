@@ -2,7 +2,7 @@ import type { AddressInfo } from "node:net";
 import type { ErrorMessage, RoomStateMessage, ServerMessage } from "@durak/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
-import { type BuiltApp, buildApp } from "./app.js";
+import { type BuildAppOptions, type BuiltApp, buildApp } from "./app.js";
 
 let built: BuiltApp | null = null;
 
@@ -13,8 +13,10 @@ afterEach(async () => {
   }
 });
 
-async function start(): Promise<{ wsUrl: (path: string) => string; built: BuiltApp }> {
-  built = await buildApp();
+async function start(
+  options: BuildAppOptions = {},
+): Promise<{ wsUrl: (path: string) => string; built: BuiltApp }> {
+  built = await buildApp(options);
   await built.app.listen({ port: 0, host: "127.0.0.1" });
   const addr = built.app.server.address() as AddressInfo;
   const wsUrl = (path: string) => `ws://127.0.0.1:${addr.port}${path}`;
@@ -169,6 +171,38 @@ describe("gateway /ws/:roomId", () => {
       expect(msg.snapshot.seat).toBe(0);
       expect(msg.snapshot.you.seat).toBe(0);
     }
+
+    c.close();
+    await nextClose(c);
+  });
+
+  it("rejects ws upgrade from a disallowed origin when the allowlist is set", async () => {
+    const { wsUrl, built } = await start({ allowedOrigins: ["https://app.example.com"] });
+    const room = built.registry.create();
+    const a = room.addPlayer("alice");
+
+    const c = new WebSocket(wsUrl(`/ws/${room.id}?token=${a.token}`), {
+      headers: { Origin: "https://evil.example.com" },
+    });
+    const closed = nextClose(c);
+    const errored = new Promise<Error>((resolve) => c.once("error", resolve));
+    const err = await errored;
+    expect(err.message).toMatch(/403/);
+    await closed;
+  });
+
+  it("accepts ws upgrade from an allowed origin when the allowlist is set", async () => {
+    const { wsUrl, built } = await start({ allowedOrigins: ["https://app.example.com"] });
+    const room = built.registry.create();
+    const a = room.addPlayer("alice");
+
+    const c = new WebSocket(wsUrl(`/ws/${room.id}?token=${a.token}`), {
+      headers: { Origin: "https://app.example.com" },
+    });
+    const initialState = nextMessage(c);
+    await nextOpen(c);
+    const state = (await initialState) as RoomStateMessage;
+    expect(state.type).toBe("RoomState");
 
     c.close();
     await nextClose(c);
