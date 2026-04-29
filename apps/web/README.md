@@ -27,17 +27,22 @@ server state over websocket and to local Zustand stores for UI state.
 - **Connection**: `createConnectionController` subscribes to
   `appStore.phase` and opens a single websocket while the user is in
   `lobby` or `game`; closing on return to `menu` or `gameover`. Status
-  drives `appStore.connection`; `submitAction` flows through the
-  controller-registered sender.
+  drives `appStore.connection`; `submitAction` and `requestRematch`
+  flow through the controller-registered sender.
 
 ## Sandbox
 
-`?sandbox=game` boots straight into `GameScreen` against a hand-rolled
-fixture `Snapshot`, bypassing the lobby. Pick a fixture with
-`?sandbox=game&fixture=<name>`; valid names are `fresh`, `midround`,
-`takepile`, `gameover`. Defaults to `fresh`. Useful for visual review
-without a server. Actions go to the no-op `submitAction` (logs a warning
-in the console) until the ws-client is wired.
+- `?sandbox=game` boots straight into `GameScreen` against a hand-rolled
+  fixture `Snapshot`, bypassing the lobby. Pick a fixture with
+  `?sandbox=game&fixture=<name>`; valid names are `fresh`, `midround`,
+  `takepile`, `gameover`. Defaults to `fresh`.
+- `?sandbox=gameover&fixture=won|lost|draw` boots straight into
+  `GameOverScreen` with a fixture from `src/fixtures/gameOverFixtures.ts`.
+  Lets a reviewer eyeball each outcome without playing a full round.
+- `?sandbox=skins` boots the cosmetic skin spike sandbox.
+
+Sandbox actions go to `submitAction` / `requestRematch` which drop with
+a warn while the connection is not open.
 
 ## Boot flow
 
@@ -45,13 +50,15 @@ in the console) until the ws-client is wired.
 
 1. Loads JetBrains Mono and waits for the regular and bold weights.
 2. Creates the Pixi `Application` against `#app`.
-3. Parses `window.location.hash` for `#room=…`. If present, transitions
-   the store to `lobby` before the router starts.
+3. Parses `window.location.search` for a `?sandbox=…` fixture and
+   `window.location.hash` for `#room=…`. If present, transitions the
+   store to the matching phase before the router starts.
 4. Builds the `ScreenRouter` with a factory keyed on `state.phase`:
    - `menu` -> `MainMenuScreen`
    - `lobby` -> `LobbyScreen`
    - `game` -> `GameScreen` (renders `appStore.snapshot`)
-   - `gameover` -> `PlaceholderScreen` (rematch UI is a later ticket).
+   - `gameover` -> `GameOverScreen` with `state.gameover` data and
+     rematch / main-menu callbacks.
 5. Calls `router.setView(width, height)` and `router.start()`. Re-runs
    `setView` on Pixi `resize`.
 
@@ -75,11 +82,13 @@ in the console) until the ws-client is wired.
 - `src/net/connection.ts` reconciles store phase with an active
   connection: lobby/game opens (or no-ops if already open for the same
   room), menu/gameover closes. It also `setSender`-s the wsClient's
-  `send` so `appStore.submitAction` can call it.
-- **Drop vs queue**: actions submitted while `connection.status !==
-  "open"` are dropped with a `console.warn`. We don't queue because the
-  server is authoritative and a stale action replayed across a
-  reconnect would race with whatever state the server already shipped.
+  `send` so `appStore.submitAction` and `appStore.requestRematch` can
+  call it.
+- **Drop vs queue**: `submitAction` and `requestRematch` calls made
+  while `connection.status !== "open"` are dropped with a `console.warn`.
+  We don't queue because the server is authoritative and a stale
+  action replayed across a reconnect would race with whatever state
+  the server already shipped.
 - **Auth token**: stubbed as `""` until the server lands a real session
   endpoint. The wsClient still passes the field; the server is free to
   ignore it for now.
@@ -110,9 +119,9 @@ This is an app, not a library. Entry point: `src/main.ts`.
   `@durak/ui`.
 - All keyboard nav goes through the per-screen `FocusManager`.
 - Game state changes never come from local logic - always from server
-  messages. The store's `submitAction` is the only path; it forwards
-  through the active wsClient sender or drops with a warn when the
-  socket is not `open`.
+  messages. The store's `submitAction` and `requestRematch` are the
+  only outbound paths; both forward through the active wsClient sender
+  or drop with a warn when the socket is not `open`.
 - `appStore` is a `zustand/vanilla` store. Pixi screens subscribe via
   `appStore.subscribe()`; there is no React in the bundle.
 

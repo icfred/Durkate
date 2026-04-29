@@ -3,16 +3,23 @@ import "@fontsource/jetbrains-mono/700.css";
 
 import { color, typography } from "@durak/ui";
 import { Application } from "pixi.js";
+import { gameOverFixture } from "./fixtures/gameOverFixtures.js";
 import { createConnectionController } from "./net/connection.js";
 import { SkinSandboxScreen } from "./sandbox/skins/SkinSandboxScreen.js";
 import { ScreenRouter } from "./screenRouter.js";
+import { GameOverScreen } from "./screens/GameOverScreen.js";
 import { GameScreen } from "./screens/GameScreen.js";
 import { LobbyScreen } from "./screens/LobbyScreen.js";
 import { MainMenuScreen } from "./screens/MainMenuScreen.js";
-import { PlaceholderScreen } from "./screens/PlaceholderScreen.js";
 import { type FixtureName, isFixtureName, loadFixture } from "./screens/sandboxFixtures.js";
 import type { Screen } from "./screens/types.js";
-import { type AppState, appStore, generateRoomCode, parseHashRoom } from "./store.js";
+import {
+  type AppState,
+  appStore,
+  type GameOverData,
+  generateRoomCode,
+  parseHashRoom,
+} from "./store.js";
 
 const mountId = "app";
 const mount = document.getElementById(mountId);
@@ -71,7 +78,11 @@ if (sandboxParam === "skins") {
               }),
           });
         case "gameover":
-          return new PlaceholderScreen("GAME OVER");
+          return new GameOverScreen({
+            data: state.gameover ?? { youSeat: 0, durak: null },
+            onRematch: () => appStore.getState().requestRematch(),
+            onMainMenu: () => appStore.getState().showMenu(),
+          });
       }
     },
   });
@@ -96,6 +107,12 @@ function applyBootRouting(): void {
     const fixture: FixtureName = isFixtureName(requested) ? requested : "fresh";
     const snapshot = loadFixture(fixture);
     appStore.setState({ phase: "game", snapshot });
+    return;
+  }
+  if (sandbox === "gameover") {
+    const fixtureName = params.get("fixture") ?? "won";
+    const data: GameOverData = gameOverFixture(fixtureName);
+    appStore.getState().showGameOver(data);
     return;
   }
   const initialRoom = parseHashRoom(window.location.hash);
