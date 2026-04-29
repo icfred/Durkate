@@ -1,21 +1,60 @@
 import { buildDeck, type Card, type Suit } from "./cards";
 import { shuffle } from "./deck";
 import { rngFromState } from "./rng";
-import type { InRoundState, State } from "./state";
+import type { InRoundState, State, TablePair } from "./state";
 
-export type Action = { type: "START_GAME" };
+export type Action =
+  | { type: "START_GAME" }
+  | { type: "ATTACK"; by: number; card: Card }
+  | { type: "DEFEND"; by: number; card: Card; target: number }
+  | { type: "THROW_IN"; by: number; card: Card };
 
-export type Event = { type: "GAME_STARTED"; trump: Card; attacker: number };
+export type RejectReason =
+  | "WRONG_PHASE"
+  | "INVALID_SEAT"
+  | "NOT_ATTACKER"
+  | "NOT_DEFENDER"
+  | "DEFENDER_CANNOT_ATTACK"
+  | "CARD_NOT_IN_HAND"
+  | "TABLE_NOT_EMPTY"
+  | "TABLE_EMPTY"
+  | "RANK_NOT_ON_TABLE"
+  | "ATTACK_LIMIT_REACHED"
+  | "DEFENDER_OVERWHELMED"
+  | "INVALID_TARGET"
+  | "TARGET_ALREADY_DEFENDED"
+  | "DOES_NOT_BEAT";
 
-export interface StepResult {
-  state: State;
-  events: Event[];
-}
+export type Event =
+  | { type: "GAME_STARTED"; trump: Card; attacker: number }
+  | {
+      type: "CARD_PLAYED";
+      by: number;
+      role: "ATTACK" | "DEFEND" | "THROW_IN";
+      card: Card;
+      target?: number;
+    };
+
+export type StepResult =
+  | { ok: true; state: State; events: Event[] }
+  | { ok: false; reason: RejectReason };
+
+const MAX_ATTACKS_PER_BOUT = 6;
 
 export function step(state: State, action: Action): StepResult {
   switch (action.type) {
     case "START_GAME":
       return startGame(state);
+    case "ATTACK":
+      return attack(state, action);
+    case "DEFEND":
+      return defend(state, action);
+    case "THROW_IN":
+      return throwIn(state, action);
+    default: {
+      action satisfies never;
+      throw new Error(`unknown action: ${(action as { type: string }).type}`);
+    }
   }
 }
 
@@ -52,6 +91,7 @@ function startGame(state: State): StepResult {
     discard: [],
   };
   return {
+    ok: true,
     state: next,
     events: [{ type: "GAME_STARTED", trump, attacker }],
   };
@@ -69,4 +109,145 @@ function pickAttacker(hands: readonly (readonly Card[])[], trumpSuit: Suit): num
     }
   }
   return attacker;
+}
+
+function attack(state: State, action: { type: "ATTACK"; by: number; card: Card }): StepResult {
+  if (state.phase !== "in-round") return { ok: false, reason: "WRONG_PHASE" };
+  if (action.by !== state.attacker) return { ok: false, reason: "NOT_ATTACKER" };
+  if (state.table.length > 0) return { ok: false, reason: "TABLE_NOT_EMPTY" };
+  const hand = handOf(state, action.by);
+  const handIdx = findCardIndex(hand, action.card);
+  if (handIdx < 0) return { ok: false, reason: "CARD_NOT_IN_HAND" };
+  if (handOf(state, state.defender).length < 1) {
+    return { ok: false, reason: "DEFENDER_OVERWHELMED" };
+  }
+  const next = withPlayedAttack(state, action.by, handIdx, action.card);
+  return {
+    ok: true,
+    state: next,
+    events: [{ type: "CARD_PLAYED", by: action.by, role: "ATTACK", card: action.card }],
+  };
+}
+
+function throwIn(state: State, action: { type: "THROW_IN"; by: number; card: Card }): StepResult {
+  if (state.phase !== "in-round") return { ok: false, reason: "WRONG_PHASE" };
+  if (!isValidSeat(state, action.by)) return { ok: false, reason: "INVALID_SEAT" };
+  if (action.by === state.defender) return { ok: false, reason: "DEFENDER_CANNOT_ATTACK" };
+  if (state.table.length === 0) return { ok: false, reason: "TABLE_EMPTY" };
+  const hand = handOf(state, action.by);
+  const handIdx = findCardIndex(hand, action.card);
+  if (handIdx < 0) return { ok: false, reason: "CARD_NOT_IN_HAND" };
+  if (!ranksOnTable(state.table).has(action.card.rank)) {
+    return { ok: false, reason: "RANK_NOT_ON_TABLE" };
+  }
+  if (state.table.length + 1 > MAX_ATTACKS_PER_BOUT) {
+    return { ok: false, reason: "ATTACK_LIMIT_REACHED" };
+  }
+  const undefended = state.table.reduce((n, p) => (p.defense ? n : n + 1), 0);
+  if (undefended + 1 > handOf(state, state.defender).length) {
+    return { ok: false, reason: "DEFENDER_OVERWHELMED" };
+  }
+  const next = withPlayedAttack(state, action.by, handIdx, action.card);
+  return {
+    ok: true,
+    state: next,
+    events: [{ type: "CARD_PLAYED", by: action.by, role: "THROW_IN", card: action.card }],
+  };
+}
+
+function defend(
+  state: State,
+  action: { type: "DEFEND"; by: number; card: Card; target: number },
+): StepResult {
+  if (state.phase !== "in-round") return { ok: false, reason: "WRONG_PHASE" };
+  if (action.by !== state.defender) return { ok: false, reason: "NOT_DEFENDER" };
+  if (
+    !Number.isInteger(action.target) ||
+    action.target < 0 ||
+    action.target >= state.table.length
+  ) {
+    return { ok: false, reason: "INVALID_TARGET" };
+  }
+  const pair = state.table[action.target];
+  if (!pair) return { ok: false, reason: "INVALID_TARGET" };
+  if (pair.defense !== undefined) return { ok: false, reason: "TARGET_ALREADY_DEFENDED" };
+  const hand = handOf(state, action.by);
+  const handIdx = findCardIndex(hand, action.card);
+  if (handIdx < 0) return { ok: false, reason: "CARD_NOT_IN_HAND" };
+  if (!beats(action.card, pair.attack, state.trump.suit)) {
+    return { ok: false, reason: "DOES_NOT_BEAT" };
+  }
+  const next = withPlayedDefense(state, action.by, handIdx, action.target, action.card);
+  return {
+    ok: true,
+    state: next,
+    events: [
+      {
+        type: "CARD_PLAYED",
+        by: action.by,
+        role: "DEFEND",
+        card: action.card,
+        target: action.target,
+      },
+    ],
+  };
+}
+
+export function beats(defense: Card, attack: Card, trump: Suit): boolean {
+  if (defense.suit === attack.suit) return defense.rank > attack.rank;
+  return defense.suit === trump && attack.suit !== trump;
+}
+
+function isValidSeat(state: InRoundState, seat: number): boolean {
+  return Number.isInteger(seat) && seat >= 0 && seat < state.playerCount;
+}
+
+function handOf(state: InRoundState, seat: number): Card[] {
+  const hand = state.hands[seat];
+  if (!hand) throw new RangeError(`invalid seat ${seat}`);
+  return hand;
+}
+
+function findCardIndex(hand: readonly Card[], card: Card): number {
+  return hand.findIndex((c) => c.suit === card.suit && c.rank === card.rank);
+}
+
+function ranksOnTable(table: readonly TablePair[]): Set<number> {
+  const out = new Set<number>();
+  for (const p of table) {
+    out.add(p.attack.rank);
+    if (p.defense) out.add(p.defense.rank);
+  }
+  return out;
+}
+
+function withPlayedAttack(
+  state: InRoundState,
+  seat: number,
+  handIdx: number,
+  card: Card,
+): InRoundState {
+  return {
+    ...state,
+    hands: state.hands.map((h, i) =>
+      i === seat ? [...h.slice(0, handIdx), ...h.slice(handIdx + 1)] : h,
+    ),
+    table: [...state.table, { attack: card }],
+  };
+}
+
+function withPlayedDefense(
+  state: InRoundState,
+  seat: number,
+  handIdx: number,
+  target: number,
+  card: Card,
+): InRoundState {
+  return {
+    ...state,
+    hands: state.hands.map((h, i) =>
+      i === seat ? [...h.slice(0, handIdx), ...h.slice(handIdx + 1)] : h,
+    ),
+    table: state.table.map((p, i) => (i === target ? { attack: p.attack, defense: card } : p)),
+  };
 }
