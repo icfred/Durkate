@@ -1,5 +1,5 @@
 import type { Action, Event } from "@durak/engine";
-import type { ClientMessage, Snapshot } from "@durak/protocol";
+import type { ClientMessage, RoomSeat, SeatIndex, Snapshot } from "@durak/protocol";
 import { createStore } from "zustand/vanilla";
 
 export type Phase = "menu" | "lobby" | "game" | "gameover";
@@ -28,6 +28,11 @@ export interface AudioState {
   muted: boolean;
 }
 
+export interface RoomMembership {
+  seats: RoomSeat[];
+  you: SeatIndex | null;
+}
+
 export interface AppState {
   phase: Phase;
   mode: Mode | undefined;
@@ -35,6 +40,7 @@ export interface AppState {
   snapshot: Snapshot | null;
   events: Event[];
   connection: ConnectionState;
+  room: RoomMembership | null;
   gameover: GameOverData | undefined;
   audio: AudioState;
   submitAction: (action: Action) => void;
@@ -46,6 +52,7 @@ export interface AppState {
   setSnapshot(snapshot: Snapshot | null): void;
   appendEvents(events: Event[]): void;
   setConnectionStatus(status: ConnectionStatus, info: { attempts: number; error?: string }): void;
+  setRoomMembership(room: RoomMembership | null): void;
   setSender(sender: ClientSender | null): void;
   toggleMute(): void;
   setMuted(muted: boolean): void;
@@ -98,6 +105,7 @@ export const appStore = createStore<AppState>((set, get) => {
     snapshot: null,
     events: [],
     connection: INITIAL_CONNECTION,
+    room: null,
     gameover: undefined,
     audio: { muted: readMuted() },
     __sender: null,
@@ -108,6 +116,7 @@ export const appStore = createStore<AppState>((set, get) => {
         roomCode: undefined,
         snapshot: null,
         events: [],
+        room: null,
         gameover: undefined,
       }),
     showLobby: ({ mode, roomCode }) => set({ phase: "lobby", mode, roomCode, gameover: undefined }),
@@ -119,6 +128,7 @@ export const appStore = createStore<AppState>((set, get) => {
       })),
     showGameOver: (data) => set({ phase: "gameover", gameover: data }),
     setSnapshot: (snapshot) => set({ snapshot }),
+    setRoomMembership: (room) => set({ room }),
     appendEvents: (events) =>
       set((state) => {
         if (events.length === 0) return state;

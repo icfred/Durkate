@@ -31,19 +31,36 @@ export function createConnectionController(
 
   const handlers: WsClientHandlers = {
     onSnapshot: (msg) => {
-      store.getState().setSnapshot(msg.snapshot);
+      const state = store.getState();
+      state.setSnapshot(msg.snapshot);
+      if (state.phase === "lobby") state.showGame();
     },
     onEvents: (msg) => {
-      store.getState().appendEvents(msg.events);
+      const state = store.getState();
+      state.appendEvents(msg.events);
+      const over = msg.events.find((e) => e.type === "GAME_OVER");
+      if (over && state.phase !== "gameover") {
+        const youSeat = state.snapshot?.you.seat ?? state.room?.you ?? 0;
+        const seatNames = state.room?.seats.map((s) => s.name);
+        state.showGameOver({
+          youSeat,
+          durak: over.durak,
+          ...(seatNames ? { seatNames } : {}),
+        });
+      }
     },
     onError: (msg) => {
       console.error("[ws] server error", msg.code, msg.message);
     },
     onRoomState: (msg) => {
-      console.debug("[ws] room state", msg.roomId, msg.you);
+      store.getState().setRoomMembership({ seats: msg.seats, you: msg.you });
     },
     onStatus: (status, info) => {
-      store.getState().setConnectionStatus(status, info);
+      const state = store.getState();
+      state.setConnectionStatus(status, info);
+      if (status === "closed" && state.phase === "game" && state.roomCode && state.mode) {
+        state.showLobby({ mode: state.mode, roomCode: state.roomCode });
+      }
     },
   };
 
