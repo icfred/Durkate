@@ -44,6 +44,12 @@ class HttpClient:
     timeout: float = DEFAULT_TIMEOUT
     throttle_seconds: float = THROTTLE_SECONDS
     max_bytes: int = 8 * 1024 * 1024  # 8 MiB hard cap per file
+    # Off by default. Opt in only when the source publishes a separate
+    # API/UA policy that supersedes its robots.txt — e.g. Wikimedia's
+    # https://meta.wikimedia.org/wiki/User-Agent_policy authorises API
+    # consumers with a proper UA + reasonable throttle. With this True,
+    # `can_fetch` short-circuits to True for every URL on this client.
+    ignore_robots: bool = False
     _last_hit: dict[str, float] = field(default_factory=dict)
     _robots: dict[str, urllib.robotparser.RobotFileParser] = field(default_factory=dict)
     refusals: list[FetchRefusal] = field(default_factory=list)
@@ -89,6 +95,8 @@ class HttpClient:
         return self._robots[host]
 
     def can_fetch(self, url: str) -> bool:
+        if self.ignore_robots:
+            return True
         return self._robots_for(url).can_fetch(UA, url)
 
     def get(self, url: str) -> Optional[FetchResult]:

@@ -152,6 +152,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--category", default=None, help="override category")
     parser.add_argument("--count", type=int, default=6)
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument(
+        "--allow-api",
+        action="store_true",
+        help=(
+            "bypass robots.txt for the Wikimedia API endpoint. Wikimedia's UA"
+            " policy at https://meta.wikimedia.org/wiki/User-Agent_policy"
+            " authorises programmatic API consumers with a proper UA, which"
+            " supersedes the generic /w/ disallow in robots.txt. Off by"
+            " default; opt in only after reading the policy."
+        ),
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -159,7 +170,9 @@ def main(argv: list[str] | None = None) -> int:
         format="%(levelname)s %(name)s: %(message)s",
     )
 
-    client = HttpClient()
+    client = HttpClient(ignore_robots=args.allow_api)
+    if args.allow_api:
+        log.info("--allow-api set; bypassing robots.txt per Wikimedia UA policy")
     categories = (args.category,) if args.category else WIKI_CATEGORIES[args.asset_type]
     fetched: list[dict[str, object]] = []
     for category in categories:
