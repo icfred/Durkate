@@ -31,10 +31,24 @@ Primitives (DUR-5):
 - `shuffle<T>(items: readonly T[], rng: Rng) -> T[]` - Fisher-Yates,
   non-mutating, deterministic given the RNG.
 
+State and step (DUR-6):
+
+- `State` = `PreDealState | InRoundState`, discriminated by `phase`.
+  `InRoundState` carries `hands`, `talon`, `trump`, `table`, `attacker`,
+  `defender`, `discard`, plus serialized `rng`. `TablePair` = attack +
+  optional defense.
+- `InitOpts { seed, playerCount? }`; `initialState(opts) -> PreDealState`.
+  Default `playerCount` is 2.
+- `Action`: `{ type: "START_GAME" }` (more to come).
+- `Event`: `{ type: "GAME_STARTED", trump, attacker }` (more to come).
+- `step(state, action) -> StepResult` = `{ state, events }`. `START_GAME`
+  shuffles the deck, deals `6 * playerCount` cards, reveals the bottom
+  card as trump (kept separate from `talon`), and chooses the attacker
+  as the player holding the lowest trump (player 0 if no trumps in any
+  hand).
+
 Forthcoming (later tickets):
 
-- `step(state, action) -> { state, events }`
-- `initialState(opts) -> State`
 - `validate(state, action) -> Result`
 - `bot.choose(state) -> Action`
 
