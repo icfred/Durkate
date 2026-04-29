@@ -15,8 +15,9 @@ and by tests directly.
   server-emitted synthetic event (e.g. `TIMEOUT`).
 - **Event**: a side-product of a transition describing what changed (e.g.
   `CARD_PLAYED`, `PILE_TAKEN`). Drives client animation/SFX cues.
-- **Step**: `step(state, action) -> { state, events }`. The single
-  transition function.
+- **Step**: `step(state, action) -> StepResult`. The single transition
+  function. Success carries the next state and emitted events; player-
+  side illegal actions produce a typed rejection.
 - **Bot**: deterministic given `(state, seed)`. Returns an action.
 
 ## Public API
@@ -39,13 +40,33 @@ State and step (DUR-6):
   optional defense.
 - `InitOpts { seed, playerCount? }`; `initialState(opts) -> PreDealState`.
   Default `playerCount` is 2.
-- `Action`: `{ type: "START_GAME" }` (more to come).
-- `Event`: `{ type: "GAME_STARTED", trump, attacker }` (more to come).
-- `step(state, action) -> StepResult` = `{ state, events }`. `START_GAME`
-  shuffles the deck, deals `6 * playerCount` cards, reveals the bottom
-  card as trump (kept separate from `talon`), and chooses the attacker
-  as the player holding the lowest trump (player 0 if no trumps in any
-  hand).
+- `step(state, action) -> StepResult`. `StepResult` is a discriminated
+  union: `{ ok: true, state, events } | { ok: false, reason }`.
+  Player-side illegal actions return a typed `RejectReason`; system-level
+  invariant violations on `START_GAME` (wrong phase, deck overflow) still
+  throw.
+- `START_GAME` shuffles the deck, deals `6 * playerCount` cards, reveals
+  the bottom card as trump (kept separate from `talon`), and chooses the
+  attacker as the player holding the lowest trump (player 0 if no
+  trumps).
+
+Bout actions (DUR-7):
+
+- `ATTACK { by, card }` - opens a bout from the empty table. Only the
+  current attacker may play. Rejected if the defender has zero cards.
+- `THROW_IN { by, card }` - extra attack into an in-progress bout.
+  `card.rank` must match a rank already on the table (attack or
+  defense). Capped at 6 attacks per bout. Defender must have enough
+  cards to keep covering. Defender may not throw in.
+- `DEFEND { by, card, target }` - defender plays `card` onto
+  `table[target].attack`. The Russian beat rule: same suit and higher
+  rank, OR any trump beats any non-trump, OR a higher trump beats a
+  lower trump.
+- `Event`: `GAME_STARTED { trump, attacker }`,
+  `CARD_PLAYED { by, role, card, target? }` where `role` is
+  `"ATTACK" | "DEFEND" | "THROW_IN"`.
+- `beats(defense, attack, trump) -> boolean` is exported for use by
+  callers (bot, UI hints).
 
 Forthcoming (later tickets):
 

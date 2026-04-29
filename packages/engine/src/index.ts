@@ -9,4 +9,11 @@ export {
   type State,
   type TablePair,
 } from "./state";
-export { type Action, type Event, type StepResult, step } from "./step";
+export {
+  type Action,
+  beats,
+  type Event,
+  type RejectReason,
+  type StepResult,
+  step,
+} from "./step";
