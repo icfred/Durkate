@@ -22,6 +22,7 @@
   "devDependencies": {
     "@fontsource/jetbrains-mono": "^5.2.8",
     "@types/node": "^25.6.0",
+    "happy-dom": "^20.9.0",
     "vite": "^8.0.10",
     "vitest": "^4.1.5"
   }
