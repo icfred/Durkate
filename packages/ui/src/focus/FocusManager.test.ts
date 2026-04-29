@@ -230,4 +230,58 @@ describe("FocusManager", () => {
     window.dispatchEvent(press("Enter"));
     expect(a.activate).toHaveBeenCalledTimes(1);
   });
+
+  it("suspend stops Tab and Enter routing without preventDefault", () => {
+    const a = new FakeNode();
+    const b = new FakeNode();
+    mgr.register(a);
+    mgr.register(b);
+    a.setFocus.mockClear();
+    b.setFocus.mockClear();
+
+    mgr.suspend();
+
+    const tab = press("Tab");
+    window.dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(false);
+    expect(b.setFocus).not.toHaveBeenCalledWith(true);
+
+    const enter = press("Enter");
+    window.dispatchEvent(enter);
+    expect(enter.defaultPrevented).toBe(false);
+    expect(a.activate).not.toHaveBeenCalled();
+  });
+
+  it("resume restores key routing", () => {
+    const a = new FakeNode();
+    const b = new FakeNode();
+    mgr.register(a);
+    mgr.register(b);
+    mgr.suspend();
+    mgr.resume();
+    a.setFocus.mockClear();
+    b.setFocus.mockClear();
+
+    window.dispatchEvent(press("Tab"));
+    expect(b.setFocus).toHaveBeenLastCalledWith(true);
+
+    window.dispatchEvent(press("Enter"));
+    expect(b.activate).toHaveBeenCalledTimes(1);
+  });
+
+  it("suspend and resume are idempotent", () => {
+    const a = new FakeNode();
+    mgr.register(a);
+    a.activate.mockClear();
+
+    mgr.suspend();
+    mgr.suspend();
+    window.dispatchEvent(press("Enter"));
+    expect(a.activate).not.toHaveBeenCalled();
+
+    mgr.resume();
+    mgr.resume();
+    window.dispatchEvent(press("Enter"));
+    expect(a.activate).toHaveBeenCalledTimes(1);
+  });
 });

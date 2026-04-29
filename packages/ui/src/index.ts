@@ -6,6 +6,12 @@ export {
   type FocusManagerOptions,
 } from "./focus/FocusManager.js";
 export {
+  mountTextInputOverlay,
+  type TextInputOverlayHandle,
+  type TextInputOverlayOptions,
+  type TextInputOverlayRect,
+} from "./input/TextInputOverlay.js";
+export {
   color,
   duration,
   easing,
