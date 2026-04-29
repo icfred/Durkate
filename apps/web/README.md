@@ -22,6 +22,11 @@ server state over websocket and to local Zustand stores for UI state.
 
 This is an app, not a library. Entry point: `src/main.ts`.
 
+`main.ts` currently boots a `Pixi.Application` against `#app`,
+constructs a placeholder "HELLO DURAK" panel from `@durak/ui`
+primitives, and registers a single `Button` with a `FocusManager`.
+The phase machine and Zustand stores wire in on top of this scaffold.
+
 ## Invariants
 
 - No HTML UI components (no React, no Tailwind). Everything visible
