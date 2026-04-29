@@ -1,11 +1,13 @@
-import type { Action, Event } from "@durak/engine";
+import type { Event } from "@durak/engine";
 import type { Snapshot } from "@durak/protocol";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { appStore, EVENT_BUFFER_SIZE, generateRoomCode, parseHashRoom } from "./store.js";
 
 describe("appStore", () => {
   beforeEach(() => {
     appStore.getState().showMenu();
+    appStore.getState().setConnectionStatus("idle", { attempts: 0 });
+    appStore.getState().setSender(null);
   });
 
   it("starts in the menu phase with no room or mode", () => {
@@ -13,6 +15,10 @@ describe("appStore", () => {
     expect(state.phase).toBe("menu");
     expect(state.roomCode).toBeUndefined();
     expect(state.mode).toBeUndefined();
+  });
+
+  it("starts with an idle connection", () => {
+    expect(appStore.getState().connection).toEqual({ status: "idle", attempts: 0 });
   });
 
   it("transitions menu -> lobby with mode and room code", () => {
@@ -56,12 +62,54 @@ describe("appStore", () => {
     expect(stored[stored.length - 1]).toBe(events[total - 1]);
   });
 
-  it("submitAction is replaceable via setSubmitAction", () => {
-    const fn = vi.fn<(action: Action) => void>();
-    appStore.getState().setSubmitAction(fn);
-    const action: Action = { type: "TAKE_PILE", by: 0 };
-    appStore.getState().submitAction(action);
-    expect(fn).toHaveBeenCalledWith(action);
+  it("setConnectionStatus stores attempts and tracks the optional error", () => {
+    appStore.getState().setConnectionStatus("error", { attempts: 3, error: "boom" });
+    expect(appStore.getState().connection).toEqual({
+      status: "error",
+      attempts: 3,
+      error: "boom",
+    });
+    appStore.getState().setConnectionStatus("open", { attempts: 0 });
+    expect(appStore.getState().connection).toEqual({ status: "open", attempts: 0 });
+  });
+});
+
+describe("appStore.submitAction", () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    appStore.getState().setSender(null);
+    appStore.getState().setConnectionStatus("idle", { attempts: 0 });
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+    appStore.getState().setSender(null);
+    appStore.getState().setConnectionStatus("idle", { attempts: 0 });
+  });
+
+  it("forwards through the registered sender when the connection is open", () => {
+    const sent: unknown[] = [];
+    appStore.getState().setSender((msg) => sent.push(msg));
+    appStore.getState().setConnectionStatus("open", { attempts: 0 });
+    appStore.getState().submitAction({ type: "START_GAME" });
+    expect(sent).toEqual([{ type: "SubmitAction", action: { type: "START_GAME" } }]);
+  });
+
+  it("drops with a warn when the connection is not open", () => {
+    const sent: unknown[] = [];
+    appStore.getState().setSender((msg) => sent.push(msg));
+    appStore.getState().setConnectionStatus("connecting", { attempts: 0 });
+    appStore.getState().submitAction({ type: "START_GAME" });
+    expect(sent).toEqual([]);
+    expect(warn).toHaveBeenCalledOnce();
+  });
+
+  it("drops with a warn when no sender is registered", () => {
+    appStore.getState().setConnectionStatus("open", { attempts: 0 });
+    appStore.getState().submitAction({ type: "START_GAME" });
+    expect(warn).toHaveBeenCalledOnce();
   });
 });
 

@@ -1,6 +1,8 @@
 import { type Action, RANKS, SUITS } from "@durak/engine";
 import { z } from "zod";
 import type { ClientMessage, JoinRoom, LeaveRoom, RequestRematch, SubmitAction } from "./client";
+import type { ErrorMessage, RoomStateMessage, ServerMessage } from "./server";
+import type { YouView } from "./snapshot";
 
 const cardSchema = z
   .object({
@@ -68,8 +70,100 @@ export function parseClientMessage(raw: unknown): ClientMessage {
   return clientMessageSchema.parse(raw);
 }
 
+const tablePairSchema = z.object({
+  attack: cardSchema,
+  defense: cardSchema.optional(),
+});
+
+const youViewSchema = z.object({
+  seat: seatSchema,
+  hand: z.array(cardSchema),
+});
+
+const snapshotSchema = z.object({
+  phase: z.literal("in-round"),
+  playerCount: z.number().int().nonnegative(),
+  handCounts: z.array(z.number().int().nonnegative()),
+  talonCount: z.number().int().nonnegative(),
+  trump: cardSchema,
+  table: z.array(tablePairSchema),
+  attacker: seatSchema,
+  defender: seatSchema,
+  discard: z.array(cardSchema),
+  seat: seatSchema,
+  you: youViewSchema,
+});
+
+const eventSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("GAME_STARTED"),
+    trump: cardSchema,
+    attacker: z.number().int().nonnegative(),
+  }),
+  z.object({
+    type: z.literal("CARD_PLAYED"),
+    by: z.number().int().nonnegative(),
+    role: z.enum(["ATTACK", "DEFEND", "THROW_IN"]),
+    card: cardSchema,
+    target: z.number().int().nonnegative().optional(),
+  }),
+  z.object({
+    type: z.literal("PILE_TAKEN"),
+    by: z.number().int().nonnegative(),
+    cards: z.array(cardSchema),
+    attacker: z.number().int().nonnegative(),
+    defender: z.number().int().nonnegative(),
+  }),
+  z.object({
+    type: z.literal("ROUND_ENDED"),
+    discarded: z.array(cardSchema),
+    attacker: z.number().int().nonnegative(),
+    defender: z.number().int().nonnegative(),
+  }),
+]);
+
+export const snapshotMessageSchema = z.object({
+  type: z.literal("Snapshot"),
+  snapshot: snapshotSchema,
+});
+
+export const eventsMessageSchema = z.object({
+  type: z.literal("Events"),
+  events: z.array(eventSchema),
+});
+
+export const errorMessageSchema = z.object({
+  type: z.literal("Error"),
+  code: z.string(),
+  message: z.string(),
+});
+
+export const roomStateMessageSchema = z.object({
+  type: z.literal("RoomState"),
+  roomId: z.string(),
+  seats: z.array(z.object({ name: z.string().nullable() })),
+  you: seatSchema.nullable(),
+});
+
+export const serverMessageSchema = z.discriminatedUnion("type", [
+  snapshotMessageSchema,
+  eventsMessageSchema,
+  errorMessageSchema,
+  roomStateMessageSchema,
+]);
+
+export function parseServerMessage(raw: unknown): ServerMessage {
+  // Cast: zod's inferred output widens optional fields to `T | undefined`,
+  // which collides with `exactOptionalPropertyTypes` here. The runtime
+  // shape is verified by `serverMessageSchema.parse` and round-trip tests.
+  return serverMessageSchema.parse(raw) as ServerMessage;
+}
+
 // Schema/type parity guards: if engine `Action` or any `ClientMessage`
-// variant drifts from its Zod schema, these fail to compile.
+// variant drifts from its Zod schema, these fail to compile. Server
+// message schemas with optional fields (Event.target, TablePair.defense)
+// can't use this exact-match guard under exactOptionalPropertyTypes;
+// they're enforced at runtime by the round-trip tests.
 type AssertEqual<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : never;
 const _actionParity: AssertEqual<z.infer<typeof actionSchema>, Action> = true;
@@ -81,9 +175,18 @@ const _requestRematchParity: AssertEqual<
   RequestRematch
 > = true;
 const _clientParity: AssertEqual<z.infer<typeof clientMessageSchema>, ClientMessage> = true;
+const _youViewParity: AssertEqual<z.infer<typeof youViewSchema>, YouView> = true;
+const _errorMessageParity: AssertEqual<z.infer<typeof errorMessageSchema>, ErrorMessage> = true;
+const _roomStateMessageParity: AssertEqual<
+  z.infer<typeof roomStateMessageSchema>,
+  RoomStateMessage
+> = true;
 void _actionParity;
 void _joinRoomParity;
 void _leaveRoomParity;
 void _submitActionParity;
 void _requestRematchParity;
 void _clientParity;
+void _youViewParity;
+void _errorMessageParity;
+void _roomStateMessageParity;

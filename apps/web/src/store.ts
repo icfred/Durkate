@@ -1,5 +1,5 @@
 import type { Action, Event } from "@durak/engine";
-import type { Snapshot } from "@durak/protocol";
+import type { ClientMessage, Snapshot } from "@durak/protocol";
 import { createStore } from "zustand/vanilla";
 
 export type Phase = "menu" | "lobby" | "game" | "gameover";
@@ -8,51 +8,86 @@ export type Mode = "bot" | "friend";
 
 export const EVENT_BUFFER_SIZE = 32;
 
+export type ConnectionStatus = "idle" | "connecting" | "open" | "closed" | "error";
+
+export interface ConnectionState {
+  status: ConnectionStatus;
+  attempts: number;
+  error?: string;
+}
+
+export type ClientSender = (msg: ClientMessage) => void;
+
 export interface AppState {
   phase: Phase;
   mode: Mode | undefined;
   roomCode: string | undefined;
   snapshot: Snapshot | null;
   events: Event[];
+  connection: ConnectionState;
   submitAction: (action: Action) => void;
   showMenu(): void;
   showLobby(args: { mode: Mode; roomCode: string }): void;
   showGame(args?: { mode?: Mode; roomCode?: string }): void;
   setSnapshot(snapshot: Snapshot | null): void;
   appendEvents(events: Event[]): void;
-  setSubmitAction(submit: (action: Action) => void): void;
+  setConnectionStatus(status: ConnectionStatus, info: { attempts: number; error?: string }): void;
+  setSender(sender: ClientSender | null): void;
 }
 
-const defaultSubmitAction = (action: Action): void => {
-  console.warn("[web] submitAction no-op (no connection wired)", action);
-};
+const INITIAL_CONNECTION: ConnectionState = { status: "idle", attempts: 0 };
 
-export const appStore = createStore<AppState>((set) => ({
-  phase: "menu",
-  mode: undefined,
-  roomCode: undefined,
-  snapshot: null,
-  events: [],
-  submitAction: defaultSubmitAction,
-  showMenu: () =>
-    set({ phase: "menu", mode: undefined, roomCode: undefined, snapshot: null, events: [] }),
-  showLobby: ({ mode, roomCode }) => set({ phase: "lobby", mode, roomCode }),
-  showGame: (args) =>
-    set((state) => ({
-      phase: "game",
-      mode: args?.mode ?? state.mode,
-      roomCode: args?.roomCode ?? state.roomCode,
-    })),
-  setSnapshot: (snapshot) => set({ snapshot }),
-  appendEvents: (events) =>
-    set((state) => {
-      if (events.length === 0) return state;
-      const next = state.events.concat(events);
-      const overflow = next.length - EVENT_BUFFER_SIZE;
-      return { events: overflow > 0 ? next.slice(overflow) : next };
-    }),
-  setSubmitAction: (submit) => set({ submitAction: submit }),
-}));
+interface InternalState extends AppState {
+  __sender: ClientSender | null;
+}
+
+export const appStore = createStore<AppState>((set, get) => {
+  const internal: InternalState = {
+    phase: "menu",
+    mode: undefined,
+    roomCode: undefined,
+    snapshot: null,
+    events: [],
+    connection: INITIAL_CONNECTION,
+    __sender: null,
+    showMenu: () =>
+      set({ phase: "menu", mode: undefined, roomCode: undefined, snapshot: null, events: [] }),
+    showLobby: ({ mode, roomCode }) => set({ phase: "lobby", mode, roomCode }),
+    showGame: (args) =>
+      set((state) => ({
+        phase: "game",
+        mode: args?.mode ?? state.mode,
+        roomCode: args?.roomCode ?? state.roomCode,
+      })),
+    setSnapshot: (snapshot) => set({ snapshot }),
+    appendEvents: (events) =>
+      set((state) => {
+        if (events.length === 0) return state;
+        const next = state.events.concat(events);
+        const overflow = next.length - EVENT_BUFFER_SIZE;
+        return { events: overflow > 0 ? next.slice(overflow) : next };
+      }),
+    setConnectionStatus: (status, info) => {
+      const next: ConnectionState =
+        info.error === undefined
+          ? { status, attempts: info.attempts }
+          : { status, attempts: info.attempts, error: info.error };
+      set({ connection: next });
+    },
+    setSender: (sender) => {
+      (get() as InternalState).__sender = sender;
+    },
+    submitAction: (action) => {
+      const state = get() as InternalState;
+      if (state.connection.status !== "open" || !state.__sender) {
+        console.warn("[store] dropped submitAction; not connected", action);
+        return;
+      }
+      state.__sender({ type: "SubmitAction", action });
+    },
+  };
+  return internal;
+});
 
 const ROOM_CODE_PATTERN = /#room=([A-Za-z0-9]+)/;
 

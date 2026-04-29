@@ -16,9 +16,15 @@ export type {
 export type { SeatIndex, Snapshot, YouView } from "./snapshot";
 export {
   clientMessageSchema,
+  errorMessageSchema,
+  eventsMessageSchema,
   joinRoomSchema,
   leaveRoomSchema,
   parseClientMessage,
+  parseServerMessage,
   requestRematchSchema,
+  roomStateMessageSchema,
+  serverMessageSchema,
+  snapshotMessageSchema,
   submitActionSchema,
 } from "./zod";

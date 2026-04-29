@@ -3,6 +3,7 @@ import "@fontsource/jetbrains-mono/700.css";
 
 import { color, typography } from "@durak/ui";
 import { Application } from "pixi.js";
+import { createConnectionController } from "./net/connection.js";
 import { SkinSandboxScreen } from "./sandbox/skins/SkinSandboxScreen.js";
 import { ScreenRouter } from "./screenRouter.js";
 import { GameScreen } from "./screens/GameScreen.js";
@@ -78,6 +79,10 @@ if (sandboxParam === "skins") {
   router.setView(app.screen.width, app.screen.height);
   router.start();
 
+  const serverUrl = resolveWsUrl();
+  const connection = createConnectionController({ store: appStore, serverUrl });
+  connection.start();
+
   app.renderer.on("resize", () => {
     router.setView(app.screen.width, app.screen.height);
   });
@@ -97,6 +102,13 @@ function applyBootRouting(): void {
   if (initialRoom) {
     appStore.getState().showLobby({ mode: "friend", roomCode: initialRoom });
   }
+}
+
+function resolveWsUrl(): string {
+  const fromEnv = import.meta.env.VITE_WS_URL;
+  if (typeof fromEnv === "string" && fromEnv.length > 0) return fromEnv;
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${window.location.host}/ws`;
 }
 
 async function loadFonts(): Promise<void> {
