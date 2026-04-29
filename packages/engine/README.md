@@ -68,6 +68,23 @@ Bout actions (DUR-7):
 - `beats(defense, attack, trump) -> boolean` is exported for use by
   callers (bot, UI hints).
 
+Round transitions (DUR-8):
+
+- `TAKE_PILE { by }` - defender surrenders the round and takes every
+  table card (attacks and defenses) into hand. The table clears, the
+  defender is skipped on rotation: the next attacker is the player
+  after the defender (in 1v1 the previous attacker keeps attacking).
+- `END_ROUND { by }` - attacker declares the bout finished. Requires
+  every table pair to be defended; rejects with `ATTACKS_UNDEFENDED`
+  otherwise. The table cards move into `discard` and roles rotate one
+  seat (old defender becomes new attacker).
+- Talon replenishment is intentionally not part of this transition; it
+  ships in DUR-9 alongside game-end detection.
+- `Event`: `PILE_TAKEN { by, cards, attacker, defender }`,
+  `ROUND_ENDED { discarded, attacker, defender }`. The post-rotation
+  `attacker`/`defender` ride the event so callers don't need to derive
+  them.
+
 Forthcoming (later tickets):
 
 - `validate(state, action) -> Result`

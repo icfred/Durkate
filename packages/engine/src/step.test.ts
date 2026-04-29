@@ -480,6 +480,175 @@ describe("step THROW_IN", () => {
   });
 });
 
+describe("step TAKE_PILE", () => {
+  const trump = card("hearts", 11);
+
+  it("moves the table cards into the defender's hand and clears the table", () => {
+    const state = mkInRound({
+      trump,
+      hands: [[card("clubs", 6)], [card("diamonds", 9)]],
+      table: [
+        { attack: card("spades", 7), defense: card("spades", 8) },
+        { attack: card("clubs", 10) },
+      ],
+    });
+    const { state: next, events } = expectOk(step(state, { type: "TAKE_PILE", by: 1 }));
+    expect(next.table).toEqual([]);
+    expect(next.hands[1]).toEqual([
+      card("diamonds", 9),
+      card("spades", 7),
+      card("spades", 8),
+      card("clubs", 10),
+    ]);
+    expect(next.discard).toEqual([]);
+    expect(events).toEqual([
+      {
+        type: "PILE_TAKEN",
+        by: 1,
+        cards: [card("spades", 7), card("spades", 8), card("clubs", 10)],
+        attacker: 0,
+        defender: 1,
+      },
+    ]);
+  });
+
+  it("rotates roles so the defender is skipped (next attacker is past the defender)", () => {
+    const state = mkInRound({
+      trump,
+      hands: [[card("clubs", 6)], [card("diamonds", 9)], [card("hearts", 14)]],
+      table: [{ attack: card("spades", 8) }],
+      attacker: 0,
+      defender: 1,
+    });
+    const { state: next } = expectOk(step(state, { type: "TAKE_PILE", by: 1 }));
+    expect(next.attacker).toBe(2);
+    expect(next.defender).toBe(0);
+  });
+
+  it("rotates back to the same attacker in 1v1", () => {
+    const state = mkInRound({
+      trump,
+      hands: [[card("clubs", 6)], [card("diamonds", 9)]],
+      table: [{ attack: card("spades", 8) }],
+      attacker: 0,
+      defender: 1,
+    });
+    const { state: next } = expectOk(step(state, { type: "TAKE_PILE", by: 1 }));
+    expect(next.attacker).toBe(0);
+    expect(next.defender).toBe(1);
+  });
+
+  it("rejects a non-defender", () => {
+    const state = mkInRound({
+      trump,
+      hands: [[card("clubs", 6)], [card("diamonds", 9)]],
+      table: [{ attack: card("spades", 8) }],
+    });
+    expect(step(state, { type: "TAKE_PILE", by: 0 })).toEqual({
+      ok: false,
+      reason: "NOT_DEFENDER",
+    });
+  });
+
+  it("rejects when the table is empty", () => {
+    const state = mkInRound({
+      trump,
+      hands: [[card("clubs", 6)], [card("diamonds", 9)]],
+    });
+    expect(step(state, { type: "TAKE_PILE", by: 1 })).toEqual({
+      ok: false,
+      reason: "TABLE_EMPTY",
+    });
+  });
+
+  it("rejects when phase is not in-round", () => {
+    expect(step(initialState({ seed: 1 }), { type: "TAKE_PILE", by: 1 })).toEqual({
+      ok: false,
+      reason: "WRONG_PHASE",
+    });
+  });
+});
+
+describe("step END_ROUND", () => {
+  const trump = card("hearts", 11);
+
+  it("moves the table cards into discard and rotates roles one seat", () => {
+    const state = mkInRound({
+      trump,
+      hands: [[card("clubs", 6)], [card("diamonds", 9)]],
+      table: [
+        { attack: card("spades", 7), defense: card("spades", 8) },
+        { attack: card("clubs", 10), defense: card("clubs", 12) },
+      ],
+      attacker: 0,
+      defender: 1,
+    });
+    const { state: next, events } = expectOk(step(state, { type: "END_ROUND", by: 0 }));
+    expect(next.table).toEqual([]);
+    expect(next.discard).toEqual([
+      card("spades", 7),
+      card("spades", 8),
+      card("clubs", 10),
+      card("clubs", 12),
+    ]);
+    expect(next.attacker).toBe(1);
+    expect(next.defender).toBe(0);
+    expect(events).toEqual([
+      {
+        type: "ROUND_ENDED",
+        discarded: [card("spades", 7), card("spades", 8), card("clubs", 10), card("clubs", 12)],
+        attacker: 1,
+        defender: 0,
+      },
+    ]);
+  });
+
+  it("rejects when any attack is still undefended", () => {
+    const state = mkInRound({
+      trump,
+      hands: [[card("clubs", 6)], [card("diamonds", 9)]],
+      table: [
+        { attack: card("spades", 7), defense: card("spades", 8) },
+        { attack: card("clubs", 10) },
+      ],
+    });
+    expect(step(state, { type: "END_ROUND", by: 0 })).toEqual({
+      ok: false,
+      reason: "ATTACKS_UNDEFENDED",
+    });
+  });
+
+  it("rejects a non-attacker", () => {
+    const state = mkInRound({
+      trump,
+      hands: [[card("clubs", 6)], [card("diamonds", 9)]],
+      table: [{ attack: card("spades", 7), defense: card("spades", 8) }],
+    });
+    expect(step(state, { type: "END_ROUND", by: 1 })).toEqual({
+      ok: false,
+      reason: "NOT_ATTACKER",
+    });
+  });
+
+  it("rejects when the table is empty", () => {
+    const state = mkInRound({
+      trump,
+      hands: [[card("clubs", 6)], [card("diamonds", 9)]],
+    });
+    expect(step(state, { type: "END_ROUND", by: 0 })).toEqual({
+      ok: false,
+      reason: "TABLE_EMPTY",
+    });
+  });
+
+  it("rejects when phase is not in-round", () => {
+    expect(step(initialState({ seed: 1 }), { type: "END_ROUND", by: 0 })).toEqual({
+      ok: false,
+      reason: "WRONG_PHASE",
+    });
+  });
+});
+
 describe("step exhaustiveness", () => {
   it("throws on an unknown action variant", () => {
     const s = deal(1, 2);
@@ -511,6 +680,7 @@ function uniqueCardCount(s: InRoundState): number {
 function pickLegalAction(s: InRoundState, choice: number, trumpSuit: Suit): Action | null {
   const attackerHand = s.hands[s.attacker] as Card[];
   const defenderHand = s.hands[s.defender] as Card[];
+  const undefendedCount = s.table.reduce((n, p) => (p.defense ? n : n + 1), 0);
 
   const tryDefend = (): Action | null => {
     const undefendedIdx = s.table.findIndex((p) => !p.defense);
@@ -521,6 +691,14 @@ function pickLegalAction(s: InRoundState, choice: number, trumpSuit: Suit): Acti
     const card = defenders[choice % defenders.length] as Card;
     return { type: "DEFEND", by: s.defender, card, target: undefendedIdx };
   };
+
+  if (s.table.length > 0 && undefendedCount > 0 && choice % 11 === 0) {
+    return { type: "TAKE_PILE", by: s.defender };
+  }
+
+  if (s.table.length > 0 && undefendedCount === 0 && choice % 7 === 0) {
+    return { type: "END_ROUND", by: s.attacker };
+  }
 
   if (choice % 3 === 0) {
     const action = tryDefend();
@@ -534,7 +712,6 @@ function pickLegalAction(s: InRoundState, choice: number, trumpSuit: Suit): Acti
   }
 
   if (s.table.length < 6) {
-    const undefendedCount = s.table.reduce((n, p) => (p.defense ? n : n + 1), 0);
     if (undefendedCount + 1 <= defenderHand.length) {
       const ranks = new Set<number>();
       for (const p of s.table) {
@@ -549,15 +726,20 @@ function pickLegalAction(s: InRoundState, choice: number, trumpSuit: Suit): Acti
     }
   }
 
-  return tryDefend();
+  const defend = tryDefend();
+  if (defend) return defend;
+
+  if (undefendedCount > 0) return { type: "TAKE_PILE", by: s.defender };
+  if (s.table.length > 0) return { type: "END_ROUND", by: s.attacker };
+  return null;
 }
 
 describe("step invariants under random legal play (property)", () => {
-  it("preserves the 36-card total and uniqueness", () => {
+  it("preserves the 36-card total and uniqueness across rounds", () => {
     fc.assert(
       fc.property(
         fc.integer(),
-        fc.array(fc.nat(), { minLength: 1, maxLength: 30 }),
+        fc.array(fc.nat(), { minLength: 1, maxLength: 200 }),
         (seed, choices) => {
           let s: State = deal(seed, 2);
           if (s.phase !== "in-round") return;
@@ -579,7 +761,7 @@ describe("step invariants under random legal play (property)", () => {
           }
         },
       ),
-      { numRuns: 100 },
+      { numRuns: 1000 },
     );
   });
 
@@ -609,5 +791,100 @@ describe("step invariants under random legal play (property)", () => {
       ),
       { numRuns: 100 },
     );
+  });
+
+  it("triggers TAKE_PILE and END_ROUND across the run space (sanity)", () => {
+    let seenTakePile = false;
+    let seenEndRound = false;
+    for (let seed = 1; seed <= 200 && !(seenTakePile && seenEndRound); seed++) {
+      let s: State = deal(seed, 2);
+      if (s.phase !== "in-round") continue;
+      for (let i = 0; i < 200; i++) {
+        if (s.phase !== "in-round") break;
+        const action = pickLegalAction(s, seed * 31 + i, s.trump.suit);
+        if (!action) break;
+        if (action.type === "TAKE_PILE") seenTakePile = true;
+        if (action.type === "END_ROUND") seenEndRound = true;
+        const r = step(s, action);
+        if (!r.ok) throw new Error(`rejection: ${r.reason}`);
+        s = r.state;
+      }
+    }
+    expect(seenTakePile).toBe(true);
+    expect(seenEndRound).toBe(true);
+  });
+});
+
+describe("step golden trace (multi-round play through TAKE_PILE and END_ROUND)", () => {
+  it("matches a recorded event sequence for a fixed seed", () => {
+    const trump = card("hearts", 11);
+    const start = mkInRound({
+      trump,
+      hands: [
+        [card("spades", 7), card("spades", 9), card("clubs", 8)],
+        [card("spades", 8), card("diamonds", 14), card("clubs", 13)],
+      ],
+      attacker: 0,
+      defender: 1,
+      talon: [],
+    });
+
+    const trace: { action: Action; events: Event[] }[] = [];
+    let s: InRoundState = start;
+
+    const apply = (action: Action) => {
+      const r = step(s, action);
+      if (!r.ok) throw new Error(`rejection: ${r.reason}`);
+      if (r.state.phase !== "in-round") throw new Error("game ended unexpectedly");
+      s = r.state;
+      trace.push({ action, events: r.events });
+    };
+
+    apply({ type: "ATTACK", by: 0, card: card("spades", 7) });
+    apply({ type: "DEFEND", by: 1, card: card("spades", 8), target: 0 });
+    apply({ type: "END_ROUND", by: 0 });
+
+    expect(s.discard).toEqual([card("spades", 7), card("spades", 8)]);
+    expect(s.attacker).toBe(1);
+    expect(s.defender).toBe(0);
+
+    apply({ type: "ATTACK", by: 1, card: card("clubs", 13) });
+    apply({ type: "TAKE_PILE", by: 0 });
+
+    expect(s.attacker).toBe(1);
+    expect(s.defender).toBe(0);
+    expect(s.hands[0]).toEqual([card("spades", 9), card("clubs", 8), card("clubs", 13)]);
+    expect(s.discard).toEqual([card("spades", 7), card("spades", 8)]);
+
+    expect(trace.map((t) => t.events)).toEqual([
+      [{ type: "CARD_PLAYED", by: 0, role: "ATTACK", card: card("spades", 7) }],
+      [
+        {
+          type: "CARD_PLAYED",
+          by: 1,
+          role: "DEFEND",
+          card: card("spades", 8),
+          target: 0,
+        },
+      ],
+      [
+        {
+          type: "ROUND_ENDED",
+          discarded: [card("spades", 7), card("spades", 8)],
+          attacker: 1,
+          defender: 0,
+        },
+      ],
+      [{ type: "CARD_PLAYED", by: 1, role: "ATTACK", card: card("clubs", 13) }],
+      [
+        {
+          type: "PILE_TAKEN",
+          by: 0,
+          cards: [card("clubs", 13)],
+          attacker: 1,
+          defender: 0,
+        },
+      ],
+    ]);
   });
 });

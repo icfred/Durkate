@@ -7,7 +7,9 @@ export type Action =
   | { type: "START_GAME" }
   | { type: "ATTACK"; by: number; card: Card }
   | { type: "DEFEND"; by: number; card: Card; target: number }
-  | { type: "THROW_IN"; by: number; card: Card };
+  | { type: "THROW_IN"; by: number; card: Card }
+  | { type: "TAKE_PILE"; by: number }
+  | { type: "END_ROUND"; by: number };
 
 export type RejectReason =
   | "WRONG_PHASE"
@@ -23,7 +25,8 @@ export type RejectReason =
   | "DEFENDER_OVERWHELMED"
   | "INVALID_TARGET"
   | "TARGET_ALREADY_DEFENDED"
-  | "DOES_NOT_BEAT";
+  | "DOES_NOT_BEAT"
+  | "ATTACKS_UNDEFENDED";
 
 export type Event =
   | { type: "GAME_STARTED"; trump: Card; attacker: number }
@@ -33,6 +36,19 @@ export type Event =
       role: "ATTACK" | "DEFEND" | "THROW_IN";
       card: Card;
       target?: number;
+    }
+  | {
+      type: "PILE_TAKEN";
+      by: number;
+      cards: Card[];
+      attacker: number;
+      defender: number;
+    }
+  | {
+      type: "ROUND_ENDED";
+      discarded: Card[];
+      attacker: number;
+      defender: number;
     };
 
 export type StepResult =
@@ -51,6 +67,10 @@ export function step(state: State, action: Action): StepResult {
       return defend(state, action);
     case "THROW_IN":
       return throwIn(state, action);
+    case "TAKE_PILE":
+      return takePile(state, action);
+    case "END_ROUND":
+      return endRound(state, action);
     default: {
       action satisfies never;
       throw new Error(`unknown action: ${(action as { type: string }).type}`);
@@ -191,6 +211,58 @@ function defend(
       },
     ],
   };
+}
+
+function takePile(state: State, action: { type: "TAKE_PILE"; by: number }): StepResult {
+  if (state.phase !== "in-round") return { ok: false, reason: "WRONG_PHASE" };
+  if (action.by !== state.defender) return { ok: false, reason: "NOT_DEFENDER" };
+  if (state.table.length === 0) return { ok: false, reason: "TABLE_EMPTY" };
+  const taken = collectTableCards(state.table);
+  const attacker = (state.defender + 1) % state.playerCount;
+  const defender = (attacker + 1) % state.playerCount;
+  const next: InRoundState = {
+    ...state,
+    hands: state.hands.map((h, i) => (i === state.defender ? [...h, ...taken] : h)),
+    table: [],
+    attacker,
+    defender,
+  };
+  return {
+    ok: true,
+    state: next,
+    events: [{ type: "PILE_TAKEN", by: state.defender, cards: taken, attacker, defender }],
+  };
+}
+
+function endRound(state: State, action: { type: "END_ROUND"; by: number }): StepResult {
+  if (state.phase !== "in-round") return { ok: false, reason: "WRONG_PHASE" };
+  if (action.by !== state.attacker) return { ok: false, reason: "NOT_ATTACKER" };
+  if (state.table.length === 0) return { ok: false, reason: "TABLE_EMPTY" };
+  if (state.table.some((p) => !p.defense)) return { ok: false, reason: "ATTACKS_UNDEFENDED" };
+  const discarded = collectTableCards(state.table);
+  const attacker = state.defender;
+  const defender = (attacker + 1) % state.playerCount;
+  const next: InRoundState = {
+    ...state,
+    table: [],
+    discard: [...state.discard, ...discarded],
+    attacker,
+    defender,
+  };
+  return {
+    ok: true,
+    state: next,
+    events: [{ type: "ROUND_ENDED", discarded, attacker, defender }],
+  };
+}
+
+function collectTableCards(table: readonly TablePair[]): Card[] {
+  const out: Card[] = [];
+  for (const pair of table) {
+    out.push(pair.attack);
+    if (pair.defense) out.push(pair.defense);
+  }
+  return out;
 }
 
 export function beats(defense: Card, attack: Card, trump: Suit): boolean {
