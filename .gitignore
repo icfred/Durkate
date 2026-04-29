@@ -52,6 +52,11 @@ tools/spikes/out/
 
 # AI agent workflow
 .claude/
-docs/
 CLAUDE.md
 PROJECT_CONTEXT.md
+docs/agent_voice.md
+docs/project_mvp.md
+docs/project_vision.md
+
+# Stray binaries (drag-drop artifacts)
+*.zip
