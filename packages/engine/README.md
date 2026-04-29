@@ -21,6 +21,18 @@ and by tests directly.
 
 ## Public API
 
+Primitives (DUR-5):
+
+- `Suit`, `Rank`, `Card` types; `SUITS`, `RANKS` const tuples.
+- `buildDeck() -> Card[]` - 36-card Russian deck (6 through Ace, 4 suits).
+- `Rng`, `RngState`; `createRng(seed: number) -> Rng`;
+  `rngFromState(state: RngState) -> Rng`. xoshiro128** seeded via
+  splitmix32. State is a serializable `[u32, u32, u32, u32]`.
+- `shuffle<T>(items: readonly T[], rng: Rng) -> T[]` - Fisher-Yates,
+  non-mutating, deterministic given the RNG.
+
+Forthcoming (later tickets):
+
 - `step(state, action) -> { state, events }`
 - `initialState(opts) -> State`
 - `validate(state, action) -> Result`
