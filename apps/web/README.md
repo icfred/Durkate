@@ -89,22 +89,48 @@ a warn while the connection is not open.
   because the store already has the right shape for downstream UI.
 - `src/net/connection.ts` reconciles store phase with an active
   connection: lobby/game opens (or no-ops if already open for the same
-  room), menu/gameover closes. It also `setSender`-s the wsClient's
-  `send` so `appStore.submitAction` and `appStore.requestRematch` can
-  call it. Inbound handlers also drive the phase machine (snapshot
-  -> game, GAME_OVER -> gameover, close-from-game -> lobby) and
-  populate `appStore.room` from `RoomState` so the lobby can render
-  "waiting for opponent" vs "starting" states.
+  room), menu/gameover closes. It only opens once `currentToken` is set
+  on the store, so the create-room POST resolves before the ws upgrade
+  is attempted. The controller also `setSender`-s the wsClient's `send`
+  so `appStore.submitAction` and `appStore.requestRematch` can call it.
+  Inbound handlers also drive the phase machine (snapshot -> game,
+  GAME_OVER -> gameover, close-from-game -> lobby) and populate
+  `appStore.room` from `RoomState` so the lobby can render "waiting for
+  opponent" vs "starting" states.
+- `src/net/rooms.ts` issues `POST /rooms { mode }` to the server and
+  returns `{ roomId, hostToken, joinToken? }`. The lobby flow drives
+  this: clicking "Play vs bot" or "Play vs friend" calls
+  `beginRoomCreation(mode)` (lobby renders "CREATING ROOM..."), then
+  on success `roomCreated()` populates the store with the real room id
+  and seat token; on failure `roomCreationFailed()` shows an inline
+  error with a retry button. A user opening the share URL skips the
+  POST and enters the lobby via `enterLobbyAsJoiner` with the embedded
+  token.
 - **Drop vs queue**: `submitAction` and `requestRematch` calls made
   while `connection.status !== "open"` are dropped with a `console.warn`.
   We don't queue because the server is authoritative and a stale
   action replayed across a reconnect would race with whatever state
   the server already shipped.
-- **Auth token**: stubbed as `""` until the server lands a real session
-  endpoint. The wsClient still passes the field; the server is free to
-  ignore it for now.
+- **Auth token**: per-room seat token issued by `POST /rooms`. The host
+  receives `hostToken` (seat 0). For human-vs-human rooms a `joinToken`
+  is returned to the host and embedded in the share URL hash as
+  `#room=<id>&t=<joinToken>`; the joiner's client extracts the token
+  and uses it on the ws upgrade.
 - **WS URL**: `import.meta.env.VITE_WS_URL` if set, otherwise
   `${ws|wss}://${location.host}/ws`.
+- **HTTP server URL**: used for `POST /rooms`. Defaults to the same
+  origin as the ws URL (with `ws[s]://` rewritten to `http[s]://` and
+  the `/ws` path stripped). Override with `VITE_SERVER_URL`.
+
+## Local dev
+
+`pnpm dev` from the repo root runs `dev:server` (port 3001) and
+`dev:web` (port 5173) in parallel. The Vite config (`vite.config.ts`)
+proxies `/rooms`, `/ws`, and `/health` from `:5173` to `:3001`, so the
+client just talks to its own origin and no `VITE_WS_URL` /
+`VITE_SERVER_URL` env override is needed in dev. To proxy to a
+different server (e.g. a remote dev box), set
+`VITE_DEV_PROXY_TARGET=http://other.host:3001`.
 
 ## Focus manager lifecycle
 

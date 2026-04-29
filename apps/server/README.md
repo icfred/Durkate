@@ -33,6 +33,13 @@ Listens on `PORT` (default 3001), `HOST` (default 0.0.0.0).
 
 Current routes:
 - `GET /health` - liveness probe, returns `{ ok: true }`
+- `POST /rooms` - create a new room. Body `{ mode: "human" | "bot" }`,
+  validated by Zod. Returns 201 `{ roomId, hostToken, joinToken? }`:
+  `hostToken` is bound to seat 0; `joinToken` (only present for
+  `mode: "human"`) is bound to seat 1. CORS uses the same `allowedOrigins`
+  allowlist as the ws gateway, with an `OPTIONS` preflight handler.
+  Per-IP token-bucket rate limit (default 10 / 60s); over-budget POSTs
+  return 429.
 - `GET /ws/:roomId?token=...` - WebSocket upgrade. Looks up the room and
   resolves the seat from the token. Unknown room or forged token is
   rejected with a typed `Error` and the socket is closed. Inbound
@@ -46,7 +53,6 @@ Current routes:
   warn log.
 
 Planned routes (not yet implemented):
-- `POST /rooms` - create a room, returns roomId + seat tokens
 - `GET /rooms/:id` - room metadata (lobby state)
 
 ## Room modes
@@ -61,10 +67,9 @@ A room is created in one of two modes (default `human`):
   the human at seat 0 connects. The human always sits at seat 0 in a
   bot room — this is a hard invariant the lobby relies on.
 
-The mode is set at room creation (`registry.create({ mode: "bot" })`)
-and is immutable for the room's lifetime. The protocol's
-`JoinRoom { mode? }` field exists to carry mode through the lobby flow
-once room-creation is exposed over the wire.
+The mode is set at room creation (`registry.create({ mode: "bot" })`,
+or `POST /rooms { mode: "bot" }` from a client) and is immutable for the
+room's lifetime.
 
 ## Game loop
 

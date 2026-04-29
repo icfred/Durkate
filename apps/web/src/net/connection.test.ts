@@ -68,7 +68,7 @@ describe("createConnectionController", () => {
     const stop = controller.start();
     expect(conns).toHaveLength(0);
 
-    appStore.getState().showLobby({ mode: "friend", roomCode: "ABCD" });
+    appStore.getState().showLobby({ mode: "friend", roomCode: "ABCD", token: "test-token" });
     expect(conns).toHaveLength(1);
     expect(conns[0]?.roomId).toBe("ABCD");
 
@@ -85,7 +85,7 @@ describe("createConnectionController", () => {
       connectImpl: impl,
     });
     const stop = controller.start();
-    appStore.getState().showLobby({ mode: "friend", roomCode: "ABCD" });
+    appStore.getState().showLobby({ mode: "friend", roomCode: "ABCD", token: "test-token" });
     conns[0]?.handlers.onStatus("open", { attempts: 0 });
     expect(appStore.getState().connection).toEqual(status("open"));
 
@@ -106,7 +106,7 @@ describe("createConnectionController", () => {
       connectImpl: impl,
     });
     const stop = controller.start();
-    appStore.getState().showLobby({ mode: "friend", roomCode: "ABCD" });
+    appStore.getState().showLobby({ mode: "friend", roomCode: "ABCD", token: "test-token" });
     conns[0]?.handlers.onStatus("open", { attempts: 0 });
     appStore.getState().submitAction({ type: "START_GAME" });
     expect(conns[0]?.sent).toEqual([{ type: "SubmitAction", action: { type: "START_GAME" } }]);
@@ -128,7 +128,7 @@ describe("createConnectionController", () => {
       connectImpl: impl,
     });
     const stop = controller.start();
-    appStore.getState().showLobby({ mode: "friend", roomCode: "ABCD" });
+    appStore.getState().showLobby({ mode: "friend", roomCode: "ABCD", token: "test-token" });
     expect(conns).toHaveLength(1);
     // simulate game phase with same roomCode
     appStore.setState({ phase: "game" });
@@ -145,7 +145,7 @@ describe("createConnectionController", () => {
       connectImpl: impl,
     });
     const stop = controller.start();
-    appStore.getState().showLobby({ mode: "friend", roomCode: "ABCD" });
+    appStore.getState().showLobby({ mode: "friend", roomCode: "ABCD", token: "test-token" });
     expect(appStore.getState().phase).toBe("lobby");
 
     conns[0]?.handlers.onSnapshot({ type: "Snapshot", snapshot: makeSnapshot(0) });
@@ -162,7 +162,7 @@ describe("createConnectionController", () => {
       connectImpl: impl,
     });
     const stop = controller.start();
-    appStore.getState().showLobby({ mode: "friend", roomCode: "ABCD" });
+    appStore.getState().showLobby({ mode: "friend", roomCode: "ABCD", token: "test-token" });
     appStore.getState().setRoomMembership({
       seats: [{ name: "alice" }, { name: "bob" }],
       you: 1,
@@ -190,7 +190,7 @@ describe("createConnectionController", () => {
       connectImpl: impl,
     });
     const stop = controller.start();
-    appStore.getState().showLobby({ mode: "friend", roomCode: "ABCD" });
+    appStore.getState().showLobby({ mode: "friend", roomCode: "ABCD", token: "test-token" });
     conns[0]?.handlers.onSnapshot({ type: "Snapshot", snapshot: makeSnapshot(0) });
 
     const events: Event[] = [{ type: "GAME_OVER", durak: 1 }];
@@ -212,7 +212,7 @@ describe("createConnectionController", () => {
       connectImpl: impl,
     });
     const stop = controller.start();
-    appStore.getState().showLobby({ mode: "friend", roomCode: "ABCD" });
+    appStore.getState().showLobby({ mode: "friend", roomCode: "ABCD", token: "test-token" });
     conns[0]?.handlers.onSnapshot({ type: "Snapshot", snapshot: makeSnapshot(0) });
     expect(appStore.getState().phase).toBe("game");
 
@@ -232,7 +232,7 @@ describe("createConnectionController", () => {
       connectImpl: impl,
     });
     const stop = controller.start();
-    appStore.getState().showLobby({ mode: "friend", roomCode: "ABCD" });
+    appStore.getState().showLobby({ mode: "friend", roomCode: "ABCD", token: "test-token" });
     conns[0]?.handlers.onSnapshot({ type: "Snapshot", snapshot: makeSnapshot(0) });
     conns[0]?.handlers.onEvents({
       type: "Events",
@@ -253,7 +253,7 @@ describe("createConnectionController", () => {
       connectImpl: impl,
     });
     const stop = controller.start();
-    appStore.getState().showLobby({ mode: "friend", roomCode: "ABCD" });
+    appStore.getState().showLobby({ mode: "friend", roomCode: "ABCD", token: "test-token" });
     conns[0]?.handlers.onRoomState({
       type: "RoomState",
       roomId: "ABCD",

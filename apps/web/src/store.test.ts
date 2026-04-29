@@ -1,7 +1,13 @@
 import type { Event } from "@durak/engine";
 import type { Snapshot } from "@durak/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { appStore, EVENT_BUFFER_SIZE, generateRoomCode, parseHashRoom } from "./store.js";
+import {
+  appStore,
+  buildShareUrl,
+  EVENT_BUFFER_SIZE,
+  parseHashJoin,
+  parseHashRoom,
+} from "./store.js";
 
 describe("appStore", () => {
   beforeEach(() => {
@@ -211,25 +217,108 @@ describe("parseHashRoom", () => {
     expect(parseHashRoom("#other=ABCD")).toBeNull();
   });
 
-  it("extracts the room code and uppercases it", () => {
-    expect(parseHashRoom("#room=abcd")).toBe("ABCD");
+  it("extracts the room code preserving case (server ids are base64url)", () => {
+    expect(parseHashRoom("#room=Ab12Xy")).toBe("Ab12Xy");
   });
 
-  it("preserves longer alphanumeric codes", () => {
-    expect(parseHashRoom("#room=Ab12Xy")).toBe("AB12XY");
+  it("accepts base64url characters _ and -", () => {
+    expect(parseHashRoom("#room=abc_-DEF")).toBe("abc_-DEF");
+  });
+
+  it("ignores other parameters preceding room=", () => {
+    expect(parseHashRoom("#sandbox=foo&room=ABCD")).toBe("ABCD");
   });
 });
 
-describe("generateRoomCode", () => {
-  it("returns a 4-character code from the alphabet", () => {
-    const code = generateRoomCode(() => 0);
-    expect(code).toHaveLength(4);
-    expect(code).toMatch(/^[A-Z0-9]+$/);
+describe("parseHashJoin", () => {
+  it("returns null when only room is present", () => {
+    expect(parseHashJoin("#room=ABCD")).toBeNull();
   });
 
-  it("uses the supplied random source", () => {
-    const code = generateRoomCode(() => 0);
-    expect(code).toBe("AAAA");
+  it("returns null when only token is present", () => {
+    expect(parseHashJoin("#t=xyz")).toBeNull();
+  });
+
+  it("extracts both fields when both are present", () => {
+    expect(parseHashJoin("#room=ABC&t=xyz")).toEqual({ roomCode: "ABC", token: "xyz" });
+  });
+
+  it("works with base64url room and token", () => {
+    expect(parseHashJoin("#room=A_b-9&t=tok_-1")).toEqual({
+      roomCode: "A_b-9",
+      token: "tok_-1",
+    });
+  });
+});
+
+describe("buildShareUrl", () => {
+  it("encodes both roomCode and token into the hash", () => {
+    expect(buildShareUrl("https://durak.example", "ABCD", "xyz")).toBe(
+      "https://durak.example/#room=ABCD&t=xyz",
+    );
+  });
+
+  it("URL-encodes characters that need it", () => {
+    expect(buildShareUrl("https://durak.example", "A B", "x/y")).toBe(
+      "https://durak.example/#room=A%20B&t=x%2Fy",
+    );
+  });
+});
+
+describe("appStore room creation", () => {
+  beforeEach(() => {
+    appStore.getState().showMenu();
+  });
+
+  it("beginRoomCreation enters lobby with creating state and clears prior creds", () => {
+    appStore.getState().beginRoomCreation("bot");
+    const state = appStore.getState();
+    expect(state.phase).toBe("lobby");
+    expect(state.mode).toBe("bot");
+    expect(state.roomCode).toBeUndefined();
+    expect(state.currentToken).toBeNull();
+    expect(state.shareToken).toBeNull();
+    expect(state.roomCreation).toEqual({ status: "creating" });
+  });
+
+  it("roomCreated populates roomCode, token, and ready state", () => {
+    appStore.getState().beginRoomCreation("friend");
+    appStore.getState().roomCreated({
+      roomId: "abc-123",
+      hostToken: "host-tok",
+      shareToken: "join-tok",
+    });
+    const state = appStore.getState();
+    expect(state.roomCode).toBe("abc-123");
+    expect(state.currentToken).toBe("host-tok");
+    expect(state.shareToken).toBe("join-tok");
+    expect(state.roomCreation).toEqual({ status: "ready" });
+  });
+
+  it("roomCreationFailed records the error", () => {
+    appStore.getState().beginRoomCreation("bot");
+    appStore.getState().roomCreationFailed("network down");
+    expect(appStore.getState().roomCreation).toEqual({ status: "error", error: "network down" });
+  });
+
+  it("enterLobbyAsJoiner sets ready state with token", () => {
+    appStore.getState().enterLobbyAsJoiner({ roomCode: "abc", token: "join-tok" });
+    const state = appStore.getState();
+    expect(state.phase).toBe("lobby");
+    expect(state.mode).toBe("friend");
+    expect(state.roomCode).toBe("abc");
+    expect(state.currentToken).toBe("join-tok");
+    expect(state.roomCreation).toEqual({ status: "ready" });
+  });
+
+  it("showMenu clears all room-creation state", () => {
+    appStore.getState().beginRoomCreation("bot");
+    appStore.getState().roomCreated({ roomId: "x", hostToken: "y" });
+    appStore.getState().showMenu();
+    const state = appStore.getState();
+    expect(state.currentToken).toBeNull();
+    expect(state.shareToken).toBeNull();
+    expect(state.roomCreation).toEqual({ status: "idle" });
   });
 });
 

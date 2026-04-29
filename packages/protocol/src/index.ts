@@ -5,6 +5,13 @@ export type {
   RequestRematch,
   SubmitAction,
 } from "./client";
+export type { CreateRoomRequest, CreateRoomResponse } from "./http";
+export {
+  createRoomRequestSchema,
+  createRoomResponseSchema,
+  parseCreateRoomRequest,
+  parseCreateRoomResponse,
+} from "./http";
 export type {
   ErrorMessage,
   EventsMessage,

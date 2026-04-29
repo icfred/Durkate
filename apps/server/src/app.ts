@@ -1,8 +1,11 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { type Gateway, type GatewayOptions, registerGateway } from "./gateway.js";
 import { RoomRegistry } from "./rooms/RoomRegistry.js";
+import { type RoomsRouteOptions, registerRoomsRoutes } from "./routes/rooms.js";
 
-export interface BuildAppOptions extends GatewayOptions {}
+export interface BuildAppOptions extends GatewayOptions {
+  readonly createRateLimit?: RoomsRouteOptions["createRateLimit"];
+}
 
 export interface BuiltApp {
   app: FastifyInstance;
@@ -28,6 +31,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
 
   const allowedOrigins = options.allowedOrigins ?? parseAllowedOrigins(process.env.ALLOWED_ORIGINS);
   const registry = new RoomRegistry();
+  registerRoomsRoutes(app, registry, {
+    allowedOrigins,
+    ...(options.createRateLimit !== undefined && { createRateLimit: options.createRateLimit }),
+  });
   const gateway = await registerGateway(app, registry, {
     allowedOrigins,
     ...(options.rateLimit !== undefined && { rateLimit: options.rateLimit }),

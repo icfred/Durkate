@@ -10,7 +10,7 @@ import {
 } from "@durak/ui";
 import { Container, Graphics, Text } from "pixi.js";
 import { attachButtonHover, withClickSound } from "../audio/index.js";
-import type { Mode, RoomMembership } from "../store.js";
+import type { Mode, RoomCreationState, RoomMembership } from "../store.js";
 import type { Screen } from "./types.js";
 
 const PANEL_W = 540;
@@ -19,6 +19,8 @@ const FIELD_W = 240;
 const FIELD_H = 48;
 const COPY_BUTTON_W = 140;
 const COPY_BUTTON_H = 36;
+const RETRY_BUTTON_W = 160;
+const RETRY_BUTTON_H = 40;
 const ROOM_CODE_MAX = 8;
 
 export type LobbyStatus = "waiting" | "starting";
@@ -29,6 +31,12 @@ export interface LobbyScreenOptions {
   shareUrl: string;
   initialRoom: RoomMembership | null;
   subscribe?: (listener: (room: RoomMembership | null) => void) => () => void;
+  /** Initial room-creation state. Defaults to `{ status: "ready" }`. */
+  initialCreation?: RoomCreationState;
+  /** Subscribes the screen to room-creation state transitions. */
+  subscribeCreation?: (listener: (state: RoomCreationState) => void) => () => void;
+  /** Invoked when the user retries after a failed room creation. */
+  onRetry?: () => void;
   onJoin(code: string): void;
   copyToClipboard?(text: string): Promise<void> | void;
 }
@@ -55,6 +63,10 @@ export class LobbyScreen extends Container implements Screen {
   private readonly shareUrl: string;
   private readonly status: Text;
   private readonly copyToClipboard: (text: string) => Promise<void> | void;
+  private readonly readyContent: Container;
+  private readonly creationOverlay: Container;
+  private readonly creationText: Text;
+  private readonly retryButton: Button | null;
   private readonly field: Container | null;
   private readonly fieldText: Text | null;
   private readonly fieldHint: Text | null;
@@ -64,7 +76,9 @@ export class LobbyScreen extends Container implements Screen {
   private overlay: TextInputOverlayHandle | null = null;
   private inputValue = "";
   private currentStatus: LobbyStatus;
-  private readonly unsubscribe: (() => void) | null;
+  private creation: RoomCreationState;
+  private readonly unsubscribeRoom: (() => void) | null;
+  private readonly unsubscribeCreation: (() => void) | null;
 
   constructor(options: LobbyScreenOptions) {
     super();
@@ -74,6 +88,7 @@ export class LobbyScreen extends Container implements Screen {
     this.onJoin = options.onJoin;
     this.copyToClipboard = options.copyToClipboard ?? defaultCopyToClipboard;
     this.currentStatus = deriveStatus(options.mode, options.initialRoom);
+    this.creation = options.initialCreation ?? { status: "ready" };
 
     this.panel = new Panel({ width: PANEL_W, height: PANEL_H });
     this.addChild(this.panel);
@@ -92,6 +107,9 @@ export class LobbyScreen extends Container implements Screen {
     heading.y = spacing.lg;
     this.panel.addChild(heading);
 
+    this.readyContent = new Container();
+    this.panel.addChild(this.readyContent);
+
     this.status = new Text({
       text: headlineFor(this.mode, this.currentStatus),
       style: {
@@ -104,7 +122,7 @@ export class LobbyScreen extends Container implements Screen {
     });
     this.status.y = heading.y + heading.height + spacing.md;
     this.layoutStatus();
-    this.panel.addChild(this.status);
+    this.readyContent.addChild(this.status);
 
     const roomLabel = new Text({
       text: "ROOM",
@@ -117,9 +135,9 @@ export class LobbyScreen extends Container implements Screen {
     });
     roomLabel.x = Math.round((PANEL_W - roomLabel.width) / 2);
     roomLabel.y = this.status.y + this.status.height + spacing.lg;
-    this.panel.addChild(roomLabel);
+    this.readyContent.addChild(roomLabel);
 
-    const roomCode = new Text({
+    const roomCodeText = new Text({
       text: this.roomCode,
       style: {
         fontFamily: typography.family,
@@ -129,11 +147,11 @@ export class LobbyScreen extends Container implements Screen {
         letterSpacing: typography.letterSpacing.stamp,
       },
     });
-    roomCode.x = Math.round((PANEL_W - roomCode.width) / 2);
-    roomCode.y = roomLabel.y + roomLabel.height + spacing.xs;
-    this.panel.addChild(roomCode);
+    roomCodeText.x = Math.round((PANEL_W - roomCodeText.width) / 2);
+    roomCodeText.y = roomLabel.y + roomLabel.height + spacing.xs;
+    this.readyContent.addChild(roomCodeText);
 
-    let nextY = roomCode.y + roomCode.height + spacing.md;
+    let nextY = roomCodeText.y + roomCodeText.height + spacing.md;
 
     if (this.mode === "friend") {
       const shareLabel = new Text({
@@ -147,7 +165,7 @@ export class LobbyScreen extends Container implements Screen {
       });
       shareLabel.x = Math.round((PANEL_W - shareLabel.width) / 2);
       shareLabel.y = nextY;
-      this.panel.addChild(shareLabel);
+      this.readyContent.addChild(shareLabel);
 
       const shareUrlText = new Text({
         text: this.shareUrl,
@@ -160,7 +178,7 @@ export class LobbyScreen extends Container implements Screen {
       });
       shareUrlText.x = Math.round((PANEL_W - shareUrlText.width) / 2);
       shareUrlText.y = shareLabel.y + shareLabel.height + spacing.xs;
-      this.panel.addChild(shareUrlText);
+      this.readyContent.addChild(shareUrlText);
 
       const copyButton = new Button({
         label: "COPY LINK",
@@ -171,7 +189,7 @@ export class LobbyScreen extends Container implements Screen {
       attachButtonHover(copyButton);
       copyButton.x = Math.round((PANEL_W - COPY_BUTTON_W) / 2);
       copyButton.y = shareUrlText.y + shareUrlText.height + spacing.sm;
-      this.panel.addChild(copyButton);
+      this.readyContent.addChild(copyButton);
       this.focus.register(copyButton);
 
       const joinLabel = new Text({
@@ -185,7 +203,7 @@ export class LobbyScreen extends Container implements Screen {
       });
       joinLabel.x = Math.round((PANEL_W - joinLabel.width) / 2);
       joinLabel.y = copyButton.y + copyButton.height + spacing.lg;
-      this.panel.addChild(joinLabel);
+      this.readyContent.addChild(joinLabel);
 
       this.fieldLocalX = Math.round((PANEL_W - FIELD_W) / 2);
       this.fieldLocalY = joinLabel.y + joinLabel.height + spacing.sm;
@@ -193,7 +211,7 @@ export class LobbyScreen extends Container implements Screen {
       const field = new Container();
       field.x = this.fieldLocalX;
       field.y = this.fieldLocalY;
-      this.panel.addChild(field);
+      this.readyContent.addChild(field);
 
       const fieldBg = new Graphics();
       fieldBg
@@ -237,9 +255,48 @@ export class LobbyScreen extends Container implements Screen {
     }
 
     void nextY;
+
+    this.creationOverlay = new Container();
+    this.creationOverlay.visible = false;
+    this.panel.addChild(this.creationOverlay);
+
+    this.creationText = new Text({
+      text: "",
+      style: {
+        fontFamily: typography.family,
+        fontSize: typography.size.md,
+        fontWeight: typography.weight.bold,
+        fill: color.text,
+        letterSpacing: typography.letterSpacing.wide,
+      },
+    });
+    this.creationOverlay.addChild(this.creationText);
+
+    if (options.onRetry) {
+      const onRetry = options.onRetry;
+      this.retryButton = new Button({
+        label: "RETRY",
+        width: RETRY_BUTTON_W,
+        height: RETRY_BUTTON_H,
+        onActivate: withClickSound(() => onRetry()),
+      });
+      attachButtonHover(this.retryButton);
+      this.retryButton.visible = false;
+      this.creationOverlay.addChild(this.retryButton);
+    } else {
+      this.retryButton = null;
+    }
+
+    this.applyCreationState();
+
     this.focus.attach();
 
-    this.unsubscribe = options.subscribe ? options.subscribe((room) => this.update(room)) : null;
+    this.unsubscribeRoom = options.subscribe
+      ? options.subscribe((room) => this.update(room))
+      : null;
+    this.unsubscribeCreation = options.subscribeCreation
+      ? options.subscribeCreation((state) => this.updateCreation(state))
+      : null;
   }
 
   layout(viewWidth: number, viewHeight: number): void {
@@ -249,7 +306,8 @@ export class LobbyScreen extends Container implements Screen {
   }
 
   dispose(): void {
-    this.unsubscribe?.();
+    this.unsubscribeRoom?.();
+    this.unsubscribeCreation?.();
     this.overlay?.unmount();
     this.overlay = null;
     this.focus.detach();
@@ -262,6 +320,46 @@ export class LobbyScreen extends Container implements Screen {
     this.currentStatus = next;
     this.status.text = headlineFor(this.mode, this.currentStatus);
     this.layoutStatus();
+  }
+
+  private updateCreation(state: RoomCreationState): void {
+    if (state.status === this.creation.status) {
+      // For "error" the message can change; cheap to reapply.
+      if (state.status !== "error") return;
+    }
+    this.creation = state;
+    this.applyCreationState();
+  }
+
+  private applyCreationState(): void {
+    const isReady = this.creation.status === "ready" || this.creation.status === "idle";
+    this.readyContent.visible = isReady;
+    this.creationOverlay.visible = !isReady;
+    if (this.field) this.field.visible = isReady;
+    if (this.creation.status === "creating") {
+      this.creationText.text = "CREATING ROOM...";
+    } else if (this.creation.status === "error") {
+      this.creationText.text = `COULD NOT CREATE ROOM\n${this.creation.error}`;
+    } else {
+      this.creationText.text = "";
+    }
+    this.layoutCreationOverlay();
+    if (this.retryButton) {
+      this.retryButton.visible = this.creation.status === "error";
+      if (this.creation.status === "error") this.focus.register(this.retryButton);
+    }
+    if (isReady) this.remountOverlay();
+    else this.unmountInputOverlay();
+  }
+
+  private layoutCreationOverlay(): void {
+    const text = this.creationText;
+    text.x = Math.round((PANEL_W - text.width) / 2);
+    text.y = Math.round(PANEL_H * 0.4);
+    if (this.retryButton) {
+      this.retryButton.x = Math.round((PANEL_W - RETRY_BUTTON_W) / 2);
+      this.retryButton.y = text.y + text.height + spacing.lg;
+    }
   }
 
   private layoutStatus(): void {
@@ -283,6 +381,7 @@ export class LobbyScreen extends Container implements Screen {
 
   private remountOverlay(): void {
     if (!this.field || !this.fieldText) return;
+    if (this.creation.status !== "ready" && this.creation.status !== "idle") return;
     this.overlay?.unmount();
     this.overlay = mountTextInputOverlay({
       targetRect: {
@@ -303,6 +402,11 @@ export class LobbyScreen extends Container implements Screen {
         this.onJoin(trimmed);
       },
     });
+  }
+
+  private unmountInputOverlay(): void {
+    this.overlay?.unmount();
+    this.overlay = null;
   }
 
   private layoutFieldText(): void {
