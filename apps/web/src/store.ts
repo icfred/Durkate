@@ -24,6 +24,10 @@ export interface GameOverData {
   seatNames?: (string | null)[];
 }
 
+export interface AudioState {
+  muted: boolean;
+}
+
 export interface AppState {
   phase: Phase;
   mode: Mode | undefined;
@@ -32,6 +36,7 @@ export interface AppState {
   events: Event[];
   connection: ConnectionState;
   gameover: GameOverData | undefined;
+  audio: AudioState;
   submitAction: (action: Action) => void;
   requestRematch: () => void;
   showMenu(): void;
@@ -42,9 +47,44 @@ export interface AppState {
   appendEvents(events: Event[]): void;
   setConnectionStatus(status: ConnectionStatus, info: { attempts: number; error?: string }): void;
   setSender(sender: ClientSender | null): void;
+  toggleMute(): void;
+  setMuted(muted: boolean): void;
 }
 
 const INITIAL_CONNECTION: ConnectionState = { status: "idle", attempts: 0 };
+
+const MUTED_STORAGE_KEY = "durak.audio.muted";
+
+interface StorageLike {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
+function getStorage(): StorageLike | undefined {
+  if (typeof globalThis === "undefined") return undefined;
+  const candidate = (globalThis as { localStorage?: StorageLike }).localStorage;
+  return candidate;
+}
+
+function readMuted(): boolean {
+  const storage = getStorage();
+  if (!storage) return false;
+  try {
+    return storage.getItem(MUTED_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeMuted(muted: boolean): void {
+  const storage = getStorage();
+  if (!storage) return;
+  try {
+    storage.setItem(MUTED_STORAGE_KEY, muted ? "1" : "0");
+  } catch {
+    // localStorage can throw in private mode or quota-exceeded; swallow.
+  }
+}
 
 interface InternalState extends AppState {
   __sender: ClientSender | null;
@@ -59,6 +99,7 @@ export const appStore = createStore<AppState>((set, get) => {
     events: [],
     connection: INITIAL_CONNECTION,
     gameover: undefined,
+    audio: { muted: readMuted() },
     __sender: null,
     showMenu: () =>
       set({
@@ -110,6 +151,15 @@ export const appStore = createStore<AppState>((set, get) => {
         return;
       }
       state.__sender({ type: "RequestRematch" });
+    },
+    toggleMute: () => {
+      const next = !get().audio.muted;
+      writeMuted(next);
+      set({ audio: { muted: next } });
+    },
+    setMuted: (muted: boolean) => {
+      writeMuted(muted);
+      set({ audio: { muted } });
     },
   };
   return internal;

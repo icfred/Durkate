@@ -3,6 +3,7 @@ import "@fontsource/jetbrains-mono/700.css";
 
 import { color, typography } from "@durak/ui";
 import { Application } from "pixi.js";
+import { bindMuteShortcut, installAudioGestureUnlock } from "./audio/index.js";
 import { gameOverFixture } from "./fixtures/gameOverFixtures.js";
 import { createConnectionController } from "./net/connection.js";
 import { SkinSandboxScreen } from "./sandbox/skins/SkinSandboxScreen.js";
@@ -93,6 +94,9 @@ if (sandboxParam === "skins") {
   const serverUrl = resolveWsUrl();
   const connection = createConnectionController({ store: appStore, serverUrl });
   connection.start();
+
+  installAudioGestureUnlock();
+  bindMuteShortcut();
 
   app.renderer.on("resize", () => {
     router.setView(app.screen.width, app.screen.height);

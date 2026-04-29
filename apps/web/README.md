@@ -135,6 +135,34 @@ This is an app, not a library. Entry point: `src/main.ts`.
 - Placeholder room codes use `Math.random`. The no-`Math.random` rule
   applies to `packages/engine` only, not the client.
 
+## Audio
+
+Code-synthesized SFX only - no external assets. `src/audio/sfx.ts` defines
+six clips (`playCard`, `takePile`, `win`, `lose`, `buttonHover`,
+`buttonClick`) as short oscillator + envelope routines.
+`src/audio/index.ts` exposes the runtime API.
+
+- **Lazy context.** `playSfx(name)` lazily creates a single `AudioContext`
+  on first call. `installAudioGestureUnlock()` wires a one-shot
+  `pointerdown`/`keydown` listener at boot to satisfy browser autoplay
+  policy. If the browser exposes no `AudioContext` (e.g. node-based test
+  env), `playSfx` silently returns `false`.
+- **Mute slice on the store.** `appStore.audio.muted` is the source of
+  truth. `toggleMute()` and `setMuted()` flip it and persist to
+  `localStorage` under `durak.audio.muted`. The store hydrates from
+  `localStorage` on init so refresh remembers the choice.
+- **Keyboard shortcut.** `bindMuteShortcut()` listens for `M` on `window`
+  and skips when the active target is an `<input>` or `<textarea>` so it
+  does not fire while a `TextInputOverlay` has focus.
+- **Wiring buttons.** `withClickSound(handler)` wraps a `Button`'s
+  `onActivate` with a click sound; `attachButtonHover(button)` adds the
+  hover sound on `pointerover`. Use both at every `Button` construction
+  site.
+- **Game events.** `GameScreen` will subscribe to the engine event ring
+  buffer and play `playCard` on `CARD_PLAYED`, `takePile` on
+  `PILE_TAKEN`, and `win`/`lose` on game-over. The screen and ring
+  buffer land in later tickets; the audio API is ready for them.
+
 ## Deployment
 
 Hosted on [Cloudflare Pages](https://pages.cloudflare.com) as project
