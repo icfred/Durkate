@@ -18,6 +18,9 @@ export interface InRoundState {
   rng: RngState;
   hands: Card[][];
   talon: Card[];
+  // Trump is kept separate from `talon`. During talon replenishment
+  // (DUR-9), draw from `talon` first; the trump is the last drawable
+  // card and is consumed only when `talon` is empty.
   trump: Card;
   table: TablePair[];
   attacker: number;
