@@ -9,13 +9,20 @@ redacted snapshots.
 ## Key concepts
 
 - **Gateway**: the ws endpoint. Validates inbound messages with Zod,
-  attributes them to a seat via session token, routes to the room.
-- **Room**: a single live game. Holds the engine state, manages timers,
-  emits snapshots + events to its connected clients.
+  attributes them to a seat via session token, dispatches `SubmitAction`
+  to the room.
+- **Room**: a single live game. Holds the engine state, runs every
+  inbound action through `step`, broadcasts per-seat redacted snapshots
+  and events, manages the turn timer.
+- **Redactor** (`src/redact.ts`): pure `redactFor(state, seat) ->
+  Snapshot`. Strips opponent hand, talon contents, and RNG state. Most
+  security-critical file in the project.
 - **Seat**: a position at a room (one human or one bot). Owns a session
   token issued at join.
 - **Session token**: opaque string bound to a seat. Required on ws
   upgrade.
+- **Token bucket** (`src/rate-limit.ts`): per-connection rate limit on
+  inbound messages.
 
 ## Public API
 
@@ -26,27 +33,59 @@ Listens on `PORT` (default 3001), `HOST` (default 0.0.0.0).
 Current routes:
 - `GET /health` - liveness probe, returns `{ ok: true }`
 - `GET /ws/:roomId?token=...` - WebSocket upgrade. Looks up the room and
-  resolves the seat from the token via `RoomRegistry`. Unknown room or
-  forged token is rejected with a typed `Error` and the socket is
-  closed. Inbound messages are Zod-parsed via
-  `clientMessageSchema`; on parse failure the gateway sends an `Error`
-  with code `BAD_MESSAGE` and closes. `SubmitAction` currently routes to
-  a stub engine that returns a placeholder `Snapshot` so the wire path
-  is exercised end-to-end. `RequestRematch` returns
-  `{ Error, code: NOT_IMPLEMENTED }`. On join, leave, and disconnect the
-  gateway broadcasts `RoomState` to every connected seat. Per-connection
-  rate limiting lands with the engine wiring (DUR-18).
+  resolves the seat from the token. Unknown room or forged token is
+  rejected with a typed `Error` and the socket is closed. Inbound
+  messages are Zod-parsed; parse failure sends `{ Error, BAD_MESSAGE }`
+  and closes. `SubmitAction` is dispatched to the room and produces a
+  per-seat `Snapshot` + `Events` broadcast on success, or a per-seat
+  `Error` on rejection. `RequestRematch` returns `{ Error,
+  NOT_IMPLEMENTED }`. On join/leave/disconnect the gateway broadcasts
+  `RoomState`. Each connection has a token-bucket rate limit (default
+  20 actions per 5 seconds); over-budget messages are dropped with a
+  warn log.
 
 Planned routes (not yet implemented):
 - `POST /rooms` - create a room, returns roomId + seat tokens
 - `GET /rooms/:id` - room metadata (lobby state)
+
+## Game loop
+
+The room is the authoritative game-loop coordinator.
+
+- **Start**: when both seats are filled and both clients are connected,
+  the gateway calls `room.start(seed)`. The seed is derived from
+  `crypto.randomInt`. The room runs `START_GAME` through `step`,
+  broadcasts the initial `Snapshot` + `Events` (a `GAME_STARTED` event)
+  to each seat, and arms the turn timer. Clients cannot send
+  `START_GAME`; the room rejects it with `FORBIDDEN_ACTION`.
+- **Action**: on `SubmitAction`, the room overrides `action.by` with
+  the connection's bound seat (clients never set `by`). The action runs
+  through `step`. On success the room replaces its state, broadcasts
+  per-seat `Snapshot` + `Events` to every connected client, and re-arms
+  the turn timer. On rejection the engine's reason is returned and the
+  gateway sends a single `Error` to the offending seat.
+- **Turn timer**: `setTimeout` per turn, default 30 seconds, injectable.
+  On expiry the room derives a synthetic action from the current state
+  (`TAKE_PILE` if any pair on the table is undefended, otherwise
+  `END_ROUND`) and dispatches it. Once the engine ships native
+  `TIMEOUT` handling (DUR-9 follow-up), this synthesis collapses into a
+  single action.
+- **Snapshot redaction**: `redactFor(state, seat)` produces the per-seat
+  `Snapshot`. It exposes only the requesting seat's hand, the table,
+  the discard pile, the trump card, and the count of cards remaining in
+  each hand and the talon. Opponent hand cards, talon contents, and the
+  RNG state never appear. The redactor is enforced by both the
+  protocol's structural type guards and property tests over random
+  game traces.
 
 ## Invariants
 
 - Every inbound ws message is parsed by Zod before any processing.
 - Every action is run through the engine; rejected actions never affect
   state.
-- Per-player redacted snapshots: opponent hand contents, deck contents,
+- The connection's bound seat overrides `action.by`; clients cannot
+  forge a seat.
+- Per-seat redacted snapshots: opponent hand contents, deck contents,
   and RNG state never appear in any outbound message.
 - The seed for each room lives only on the server.
 - Turn timers and bot delays are server-side only.
@@ -57,6 +96,9 @@ Planned routes (not yet implemented):
   Use a presentation-layer setTimeout before dispatching the bot's chosen
   action.
 - pino is the logger. Use `pino-pretty` in dev for readable output.
+- The turn-timer synthesis is a stand-in for the engine's eventual
+  native `TIMEOUT` action; revisit when DUR-9's talon-replenish and
+  game-over rules land.
 
 ## Deployment
 

@@ -1,14 +1,8 @@
 import Fastify, { type FastifyInstance } from "fastify";
-import { type Gateway, registerGateway } from "./gateway.js";
+import { type Gateway, type GatewayOptions, registerGateway } from "./gateway.js";
 import { RoomRegistry } from "./rooms/RoomRegistry.js";
 
-export interface BuildAppOptions {
-  /**
-   * Origin allowlist for ws upgrades. Empty means "allow any origin", which is
-   * the dev default. Production sets this from `ALLOWED_ORIGINS` (CSV).
-   */
-  allowedOrigins?: readonly string[];
-}
+export interface BuildAppOptions extends GatewayOptions {}
 
 export interface BuiltApp {
   app: FastifyInstance;
@@ -34,7 +28,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
 
   const allowedOrigins = options.allowedOrigins ?? parseAllowedOrigins(process.env.ALLOWED_ORIGINS);
   const registry = new RoomRegistry();
-  const gateway = await registerGateway(app, registry, { allowedOrigins });
+  const gateway = await registerGateway(app, registry, {
+    allowedOrigins,
+    ...(options.rateLimit !== undefined && { rateLimit: options.rateLimit }),
+  });
 
   return { app, registry, gateway };
 }

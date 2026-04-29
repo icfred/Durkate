@@ -1,5 +1,7 @@
+import { randomInt } from "node:crypto";
 import {
   type ClientMessage,
+  type ErrorMessage,
   parseClientMessage,
   type RoomStateMessage,
   type ServerMessage,
@@ -8,7 +10,7 @@ import websocket from "@fastify/websocket";
 import type { FastifyInstance } from "fastify";
 import type { RawData, WebSocket } from "ws";
 import { ZodError } from "zod";
-import { stubSnapshotMessage } from "./engine-stub.js";
+import { TokenBucket } from "./rate-limit.js";
 import type { Room, SeatIndex } from "./rooms/Room.js";
 import type { RoomRegistry } from "./rooms/RoomRegistry.js";
 import { SessionMap } from "./session.js";
@@ -26,8 +28,11 @@ export interface Gateway {
 }
 
 export interface GatewayOptions {
-  readonly allowedOrigins: readonly string[];
+  readonly allowedOrigins?: readonly string[];
+  readonly rateLimit?: { capacity: number; refillIntervalMs: number };
 }
+
+const DEFAULT_RATE_LIMIT = { capacity: 20, refillIntervalMs: 5_000 };
 
 function sendMessage(socket: WebSocket, msg: ServerMessage): void {
   socket.send(JSON.stringify(msg));
@@ -44,14 +49,19 @@ function parseFailureMessage(err: unknown): string {
   return "invalid message";
 }
 
+function newSeed(): number {
+  return randomInt(0, 0x7fff_ffff);
+}
+
 export async function registerGateway(
   app: FastifyInstance,
   registry: RoomRegistry,
-  options: GatewayOptions,
+  options: GatewayOptions = {},
 ): Promise<Gateway> {
   await app.register(websocket);
   const sessions = new SessionMap();
-  const allowedOrigins = new Set(options.allowedOrigins);
+  const allowedOrigins = new Set(options.allowedOrigins ?? []);
+  const rateLimit = options.rateLimit ?? DEFAULT_RATE_LIMIT;
 
   function broadcastRoomState(room: Room): void {
     const seats = room.publicSeats();
@@ -72,6 +82,12 @@ export async function registerGateway(
   function send(roomId: string, seat: SeatIndex, msg: ServerMessage): void {
     const room = registry.get(roomId);
     room?.clientForSeat(seat)?.send(JSON.stringify(msg));
+  }
+
+  function maybeStartGame(room: Room): void {
+    if (!room.hasState() && room.bothSeatsFilled() && room.attachedSeatCount() === 2) {
+      room.start(newSeed());
+    }
   }
 
   app.get<{ Params: JoinParams; Querystring: JoinQuery }>(
@@ -116,8 +132,16 @@ export async function registerGateway(
       sessions.bind(socket, { roomId, seat });
       app.log.info({ roomId, seat }, "ws: joined");
       broadcastRoomState(room);
+      maybeStartGame(room);
+
+      const bucket = new TokenBucket(rateLimit);
 
       socket.on("message", (raw: RawData) => {
+        if (!bucket.tryConsume()) {
+          app.log.warn({ roomId, seat }, "ws: rate-limited, dropping message");
+          return;
+        }
+
         let msg: ClientMessage;
         try {
           msg = parseClientMessage(JSON.parse(raw.toString()));
@@ -136,10 +160,19 @@ export async function registerGateway(
             app.log.info({ roomId, seat }, "ws: leave-room");
             socket.close();
             break;
-          case "SubmitAction":
+          case "SubmitAction": {
             app.log.info({ roomId, seat, action: msg.action.type }, "ws: action");
-            sendMessage(socket, stubSnapshotMessage(seat));
+            const result = room.applyAction(seat, msg.action);
+            if (!result.ok) {
+              const err: ErrorMessage = {
+                type: "Error",
+                code: result.reason,
+                message: result.reason,
+              };
+              sendMessage(socket, err);
+            }
             break;
+          }
           case "RequestRematch":
             app.log.info({ roomId, seat }, "ws: rematch");
             sendMessage(socket, {
