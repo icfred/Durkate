@@ -121,6 +121,10 @@ describe("rngFromState", () => {
 
     expect(actual).toEqual(expected);
   });
+
+  it("rejects the all-zero state", () => {
+    expect(() => rngFromState([0, 0, 0, 0])).toThrow(RangeError);
+  });
 });
 
 describe("Rng.clone", () => {

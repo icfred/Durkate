@@ -41,7 +41,16 @@ export function createRng(seed: number): Rng {
 }
 
 export function rngFromState(state: RngState): Rng {
-  return makeRng([state[0] >>> 0, state[1] >>> 0, state[2] >>> 0, state[3] >>> 0]);
+  const s0 = state[0] >>> 0;
+  const s1 = state[1] >>> 0;
+  const s2 = state[2] >>> 0;
+  const s3 = state[3] >>> 0;
+  // xoshiro is degenerate at all-zero state. A valid snapshot from createRng
+  // can never produce this, so reject it as a corrupted input.
+  if ((s0 | s1 | s2 | s3) === 0) {
+    throw new RangeError("rng state must not be all zero");
+  }
+  return makeRng([s0, s1, s2, s3]);
 }
 
 function makeRng(initial: [number, number, number, number]): Rng {
