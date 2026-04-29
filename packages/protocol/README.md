@@ -8,26 +8,37 @@ validate inbound messages; client uses TS types for outbound.
 
 ## Key concepts
 
-- **ClientMessage**: tagged union of messages sent from client to server
-  (e.g. `JOIN_ROOM`, `PLAY_CARD`, `TAKE_PILE`).
-- **ServerMessage**: tagged union of messages sent from server to client
-  (e.g. `STATE_UPDATE` carrying `{ snapshot, events }`).
-- **Snapshot**: per-player redacted view of game state. Produced by the
-  server, never sent in raw engine form.
+- **ClientMessage**: tagged union of messages sent from client to server.
+  Variants: `JoinRoom`, `LeaveRoom`, `SubmitAction`, `RequestRematch`.
+  `SubmitAction.action` is the engine `Action` type from `@durak/engine`.
+- **ServerMessage**: tagged union of messages sent from server to client.
+  Variants: `Snapshot`, `Events`, `Error`, `RoomState`.
+- **Snapshot**: per-seat redacted view of in-round state. Mirrors the
+  engine `InRoundState` minus `talon` contents (only `talonCount`),
+  minus opponent hand contents (only `handCounts`), minus `rng`. Adds
+  `seat` and `you: { hand, seat }`.
 
 ## Public API
 
-- `ClientMessage` / `ServerMessage` types.
-- `clientMessageSchema` / `serverMessageSchema` Zod schemas.
-- `parseClientMessage(raw)` helper.
+Types: `ClientMessage`, `JoinRoom`, `LeaveRoom`, `SubmitAction`,
+`RequestRematch`, `ServerMessage`, `SnapshotMessage`, `EventsMessage`,
+`ErrorMessage`, `RoomStateMessage`, `RoomSeat`, `Snapshot`, `YouView`,
+`SeatIndex`.
+
+Schemas (Zod, inbound only): `clientMessageSchema`, `joinRoomSchema`,
+`leaveRoomSchema`, `submitActionSchema`, `requestRematchSchema`.
+
+Helpers: `parseClientMessage(raw)`.
 
 ## Invariants
 
-- Every inbound server message is parsed by Zod before any processing.
+- Every inbound client message is parsed by Zod before any processing.
 - Outbound server messages are TypeScript-typed; no runtime validation
   needed (server controls output).
-- Hidden information (opponent hand contents, deck, RNG state) never
-  appears in any message type.
+- `Snapshot` does not name `talon`, `hands`, or `rng` as keys (enforced
+  by a compile-time type guard in `snapshot.ts`).
+- Schema/type parity: each Zod schema's `z.infer` is type-equal to its
+  TS variant (enforced by compile-time guards in `zod.ts`).
 
 ## Gotchas
 
