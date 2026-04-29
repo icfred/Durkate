@@ -1,0 +1,28 @@
+{
+  "name": "durak",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "assets:build": "uv run --directory tools build",
+    "assets:check": "uv run --directory tools check",
+    "prepare": "husky"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@9.0.0",
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.13",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.4.0",
+    "turbo": "^2.9.6",
+    "typescript": "^6.0.3"
+  }
+}

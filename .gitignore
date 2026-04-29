@@ -1,0 +1,52 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
+
+# Caches
+.turbo/
+.cache/
+.vite/
+
+# Test
+coverage/
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.swp
+*.swo
+
+# Python (tools/)
+__pycache__/
+*.py[cod]
+.venv/
+.python-version
+
+# Husky internals (auto-generated)
+.husky/_/
+
+# AI agent workflow
+.claude/
+docs/
+CLAUDE.md
+PROJECT_CONTEXT.md
