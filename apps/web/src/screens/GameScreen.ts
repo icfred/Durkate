@@ -299,15 +299,23 @@ export class GameScreen extends Container implements Screen {
       this.leftStack.addChild(stack);
     }
 
-    const trumpView = new CardView(snapshot.trump);
-    trumpView.x = snapshot.talonCount > 0 ? Math.round(CARD_W * 0.5) : 0;
-    trumpView.y = talonText.height + spacing.xs + Math.round(CARD_H * 0.25);
-    trumpView.rotation = Math.PI / 2;
-    trumpView.x += CARD_H;
-    this.leftStack.addChild(trumpView);
+    if (snapshot.trump !== null) {
+      const trumpView = new CardView(snapshot.trump);
+      trumpView.label = "trump-card";
+      trumpView.x = snapshot.talonCount > 0 ? Math.round(CARD_W * 0.5) : 0;
+      trumpView.y = talonText.height + spacing.xs + Math.round(CARD_H * 0.25);
+      trumpView.rotation = Math.PI / 2;
+      trumpView.x += CARD_H;
+      this.leftStack.addChild(trumpView);
+    } else {
+      const badge = this.renderTrumpSuitBadge(snapshot.trumpSuit);
+      badge.x = 0;
+      badge.y = talonText.height + spacing.xs + Math.round(CARD_H * 0.25);
+      this.leftStack.addChild(badge);
+    }
 
     const trumpLabel = new Text({
-      text: `TRUMP ${SUIT_GLYPH[snapshot.trump.suit]}`,
+      text: `TRUMP ${SUIT_GLYPH[snapshot.trumpSuit]}`,
       style: {
         fontFamily: typography.family,
         fontSize: typography.size.xs,
@@ -318,6 +326,30 @@ export class GameScreen extends Container implements Screen {
     trumpLabel.x = 0;
     trumpLabel.y = talonText.height + spacing.xs + CARD_H + spacing.lg;
     this.leftStack.addChild(trumpLabel);
+  }
+
+  private renderTrumpSuitBadge(suit: Snapshot["trumpSuit"]): Container {
+    const badge = new Container();
+    badge.label = "trump-badge";
+    const bg = new Graphics();
+    bg.roundRect(0, 0, CARD_H, CARD_W, 4)
+      .fill({ color: color.bgRaised })
+      .stroke({ color: color.accent, width: 2, alignment: 0 });
+    badge.addChild(bg);
+    const fill = suit === "hearts" || suit === "diamonds" ? color.danger : color.text;
+    const glyph = new Text({
+      text: SUIT_GLYPH[suit],
+      style: {
+        fontFamily: typography.family,
+        fontSize: typography.size.xl,
+        fontWeight: typography.weight.bold,
+        fill,
+      },
+    });
+    glyph.x = Math.round((CARD_H - glyph.width) / 2);
+    glyph.y = Math.round((CARD_W - glyph.height) / 2);
+    badge.addChild(glyph);
+    return badge;
   }
 
   private renderDiscard(snapshot: Snapshot): void {

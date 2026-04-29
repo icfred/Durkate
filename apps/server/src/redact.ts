@@ -17,17 +17,13 @@ export function redactFor(state: State, seat: SeatIndex): Snapshot {
   }
   const hand = state.hands[seat];
   if (!hand) throw new RangeError(`invalid seat: ${seat}`);
-  // TODO: Snapshot.trump should evolve to `trump: Card | null` plus an
-  // always-present `trumpSuit` once late-game (trump drawn into a hand) needs
-  // distinct visualization. For now we fall back to the lowest card of the
-  // trump suit so the non-null Snapshot contract holds.
-  const trump = state.trumpCard ?? { suit: state.trumpSuit, rank: 6 as const };
   return {
     phase: "in-round",
     playerCount: state.playerCount,
     handCounts: state.hands.map((h) => h.length),
     talonCount: state.talon.length + (state.trumpCard !== null ? 1 : 0),
-    trump,
+    trump: state.trumpCard,
+    trumpSuit: state.trumpSuit,
     table: state.table.map((p) =>
       p.defense !== undefined ? { attack: p.attack, defense: p.defense } : { attack: p.attack },
     ),

@@ -1,4 +1,11 @@
-import { type Action, type Card, initialState, type State, step } from "@durak/engine";
+import {
+  type Action,
+  type Card,
+  type InRoundState,
+  initialState,
+  type State,
+  step,
+} from "@durak/engine";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { RedactionPhaseError, redactFor } from "./redact.js";
@@ -75,6 +82,25 @@ describe("redactFor", () => {
     expect(snap1.you.seat).toBe(1);
   });
 
+  it("maps trump and trumpSuit directly when the trump card is still face-up", () => {
+    const state = startedState(42);
+    if (state.phase !== "in-round") throw new Error("expected in-round");
+    const snap = redactFor(state, 0);
+    expect(snap.trump).toEqual(state.trumpCard);
+    expect(snap.trumpSuit).toBe(state.trumpSuit);
+    expect(snap.trump).not.toBeNull();
+  });
+
+  it("returns trump=null with trumpSuit set once the trump card has been drawn", () => {
+    const base = startedState(7);
+    if (base.phase !== "in-round") throw new Error("expected in-round");
+    const drawn: InRoundState = { ...base, trumpCard: null, talon: [] };
+    const snap = redactFor(drawn, 0);
+    expect(snap.trump).toBeNull();
+    expect(snap.trumpSuit).toBe(base.trumpSuit);
+    expect(snap.talonCount).toBe(0);
+  });
+
   it("never names talon, hands, or rng on the snapshot object", () => {
     const state = startedState(7);
     const snap = redactFor(state, 0);
@@ -147,9 +173,8 @@ describe("redactFor", () => {
             expect(snap.handCounts).toEqual(state.hands.map((h) => h.length));
             expect(snap.attacker).toBe(state.attacker);
             expect(snap.defender).toBe(state.defender);
-            const expectedTrump =
-              state.trumpCard !== null ? state.trumpCard : { suit: state.trumpSuit, rank: 6 };
-            expect(snap.trump).toEqual(expectedTrump);
+            expect(snap.trump).toEqual(state.trumpCard);
+            expect(snap.trumpSuit).toBe(state.trumpSuit);
             expect(snap.table.length).toBe(state.table.length);
             for (let i = 0; i < state.table.length; i++) {
               const enginePair = state.table[i];
