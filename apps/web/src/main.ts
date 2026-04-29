@@ -70,11 +70,18 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
           });
         case "lobby": {
           const code = state.roomCode ?? generateRoomCode();
+          const mode = state.mode ?? "friend";
           return new LobbyScreen({
+            mode,
             roomCode: code,
             shareUrl: `${window.location.origin}/#room=${code}`,
+            initialRoom: state.room,
+            subscribe: (listener) =>
+              appStore.subscribe((next, prev) => {
+                if (next.room !== prev.room) listener(next.room);
+              }),
             onJoin: (next) => {
-              appStore.getState().showLobby({ mode: state.mode ?? "friend", roomCode: next });
+              appStore.getState().showLobby({ mode, roomCode: next });
             },
           });
         }

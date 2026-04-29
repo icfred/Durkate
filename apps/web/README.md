@@ -29,6 +29,14 @@ server state over websocket and to local Zustand stores for UI state.
   `lobby` or `game`; closing on return to `menu` or `gameover`. Status
   drives `appStore.connection`; `submitAction` and `requestRematch`
   flow through the controller-registered sender.
+- **Phase auto-transition**: the connection handlers double as a phase
+  driver. The first inbound `Snapshot` while in `lobby` advances the
+  store to `game`; a `GAME_OVER` event in any inbound `Events` batch
+  advances `game` to `gameover` and stamps `gameover` with `youSeat`
+  (from the snapshot) and `durak`. A `closed` status while in `game`
+  reverts to `lobby` so the lobby UX can show the "waiting for
+  opponent" state until reconnect; `gameover` is sticky and never
+  reverts.
 
 ## Sandbox
 
@@ -83,7 +91,10 @@ a warn while the connection is not open.
   connection: lobby/game opens (or no-ops if already open for the same
   room), menu/gameover closes. It also `setSender`-s the wsClient's
   `send` so `appStore.submitAction` and `appStore.requestRematch` can
-  call it.
+  call it. Inbound handlers also drive the phase machine (snapshot
+  -> game, GAME_OVER -> gameover, close-from-game -> lobby) and
+  populate `appStore.room` from `RoomState` so the lobby can render
+  "waiting for opponent" vs "starting" states.
 - **Drop vs queue**: `submitAction` and `requestRematch` calls made
   while `connection.status !== "open"` are dropped with a `console.warn`.
   We don't queue because the server is authoritative and a stale
