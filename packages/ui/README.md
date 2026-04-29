@@ -38,7 +38,8 @@ This package replaces what would normally be a HTML component library
 - `Focusable` interface: `setFocus(focused)`, `activate()`.
 - Tokens: `color`, `spacing`, `radius`, `stroke`, `typography`,
   `easing`, `duration`, plus the bundled `tokens` object and `Tokens`
-  type. Soviet-dark palette per `docs/project_vision.md`.
+  type. Soviet Dusk palette ported from
+  `.claude/skills/durak-design/colors_and_type.css` (canonical spec).
 - `mountTextInputOverlay({ targetRect, value?, onChange?, onSubmit?,
   onCancel?, focus? })` - mounts a transparent absolutely-positioned
   `<input>` on `document.body` over `targetRect`. Returns
