@@ -11,6 +11,7 @@
     { "path": "../../packages/engine" },
     { "path": "../../packages/protocol" },
     { "path": "../../packages/ui" },
-    { "path": "../../packages/assets" }
+    { "path": "../../packages/assets" },
+    { "path": "../../packages/skins-spike" }
   ]
 }
