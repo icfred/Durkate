@@ -35,6 +35,7 @@ const actionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("THROW_IN"), by: seatSchema, card: cardSchema }),
   z.object({ type: z.literal("TAKE_PILE"), by: seatSchema }),
   z.object({ type: z.literal("END_ROUND"), by: seatSchema }),
+  z.object({ type: z.literal("TIMEOUT"), by: seatSchema }),
 ]);
 
 export const joinRoomSchema = z.object({

@@ -34,10 +34,14 @@ Primitives (DUR-5):
 
 State and step (DUR-6):
 
-- `State` = `PreDealState | InRoundState`, discriminated by `phase`.
-  `InRoundState` carries `hands`, `talon`, `trump`, `table`, `attacker`,
-  `defender`, `discard`, plus serialized `rng`. `TablePair` = attack +
-  optional defense.
+- `State` = `PreDealState | InRoundState | GameOverState`, discriminated by
+  `phase`. `InRoundState` carries `hands`, `talon`, `trumpSuit`,
+  `trumpCard`, `table`, `attacker`, `defender`, `discard`, plus serialized
+  `rng`. `TablePair` = attack + optional defense.
+- `trumpSuit` is the locked-in trump suit for the game and is always
+  defined. `trumpCard` is the visible trump card kept under the talon;
+  it becomes `null` once drawn during replenishment. Use `trumpSuit` for
+  `beats` checks.
 - `InitOpts { seed, playerCount? }`; `initialState(opts) -> PreDealState`.
   Default `playerCount` is 2.
 - `step(state, action) -> StepResult`. `StepResult` is a discriminated
@@ -78,12 +82,38 @@ Round transitions (DUR-8):
   every table pair to be defended; rejects with `ATTACKS_UNDEFENDED`
   otherwise. The table cards move into `discard` and roles rotate one
   seat (old defender becomes new attacker).
-- Talon replenishment is intentionally not part of this transition; it
-  ships in DUR-9 alongside game-end detection.
 - `Event`: `PILE_TAKEN { by, cards, attacker, defender }`,
   `ROUND_ENDED { discarded, attacker, defender }`. The post-rotation
   `attacker`/`defender` ride the event so callers don't need to derive
   them.
+
+Talon replenishment, timeouts, and game-over (DUR-9):
+
+- After every `END_ROUND` and `TAKE_PILE` transition the engine refills
+  hands to 6 from the talon (Podkidnoy order: previous attacker first,
+  then the rest of the table in seat order, previous defender last).
+  Empty seats emit no `TALON_DRAWN` event.
+- `trumpCard` is the last drawable card. It is consumed only when
+  `talon` is otherwise empty; once drawn, `trumpCard` becomes `null`.
+  `trumpSuit` persists.
+- `TIMEOUT { by }` is a server-emitted synthetic action issued when the
+  active turn timer expires. It delegates: `by === defender` runs
+  `TAKE_PILE` (defender forfeits the bout); `by === attacker` runs
+  `END_ROUND` (attacker forfeits the right to throw in more). Any seat
+  outside the active two rejects with `TIMEOUT_NOT_ACTIVE_SEAT`. Any
+  underlying rejection (`TABLE_EMPTY`, `ATTACKS_UNDEFENDED`) is
+  surfaced unchanged - the server is responsible for arming the timer
+  only on the seat that is allowed to act.
+- Game-over fires after replenishment when both `talon` and `trumpCard`
+  are exhausted. If exactly one seat still holds cards, that seat is
+  the durak. If every seat is empty (every player ran out on the same
+  transition) the game is a draw and `durak` is `null`.
+- `GameOverState` keeps `hands`, `trumpSuit`, `trumpCard`, `discard`,
+  `rng`, `playerCount`, and adds `durak: number | null`. No further
+  actions are accepted (`WRONG_PHASE`).
+- New events: `TALON_DRAWN { by, cards }` (one per replenishing seat,
+  in draw order) and `GAME_OVER { durak }` (always last in the events
+  list of the transition that ends the game).
 
 Forthcoming (later tickets):
 

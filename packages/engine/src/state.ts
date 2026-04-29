@@ -1,4 +1,4 @@
-import type { Card } from "./cards";
+import type { Card, Suit } from "./cards";
 import { createRng, type RngState } from "./rng";
 
 export interface TablePair {
@@ -18,17 +18,32 @@ export interface InRoundState {
   rng: RngState;
   hands: Card[][];
   talon: Card[];
-  // Trump is kept separate from `talon`. During talon replenishment
-  // (DUR-9), draw from `talon` first; the trump is the last drawable
-  // card and is consumed only when `talon` is empty.
-  trump: Card;
+  trumpSuit: Suit;
+  // The visible trump card kept face-up under the talon. During
+  // replenishment the talon is drawn first; `trumpCard` is the last
+  // drawable card. Once drawn it becomes part of a hand and this is
+  // set to `null`. The `trumpSuit` persists for `beats` checks.
+  trumpCard: Card | null;
   table: TablePair[];
   attacker: number;
   defender: number;
   discard: Card[];
 }
 
-export type State = PreDealState | InRoundState;
+export interface GameOverState {
+  phase: "game-over";
+  playerCount: number;
+  rng: RngState;
+  hands: Card[][];
+  trumpSuit: Suit;
+  trumpCard: Card | null;
+  discard: Card[];
+  // The seat left holding cards when no replenishment is possible.
+  // `null` indicates a draw (every seat emptied on the same transition).
+  durak: number | null;
+}
+
+export type State = PreDealState | InRoundState | GameOverState;
 
 export interface InitOpts {
   seed: number;
