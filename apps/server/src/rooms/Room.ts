@@ -214,11 +214,17 @@ export class Room {
   }
 
   private broadcastSnapshotsAndEvents(events: Event[]): void {
-    if (this.state === null || this.state.phase !== "in-round") return;
+    if (this.state === null) return;
+    const inRound = this.state.phase === "in-round";
     for (const seat of this.clients.keys()) {
-      const snapshot = redactFor(this.state, seat);
-      this.sendTo(seat, { type: "Snapshot", snapshot });
-      this.sendTo(seat, { type: "Events", events });
+      if (inRound) {
+        const snapshot = redactFor(this.state, seat);
+        this.sendTo(seat, { type: "Snapshot", snapshot });
+      }
+      // Always emit events, even after game-over — the GAME_OVER event is
+      // what drives the client off the game screen. Skipping the events
+      // here is what stranded the client in the `game` phase forever.
+      if (events.length > 0) this.sendTo(seat, { type: "Events", events });
     }
   }
 

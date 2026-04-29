@@ -124,6 +124,28 @@ describe("Room: bot driver", () => {
     expect(room.currentState()?.phase).toBe("game-over");
   });
 
+  it("delivers a GAME_OVER event to the human client when the game ends", () => {
+    const room = new Room({ mode: "bot", botIterationCap: 200 });
+    const human = room.addPlayer("alice");
+    const client = fakeClient();
+    room.attachClient(human.seat, client.handle);
+    room.start(2026);
+    let safety = 0;
+    while (room.currentState()?.phase === "in-round" && safety < 4000) {
+      const state = inRound(room.currentState());
+      const action = bot.choose(state);
+      const result = room.applyAction(0, action);
+      if (!result.ok) throw new Error(`human action rejected: ${result.reason}`);
+      safety++;
+    }
+    expect(room.currentState()?.phase).toBe("game-over");
+
+    const gameOverEvents = client.sent.flatMap((msg) =>
+      msg.type === "Events" ? msg.events.filter((e) => e.type === "GAME_OVER") : [],
+    );
+    expect(gameOverEvents).toHaveLength(1);
+  });
+
   it("is byte-deterministic across runs for the same seed", () => {
     const a = playToCompletion(2026);
     const b = playToCompletion(2026);
