@@ -39,6 +39,7 @@ export interface AppState {
   roomCode: string | undefined;
   snapshot: Snapshot | null;
   events: Event[];
+  eventsTotal: number;
   connection: ConnectionState;
   room: RoomMembership | null;
   gameover: GameOverData | undefined;
@@ -104,6 +105,7 @@ export const appStore = createStore<AppState>((set, get) => {
     roomCode: undefined,
     snapshot: null,
     events: [],
+    eventsTotal: 0,
     connection: INITIAL_CONNECTION,
     room: null,
     gameover: undefined,
@@ -116,6 +118,7 @@ export const appStore = createStore<AppState>((set, get) => {
         roomCode: undefined,
         snapshot: null,
         events: [],
+        eventsTotal: 0,
         room: null,
         gameover: undefined,
       }),
@@ -134,7 +137,10 @@ export const appStore = createStore<AppState>((set, get) => {
         if (events.length === 0) return state;
         const next = state.events.concat(events);
         const overflow = next.length - EVENT_BUFFER_SIZE;
-        return { events: overflow > 0 ? next.slice(overflow) : next };
+        return {
+          events: overflow > 0 ? next.slice(overflow) : next,
+          eventsTotal: state.eventsTotal + events.length,
+        };
       }),
     setConnectionStatus: (status, info) => {
       const next: ConnectionState =

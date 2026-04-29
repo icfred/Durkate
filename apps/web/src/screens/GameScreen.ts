@@ -1,7 +1,8 @@
-import type { Action, Card, TablePair } from "@durak/engine";
+import type { Action, Card, Event, TablePair } from "@durak/engine";
 import type { SeatIndex, Snapshot } from "@durak/protocol";
 import { color, type Focusable, FocusManager, spacing, typography } from "@durak/ui";
 import { Container, Graphics, Text } from "pixi.js";
+import { playSfx } from "../audio/index.js";
 import type { Screen } from "./types.js";
 
 const CARD_W = 60;
@@ -112,6 +113,7 @@ export interface GameScreenOptions {
   snapshot: Snapshot | null;
   submitAction: (action: Action) => void;
   subscribe?: (listener: (snapshot: Snapshot | null) => void) => () => void;
+  subscribeEvents?: (listener: (events: Event[]) => void) => () => void;
 }
 
 export class GameScreen extends Container implements Screen {
@@ -125,6 +127,7 @@ export class GameScreen extends Container implements Screen {
   private readonly submitAction: (action: Action) => void;
   private readonly extraKeysHandler: (event: KeyboardEvent) => void;
   private readonly subscribeUnsub: (() => void) | null;
+  private readonly subscribeEventsUnsub: (() => void) | null;
   private snapshot: Snapshot | null;
   private viewWidth = 0;
   private viewHeight = 0;
@@ -167,6 +170,9 @@ export class GameScreen extends Container implements Screen {
     window.addEventListener("keydown", this.extraKeysHandler);
 
     this.subscribeUnsub = options.subscribe ? options.subscribe((s) => this.update(s)) : null;
+    this.subscribeEventsUnsub = options.subscribeEvents
+      ? options.subscribeEvents((events) => this.handleEvents(events))
+      : null;
 
     this.focus.attach();
     this.render();
@@ -181,6 +187,7 @@ export class GameScreen extends Container implements Screen {
   dispose(): void {
     window.removeEventListener("keydown", this.extraKeysHandler);
     this.subscribeUnsub?.();
+    this.subscribeEventsUnsub?.();
     this.focus.detach();
     this.focus.clear();
   }
@@ -189,6 +196,30 @@ export class GameScreen extends Container implements Screen {
     this.snapshot = snapshot;
     this.render();
     this.layoutSections();
+  }
+
+  private handleEvents(events: Event[]): void {
+    for (const event of events) this.handleEvent(event);
+  }
+
+  private handleEvent(event: Event): void {
+    switch (event.type) {
+      case "CARD_PLAYED":
+        playSfx("playCard");
+        return;
+      case "PILE_TAKEN":
+        playSfx("takePile");
+        return;
+      case "GAME_OVER": {
+        if (event.durak === null) return;
+        const seat = this.snapshot?.you.seat;
+        if (seat === undefined) return;
+        playSfx(event.durak === seat ? "lose" : "win");
+        return;
+      }
+      default:
+        return;
+    }
   }
 
   private render(): void {
