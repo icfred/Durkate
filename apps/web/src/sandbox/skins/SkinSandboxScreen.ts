@@ -2,21 +2,13 @@ import {
   type Axes,
   CARD_HEIGHT,
   CARD_WIDTH,
-  createSkinAssets,
   decode,
   rollCode,
   type SkinAssets,
   SkinCard,
 } from "@durak/skins-spike";
 import { Button, color, FocusManager, spacing, stroke, typography } from "@durak/ui";
-import {
-  Container,
-  Graphics,
-  type Renderer,
-  Text,
-  type Ticker,
-  type TickerCallback,
-} from "pixi.js";
+import { Container, Graphics, Text, type Ticker, type TickerCallback } from "pixi.js";
 import type { Screen } from "../../screens/types.js";
 
 const COUNT_OPTIONS: readonly number[] = [36, 72, 144];
@@ -95,12 +87,11 @@ class AxisToggle extends Container {
 }
 
 export interface SkinSandboxScreenOptions {
-  renderer: Renderer;
+  assets: SkinAssets;
   ticker: Ticker;
 }
 
 export class SkinSandboxScreen extends Container implements Screen {
-  private readonly renderer: Renderer;
   private readonly ticker: Ticker;
   private readonly assets: SkinAssets;
   private readonly grid: Container;
@@ -119,9 +110,8 @@ export class SkinSandboxScreen extends Container implements Screen {
 
   constructor(options: SkinSandboxScreenOptions) {
     super();
-    this.renderer = options.renderer;
     this.ticker = options.ticker;
-    this.assets = createSkinAssets(this.renderer);
+    this.assets = options.assets;
 
     this.toolbar = new Container();
     this.addChild(this.toolbar);

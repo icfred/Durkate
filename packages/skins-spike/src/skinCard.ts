@@ -1,7 +1,8 @@
-import { ColorMatrixFilter, Container, type Filter, Sprite } from "pixi.js";
+import { ColorMatrixFilter, Container, type Filter, Sprite, TilingSprite } from "pixi.js";
 import { createFoilFilter, type FoilController } from "./renderers/foilFilter.js";
 import type { Finish, Motion, SkinSpec } from "./spec.js";
-import { CARD_HEIGHT, CARD_WIDTH, type SkinAssets } from "./textures.js";
+import { CARD_HEIGHT, CARD_WIDTH, PATTERN_TILE, type SkinAssets } from "./textures.js";
+import { defaultTunables, type Tunables } from "./tunables.js";
 
 export interface Axes {
   pattern: boolean;
@@ -17,11 +18,13 @@ export class SkinCard extends Container {
   private readonly assets: SkinAssets;
   private readonly content: Container;
   private readonly bg: Sprite;
-  private readonly pattern: Sprite;
+  private readonly pattern: TilingSprite;
+  private readonly decoration: Sprite;
   private readonly tintFilter: ColorMatrixFilter;
   private readonly foil: FoilController;
   private spec: SkinSpec | null = null;
   private axes: Axes = { pattern: true, tint: true, finish: true, motion: true };
+  private tunables: Tunables = defaultTunables;
 
   constructor(assets: SkinAssets) {
     super();
@@ -29,16 +32,30 @@ export class SkinCard extends Container {
     this.content = new Container();
     this.addChild(this.content);
 
-    this.bg = new Sprite(assets.baseCard);
+    this.bg = new Sprite(assets.cardSurface);
     this.content.addChild(this.bg);
 
     const fallback = assets.patterns[0];
     if (!fallback) throw new Error("SkinCard: assets.patterns is empty");
-    this.pattern = new Sprite(fallback);
+    this.pattern = new TilingSprite({
+      texture: fallback,
+      width: CARD_WIDTH,
+      height: CARD_HEIGHT,
+    });
     this.content.addChild(this.pattern);
+
+    this.decoration = new Sprite(assets.cardDecoration);
+    this.addChild(this.decoration);
 
     this.tintFilter = new ColorMatrixFilter();
     this.foil = createFoilFilter();
+    this.foil.setTunables(this.tunables.foil, this.tunables.motion);
+  }
+
+  setTunables(tunables: Tunables): void {
+    this.tunables = tunables;
+    this.foil.setTunables(tunables.foil, tunables.motion);
+    if (this.spec) this.apply(this.spec, this.axes);
   }
 
   apply(spec: SkinSpec, axes: Axes): void {
@@ -51,12 +68,12 @@ export class SkinCard extends Container {
         this.assets.patterns[spec.pattern.index % this.assets.patterns.length] ??
         this.assets.patterns[0];
       if (tex) this.pattern.texture = tex;
-      this.pattern.scale.set(spec.pattern.scale);
-      this.pattern.position.set(
-        Math.round((spec.pattern.offsetX - 0.5) * 24),
-        Math.round((spec.pattern.offsetY - 0.5) * 24),
+      this.pattern.tileScale.set(spec.pattern.scale);
+      this.pattern.tilePosition.set(
+        spec.pattern.offsetX * PATTERN_TILE,
+        spec.pattern.offsetY * PATTERN_TILE,
       );
-      this.pattern.alpha = 0.65;
+      this.pattern.alpha = this.tunables.pattern.overlayAlpha;
     } else {
       this.pattern.visible = false;
     }
@@ -72,7 +89,7 @@ export class SkinCard extends Container {
 
     const finishActive = axes.finish && spec.finish !== "matte";
     if (finishActive) {
-      this.foil.setUniforms(
+      this.foil.setLook(
         0,
         finishToFloat(spec.finish),
         axes.motion ? motionToFloat(spec.motion) : 0,
@@ -87,11 +104,8 @@ export class SkinCard extends Container {
   tick(timeSeconds: number): void {
     if (!this.spec) return;
     if (!this.axes.finish || this.spec.finish === "matte") return;
-    if (!this.axes.motion || this.spec.motion === "none") {
-      // still need to update time once for static foil; but motion-off means no animation
-      return;
-    }
-    this.foil.setUniforms(
+    if (!this.axes.motion || this.spec.motion === "none") return;
+    this.foil.setLook(
       timeSeconds,
       finishToFloat(this.spec.finish),
       motionToFloat(this.spec.motion),

@@ -1,12 +1,14 @@
 import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/700.css";
 
+import { loadSkinAssets } from "@durak/skins-spike";
 import { color, typography } from "@durak/ui";
 import { Application } from "pixi.js";
 import { bindMuteShortcut, installAudioGestureUnlock } from "./audio/index.js";
 import { gameOverFixture } from "./fixtures/gameOverFixtures.js";
 import { createConnectionController } from "./net/connection.js";
 import { SkinSandboxScreen } from "./sandbox/skins/SkinSandboxScreen.js";
+import { SkinTunerScreen } from "./sandbox/skins/SkinTunerScreen.js";
 import { ScreenRouter } from "./screenRouter.js";
 import { GameOverScreen } from "./screens/GameOverScreen.js";
 import { GameScreen } from "./screens/GameScreen.js";
@@ -39,12 +41,19 @@ await app.init({
 mount.appendChild(app.canvas);
 
 const sandboxParam = new URLSearchParams(window.location.search).get("sandbox");
-if (sandboxParam === "skins") {
-  const sandbox = new SkinSandboxScreen({ renderer: app.renderer, ticker: app.ticker });
-  sandbox.layout(app.screen.width, app.screen.height);
-  app.stage.addChild(sandbox);
+if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
+  const skinAssets = await loadSkinAssets(app.renderer, {
+    imageUrl: "/skins/atlas.png",
+    manifestUrl: "/skins/atlas.json",
+  });
+  const screen =
+    sandboxParam === "skins"
+      ? new SkinSandboxScreen({ assets: skinAssets, ticker: app.ticker })
+      : new SkinTunerScreen({ assets: skinAssets, ticker: app.ticker });
+  screen.layout(app.screen.width, app.screen.height);
+  app.stage.addChild(screen);
   app.renderer.on("resize", () => {
-    sandbox.layout(app.screen.width, app.screen.height);
+    screen.layout(app.screen.width, app.screen.height);
   });
 } else {
   applyBootRouting();

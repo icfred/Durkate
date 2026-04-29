@@ -1,4 +1,5 @@
 import { fnv1a, mulberry32 } from "./rng.js";
+import { defaultTunables, type SpecRanges } from "./tunables.js";
 
 export type Finish = "matte" | "foil" | "chrome" | "holographic";
 export type Motion = "none" | "shimmer" | "pulse" | "drift";
@@ -15,15 +16,15 @@ export interface SkinSpec {
 const FINISHES: readonly Finish[] = ["matte", "foil", "chrome", "holographic"];
 const MOTIONS: readonly Motion[] = ["none", "shimmer", "pulse", "drift"];
 
-export function decode(code: string): SkinSpec {
+export function decode(code: string, ranges: SpecRanges = defaultTunables.spec): SkinSpec {
   const rand = mulberry32(fnv1a(code));
   const offsetX = rand();
   const offsetY = rand();
-  const scale = 0.6 + rand() * 1.6;
+  const scale = lerp(ranges.patternScale, rand());
   const index = Math.floor(rand() * PATTERN_VARIANTS);
-  const hue = (rand() - 0.5) * 2;
-  const saturation = 0.5 + rand();
-  const brightness = 0.75 + rand() * 0.5;
+  const hue = lerp(ranges.hue, rand());
+  const saturation = lerp(ranges.saturation, rand());
+  const brightness = lerp(ranges.brightness, rand());
   const finish = pick(FINISHES, rand());
   const motion = pick(MOTIONS, rand());
   return {
@@ -32,6 +33,10 @@ export function decode(code: string): SkinSpec {
     finish,
     motion,
   };
+}
+
+function lerp(range: readonly [number, number], t: number): number {
+  return range[0] + (range[1] - range[0]) * t;
 }
 
 function pick<T>(values: readonly T[], r: number): T {

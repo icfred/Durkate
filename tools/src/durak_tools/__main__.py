@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import sys
 
-from durak_tools import converter, index_emitter, packer, scraper
+from durak_tools import converter, index_emitter, packer, scraper, skins
 
 
 def build() -> None:
@@ -19,7 +19,8 @@ def build() -> None:
     converter.run()
     packer.run()
     index_emitter.run()
-    print("assets:build - no-op (scaffold)")
+    skins.run()
+    print("assets:build - skins atlas baked")
 
 
 def check() -> None:
