@@ -34,6 +34,8 @@ export interface RoomStateMessage {
   /** Seats that have requested a rematch while in `game-over`. Empty otherwise. */
   rematchRequested: SeatIndex[];
   disconnect?: DisconnectState | null;
+  /** Bot seats currently in their pre-move "thinking" delay. Empty / omitted otherwise. */
+  thinkingSeats?: SeatIndex[];
 }
 
 export type ServerMessage = SnapshotMessage | EventsMessage | ErrorMessage | RoomStateMessage;

@@ -65,6 +65,12 @@ knows whose turn it is, what's legal, and which keys do what.
   calls `clearError()`. The previous behavior was a silent
   `console.error`, which is why illegal client-side actions felt like
   the game was frozen.
+- **Bot thinking indicator**. When `appStore.room.thinkingSeats` includes
+  the opponent seat (vs-bot mode while the worker's pre-move delay is
+  pending), `GameScreen` renders a small "thinking…" label below the
+  opponent hand row. The label opacity-pulses on the shared Pixi `Ticker`
+  and scales with `appStore.devtools.animSpeed` (animSpeed === 0 holds it
+  at full opacity rather than animating).
 - **Card movement animations**. `GameScreen` subscribes to
   `appStore.events` and animates every card transition through the shared
   anim engine: attacks/defends slide from the player's hand to their

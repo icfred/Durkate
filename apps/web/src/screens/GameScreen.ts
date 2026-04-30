@@ -21,6 +21,7 @@ const SECTION_PADDING = spacing.lg;
 
 const ERROR_TOAST_MS = 3000;
 const TURN_PULSE_PERIOD_MS = 1200;
+const THINKING_PULSE_PERIOD_MS = 900;
 const ILLEGAL_ALPHA = 0.45;
 
 const FADE_IN_MS = 80;
@@ -178,6 +179,7 @@ export class GameScreen extends Container implements Screen {
   private readonly disconnectBanner: Container;
   private readonly disconnectBannerBg: Graphics;
   private readonly disconnectBannerText: Text;
+  private readonly thinkingLabel: Text;
   private readonly opponentRow: Container;
   private readonly tableRow: Container;
   private readonly leftStack: Container;
@@ -203,6 +205,8 @@ export class GameScreen extends Container implements Screen {
   private viewHeight = 0;
   private turnPulseElapsed = 0;
   private turnPulseActive = false;
+  private thinkingPulseElapsed = 0;
+  private thinkingSeats: SeatIndex[] = [];
   private errorVisibleMs = 0;
 
   constructor(options: GameScreenOptions) {
@@ -285,6 +289,20 @@ export class GameScreen extends Container implements Screen {
     this.disconnectBanner.addChild(this.disconnectBannerText);
     this.addChild(this.disconnectBanner);
 
+    this.thinkingLabel = new Text({
+      text: "thinking…",
+      style: {
+        fontFamily: typography.family,
+        fontSize: typography.size.xs,
+        fontWeight: typography.weight.bold,
+        fill: color.textMuted,
+        letterSpacing: typography.letterSpacing.wide,
+      },
+    });
+    this.thinkingLabel.label = "thinking-label";
+    this.thinkingLabel.visible = false;
+    this.addChild(this.thinkingLabel);
+
     this.opponentRow = new Container();
     this.tableRow = new Container();
     this.leftStack = new Container();
@@ -330,6 +348,7 @@ export class GameScreen extends Container implements Screen {
         }));
     const initialRoom = options.initialRoom ?? appStore.getState().room;
     this.disconnect = initialRoom?.disconnect ?? null;
+    this.thinkingSeats = initialRoom?.thinkingSeats ?? [];
     this.subscribeRoomUnsub = subscribeRoom((room) => this.handleRoom(room));
 
     this.now = options.now ?? (() => Date.now());
@@ -342,6 +361,7 @@ export class GameScreen extends Container implements Screen {
     this.detachFocusNavSfx = attachFocusNavSfx(this.focus);
     this.render();
     this.renderDisconnectBanner();
+    this.renderThinkingLabel();
   }
 
   layout(viewWidth: number, viewHeight: number): void {
@@ -368,6 +388,7 @@ export class GameScreen extends Container implements Screen {
     this.prevSnapshot = this.snapshot;
     this.snapshot = snapshot;
     this.render();
+    this.renderThinkingLabel();
     this.layoutSections();
   }
 
@@ -438,8 +459,28 @@ export class GameScreen extends Container implements Screen {
 
   private handleRoom(room: RoomMembership | null): void {
     this.disconnect = room?.disconnect ?? null;
+    this.thinkingSeats = room?.thinkingSeats ?? [];
     this.renderDisconnectBanner();
+    this.renderThinkingLabel();
     this.layoutSections();
+  }
+
+  private renderThinkingLabel(): void {
+    const opponentSeat = this.snapshot
+      ? nextSeat(this.snapshot.seat, this.snapshot.playerCount)
+      : null;
+    const active = opponentSeat !== null && this.thinkingSeats.includes(opponentSeat);
+    if (!active) {
+      this.thinkingLabel.visible = false;
+      this.thinkingPulseElapsed = 0;
+      return;
+    }
+    this.thinkingLabel.visible = true;
+    // Reset pulse phase on entry so the appearing label always starts in
+    // the same state — keeps the indicator's debut feeling deliberate
+    // rather than fading in mid-cycle.
+    this.thinkingPulseElapsed = 0;
+    this.thinkingLabel.alpha = 1;
   }
 
   private renderDisconnectBanner(): void {
@@ -496,6 +537,18 @@ export class GameScreen extends Container implements Screen {
       this.turnPulseElapsed = (this.turnPulseElapsed + deltaMs) % TURN_PULSE_PERIOD_MS;
       const phase = (this.turnPulseElapsed / TURN_PULSE_PERIOD_MS) * Math.PI * 2;
       this.turnLabel.alpha = 0.7 + 0.3 * (0.5 + 0.5 * Math.cos(phase));
+    }
+
+    if (this.thinkingLabel.visible) {
+      const speed = this.animSpeed();
+      if (speed > 0) {
+        this.thinkingPulseElapsed =
+          (this.thinkingPulseElapsed + deltaMs * speed) % THINKING_PULSE_PERIOD_MS;
+        const phase = (this.thinkingPulseElapsed / THINKING_PULSE_PERIOD_MS) * Math.PI * 2;
+        this.thinkingLabel.alpha = 0.4 + 0.6 * (0.5 + 0.5 * Math.cos(phase));
+      } else {
+        this.thinkingLabel.alpha = 1;
+      }
     }
 
     if (this.errorBanner.visible) {
@@ -736,6 +789,11 @@ export class GameScreen extends Container implements Screen {
       const dw = this.disconnectBanner.width;
       this.disconnectBanner.x = Math.round((this.viewWidth - dw) / 2);
       this.disconnectBanner.y = this.opponentRow.y + this.opponentRow.height + spacing.md;
+    }
+
+    if (this.thinkingLabel.visible) {
+      this.thinkingLabel.x = Math.round((this.viewWidth - this.thinkingLabel.width) / 2);
+      this.thinkingLabel.y = this.opponentRow.y + this.opponentRow.height + spacing.sm;
     }
   }
 

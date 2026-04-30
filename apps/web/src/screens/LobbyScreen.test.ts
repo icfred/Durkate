@@ -33,6 +33,7 @@ function makeRoom(occupants: (string | null)[], you: number | null = 0): RoomMem
     you,
     rematchRequested: [],
     disconnect: null,
+    thinkingSeats: [],
   };
 }
 

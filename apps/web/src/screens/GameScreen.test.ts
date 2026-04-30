@@ -365,6 +365,7 @@ describe("GameScreen", () => {
         you: 0,
         rematchRequested: [],
         disconnect: { seat: 1, forfeitAt: 1_000_000 + 12_000 },
+        thinkingSeats: [],
       });
     }
     expect(banner?.visible).toBe(true);
@@ -376,9 +377,55 @@ describe("GameScreen", () => {
         you: 0,
         rematchRequested: [],
         disconnect: null,
+        thinkingSeats: [],
       });
     }
     expect(banner?.visible).toBe(false);
+
+    screen.dispose();
+  });
+
+  it("renders the thinking indicator when room.thinkingSeats names the opponent", () => {
+    type RoomListener = (room: import("../store.js").RoomMembership | null) => void;
+    const listeners: RoomListener[] = [];
+    const snapshot = loadFixture("fresh");
+    const screen = new GameScreen({
+      snapshot,
+      submitAction: vi.fn(),
+      subscribeRoom: (listener) => {
+        listeners.push(listener);
+        return () => {
+          const idx = listeners.indexOf(listener);
+          if (idx >= 0) listeners.splice(idx, 1);
+        };
+      },
+    });
+    screen.layout(800, 600);
+
+    const label = findByLabel(screen, "thinking-label");
+    expect(label?.visible).toBe(false);
+
+    for (const listener of listeners) {
+      listener({
+        seats: [{ name: "Host" }, { name: "Bot" }],
+        you: 0,
+        rematchRequested: [],
+        disconnect: null,
+        thinkingSeats: [1],
+      });
+    }
+    expect(label?.visible).toBe(true);
+
+    for (const listener of listeners) {
+      listener({
+        seats: [{ name: "Host" }, { name: "Bot" }],
+        you: 0,
+        rematchRequested: [],
+        disconnect: null,
+        thinkingSeats: [],
+      });
+    }
+    expect(label?.visible).toBe(false);
 
     screen.dispose();
   });
