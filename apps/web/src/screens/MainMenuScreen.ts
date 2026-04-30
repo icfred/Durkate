@@ -6,7 +6,10 @@ import type { Mode } from "../store.js";
 import type { Screen } from "./types.js";
 
 const PANEL_W = 480;
-const PANEL_H = 360;
+// Two heights so the difficulty view (4 buttons + back) doesn't overflow the
+// root view's height. layout() centers using the current value.
+const PANEL_H_ROOT = 360;
+const PANEL_H_BOT_DIFFICULTY = 460;
 
 export interface MainMenuScreenOptions {
   onPlayBot(difficulty: BotDifficulty): void;
@@ -24,12 +27,15 @@ export class MainMenuScreen extends Container implements Screen {
   private readonly hint: Text;
   private buttons: Button[] = [];
   private view: View = "root";
+  private panelH = PANEL_H_ROOT;
+  private viewW = 0;
+  private viewH = 0;
 
   constructor(options: MainMenuScreenOptions) {
     super();
     this.options = options;
 
-    this.panel = new Panel({ width: PANEL_W, height: PANEL_H });
+    this.panel = new Panel({ width: PANEL_W, height: PANEL_H_ROOT });
     this.addChild(this.panel);
 
     this.title = new Text({
@@ -65,8 +71,19 @@ export class MainMenuScreen extends Container implements Screen {
   }
 
   layout(viewWidth: number, viewHeight: number): void {
+    this.viewW = viewWidth;
+    this.viewH = viewHeight;
     this.panel.x = Math.round((viewWidth - PANEL_W) / 2);
-    this.panel.y = Math.round((viewHeight - PANEL_H) / 2);
+    this.panel.y = Math.round((viewHeight - this.panelH) / 2);
+  }
+
+  private setPanelHeight(h: number): void {
+    if (this.panelH === h) return;
+    this.panelH = h;
+    this.panel.resize(PANEL_W, h);
+    if (this.viewW > 0 && this.viewH > 0) {
+      this.layout(this.viewW, this.viewH);
+    }
   }
 
   dispose(): void {
@@ -77,6 +94,7 @@ export class MainMenuScreen extends Container implements Screen {
 
   private renderRoot(): void {
     this.view = "root";
+    this.setPanelHeight(PANEL_H_ROOT);
     this.resetButtons();
     const buttonW = 260;
     const buttonH = 56;
@@ -111,6 +129,7 @@ export class MainMenuScreen extends Container implements Screen {
 
   private renderBotDifficulty(): void {
     this.view = "bot-difficulty";
+    this.setPanelHeight(PANEL_H_BOT_DIFFICULTY);
     this.resetButtons();
     const buttonW = 260;
     const buttonH = 48;
