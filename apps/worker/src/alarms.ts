@@ -10,7 +10,15 @@
 // passed; the caller dispatches each to its handler. The map is
 // serialized into the room's persisted blob so deadlines survive DO
 // hibernation and eviction.
-export type DeadlineKind = "turn-timeout" | "forfeit";
+export type DeadlineKind =
+  | "turn-timeout"
+  | "forfeit"
+  // Room GC: no client ever attached within ABANDONED_MS of room creation.
+  | "abandoned"
+  // Room GC: all clients closed mid-game; reconnect cancels.
+  | "idle"
+  // Room GC: game-over has lingered without rematch / re-engagement.
+  | "stale";
 
 export type PersistedDeadlines = Partial<Record<DeadlineKind, number>>;
 
