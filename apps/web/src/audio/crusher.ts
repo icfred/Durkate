@@ -13,10 +13,15 @@ export interface Crusher {
 }
 
 const DEFAULTS: Required<CrusherOptions> = {
-  cutoffHz: 6000,
-  drive: 0.35,
-  bits: 8,
-  reduction: 4,
+  // Lower the low-pass: kill more high end, makes everything feel compressed.
+  cutoffHz: 4000,
+  // More saturation for body / harmonic distortion.
+  drive: 0.5,
+  // 5-bit quantization — chunky, audible quantization noise on transients.
+  bits: 5,
+  // Sample-and-hold every 8 frames → 48kHz / 8 = 6kHz effective sample rate.
+  // Very lo-fi, "8-bit console" territory.
+  reduction: 8,
   // The noise source is a continuous AudioBufferSourceNode wired into the
   // master path; with any non-zero level it plays as background static
   // whenever the audio context is alive. Default off — bit-crushing +
