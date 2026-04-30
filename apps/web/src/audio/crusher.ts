@@ -17,7 +17,12 @@ const DEFAULTS: Required<CrusherOptions> = {
   drive: 0.35,
   bits: 8,
   reduction: 4,
-  noiseLevel: 0.03,
+  // The noise source is a continuous AudioBufferSourceNode wired into the
+  // master path; with any non-zero level it plays as background static
+  // whenever the audio context is alive. Default off — bit-crushing +
+  // saturation already give the Papers Please grit. Opt in per-clip via
+  // a custom crusher if you really want a tape-noise floor.
+  noiseLevel: 0,
   outputGain: 1,
 };
 
