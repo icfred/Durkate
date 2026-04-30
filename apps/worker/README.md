@@ -21,9 +21,21 @@ implements.
 - **WebSocket Hibernation API** - `state.acceptWebSocket(ws)` lets the
   DO sleep between messages without dropping connected clients. Per-WS
   state (the seat) lives in `ws.serializeAttachment`.
-- **DO Alarms** - turn timer uses `state.storage.setAlarm` /
-  `deleteAlarm` instead of `setTimeout`, so the timer survives
-  hibernation and DO eviction.
+- **DO Alarms (`src/alarms.ts`)** - one platform alarm slot, multiple
+  logical deadlines. `AlarmScheduler` keeps a `Map<DeadlineKind,
+  forfeitAt>` and arms the platform alarm at the earliest. Used today
+  for the per-turn timeout and the disconnect forfeit; future
+  deadlines (room GC, rematch) compose the same way. Survives
+  hibernation and DO eviction because the map is serialized into the
+  persisted room blob.
+- **Disconnect forfeit (ADR-0009)** - on `webSocketClose` mid-round,
+  the DO records the disconnected seat, schedules a forfeit deadline
+  30s out, and broadcasts `RoomState` with the disconnect populated to
+  the surviving seat. A reconnect with the same seat token before the
+  deadline cancels it and replays the current `Snapshot` so the
+  rejoiner lands directly back in the game. On deadline fire the DO
+  synthesizes a `GameOverState` declaring the absent seat the durak
+  and emits a `GAME_OVER` event - the engine package is untouched.
 - **Persistence** - `mode`, `seats`, `engine`, and `botSeat` are
   stored under a single `room` key in `state.storage` after every
   change. The constructor reloads them via `blockConcurrencyWhile`.
@@ -131,6 +143,10 @@ Worker name: `durak-server`. Public URL:
   (gitignored) so any origin is accepted.
 - `TURN_TIMEOUT_MS` (runtime, default 30000) - per-turn deadline; the
   DO sets an Alarm for this many ms after each action.
+- `DISCONNECT_FORFEIT_MS` (runtime, default 30000) - grace window
+  between mid-round `webSocketClose` and forfeit. Same-token
+  reconnect inside the window cancels the forfeit. Tests override
+  this and use a test-only alarm fire seam.
 - `CLOUDFLARE_API_TOKEN` (CI secret) - Workers + DO scopes.
 - `CLOUDFLARE_ACCOUNT_ID` (CI secret) - account id for the deploy.
 
@@ -187,3 +203,5 @@ the prior code.
 - ADR-0005: authoritative server with redacted snapshots and events
 - ADR-0007: hosting on Cloudflare Workers + Durable Objects and
   Firebase Hosting
+- ADR-0009: disconnect forfeit policy (30s reconnect window, then
+  the absent seat is declared the durak)

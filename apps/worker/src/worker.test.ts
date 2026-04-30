@@ -2,6 +2,7 @@ import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { bot, type State } from "@durak/engine";
 import type {
   CreateRoomResponse,
+  DisconnectState,
   ErrorMessage,
   EventsMessage,
   RoomStateMessage,
@@ -241,6 +242,169 @@ describe("worker /rooms + ws integration: human mode", () => {
 
     a.close();
     b.close();
+  });
+});
+
+describe("worker disconnect forfeit", () => {
+  async function waitFor<T>(
+    check: () => Promise<T | null | undefined>,
+    attempts = 50,
+    delayMs = 10,
+  ): Promise<T> {
+    for (let i = 0; i < attempts; i++) {
+      const v = await check();
+      if (v !== null && v !== undefined) return v;
+      await new Promise<void>((r) => setTimeout(r, delayMs));
+    }
+    throw new Error("waitFor: timeout");
+  }
+
+  it("schedules forfeit on mid-game close, fires GAME_OVER with disconnected seat as durak", async () => {
+    const created = await postRooms({ mode: "human" });
+    const body = (await created.json()) as CreateRoomResponse;
+    if (!body.joinToken) throw new Error("expected joinToken");
+
+    const a = await openWs(body.roomId, body.hostToken);
+    const qa = new MessageQueue(a);
+    await findUntil(qa, isRoomState);
+
+    const b = await openWs(body.roomId, body.joinToken);
+    const qb = new MessageQueue(b);
+
+    await findUntil(qa, isSnapshot);
+    await findUntil(qb, isSnapshot);
+    await findUntil(qa, isEvents);
+    await findUntil(qb, isEvents);
+
+    b.close();
+
+    const stub = env.ROOMS.get(env.ROOMS.idFromName(body.roomId));
+    // Wait for the close handler to register the disconnect.
+    const disconnect = await waitFor<DisconnectState>(async () => {
+      let out: DisconnectState | null = null;
+      await runInDurableObject(stub, async (room: Room) => {
+        out = room.testDisconnect();
+      });
+      return out;
+    });
+    expect(disconnect.seat).toBe(1);
+    expect(disconnect.forfeitAt).toBeGreaterThan(Date.now());
+
+    // Surviving seat should have received a RoomState with the disconnect.
+    const roomStateAfterClose = await findUntil(qa, isRoomState);
+    expect(roomStateAfterClose.disconnect?.seat).toBe(1);
+
+    // Fire the forfeit deadline as if 60s have passed.
+    let fired: string[] = [];
+    await runInDurableObject(stub, async (room: Room) => {
+      fired = await room.testFireAlarm(Date.now() + 60_000);
+    });
+    expect(fired).toContain("forfeit");
+
+    // GAME_OVER event reaches the surviving seat with durak: 1.
+    const events = await findUntil(qa, isEvents);
+    const over = events.events.find((e) => e.type === "GAME_OVER");
+    expect(over).toBeDefined();
+    if (over?.type !== "GAME_OVER") throw new Error("expected GAME_OVER event");
+    expect(over.durak).toBe(1);
+
+    // Engine state moved to game-over.
+    let finalState: State | null = null;
+    await runInDurableObject(stub, async (room: Room) => {
+      finalState = room.testCurrentState();
+    });
+    expect(finalState !== null && (finalState as State).phase).toBe("game-over");
+
+    a.close();
+  });
+
+  it("reconnect with the same token within the window cancels the forfeit and resumes the game", async () => {
+    const created = await postRooms({ mode: "human" });
+    const body = (await created.json()) as CreateRoomResponse;
+    if (!body.joinToken) throw new Error("expected joinToken");
+
+    const a = await openWs(body.roomId, body.hostToken);
+    const qa = new MessageQueue(a);
+    await findUntil(qa, isRoomState);
+
+    const b = await openWs(body.roomId, body.joinToken);
+    const qb1 = new MessageQueue(b);
+
+    await findUntil(qa, isSnapshot);
+    await findUntil(qb1, isSnapshot);
+    await findUntil(qa, isEvents);
+    await findUntil(qb1, isEvents);
+
+    b.close();
+
+    const stub = env.ROOMS.get(env.ROOMS.idFromName(body.roomId));
+    await waitFor<DisconnectState>(async () => {
+      let out: DisconnectState | null = null;
+      await runInDurableObject(stub, async (room: Room) => {
+        out = room.testDisconnect();
+      });
+      return out;
+    });
+
+    // Reconnect on the same seat token.
+    const b2 = await openWs(body.roomId, body.joinToken);
+    const qb2 = new MessageQueue(b2);
+
+    // Wait for the DO to clear the disconnect state. The reconnect handler
+    // runs synchronously inside handleWsUpgrade before it returns, so
+    // by the time the upgrade response lands the state should be cleared
+    // — but allow a brief window for the persist().
+    await waitFor<true>(async () => {
+      let cleared = false;
+      await runInDurableObject(stub, async (room: Room) => {
+        cleared = room.testDisconnect() === null;
+      });
+      return cleared || null;
+    });
+
+    // Rejoining seat should receive a fresh Snapshot so the game resumes
+    // immediately rather than waiting for the next event.
+    const resumeSnap = await findUntil(qb2, isSnapshot);
+    expect(resumeSnap.snapshot.seat).toBe(1);
+
+    // No forfeit alarm should fire.
+    let fired: string[] = [];
+    await runInDurableObject(stub, async (room: Room) => {
+      fired = await room.testFireAlarm(Date.now() + 60_000);
+    });
+    expect(fired).not.toContain("forfeit");
+
+    // Engine state remains in-round.
+    let stateAfter: State | null = null;
+    await runInDurableObject(stub, async (room: Room) => {
+      stateAfter = room.testCurrentState();
+    });
+    expect(stateAfter !== null && (stateAfter as State).phase).toBe("in-round");
+
+    a.close();
+    b2.close();
+  });
+
+  it("does not schedule a forfeit when no game is in-round", async () => {
+    const created = await postRooms({ mode: "human" });
+    const body = (await created.json()) as CreateRoomResponse;
+
+    const a = await openWs(body.roomId, body.hostToken);
+    const qa = new MessageQueue(a);
+    await findUntil(qa, isRoomState);
+
+    // Only host attached; engine never started. Closing now must not
+    // arm a forfeit timer.
+    a.close();
+
+    const stub = env.ROOMS.get(env.ROOMS.idFromName(body.roomId));
+    // Give the close handler a moment to run.
+    await new Promise<void>((r) => setTimeout(r, 50));
+    let disconnect: DisconnectState | null = null;
+    await runInDurableObject(stub, async (room: Room) => {
+      disconnect = room.testDisconnect();
+    });
+    expect(disconnect).toBeNull();
   });
 });
 

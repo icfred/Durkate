@@ -3,6 +3,7 @@ import {
   type Action,
   bot,
   type Event,
+  type GameOverState,
   type InRoundState,
   initialState,
   type RejectReason,
@@ -12,6 +13,7 @@ import {
 import {
   type ClientMessage,
   type CreateRoomResponse,
+  type DisconnectState,
   type ErrorMessage,
   parseClientMessage,
   type RoomSeat,
@@ -19,6 +21,7 @@ import {
   type ServerMessage,
 } from "@durak/protocol";
 import { ZodError } from "zod";
+import { AlarmScheduler, type DeadlineKind, type PersistedDeadlines } from "./alarms.js";
 import { TokenBucket } from "./rate-limit.js";
 import { redactFor } from "./redact.js";
 
@@ -36,6 +39,8 @@ interface PersistedRoom {
   engine: State | null;
   botSeat: SeatIndex | null;
   rematchSeats?: boolean[];
+  disconnect?: DisconnectState | null;
+  deadlines?: PersistedDeadlines;
 }
 
 interface WsAttachment {
@@ -48,10 +53,12 @@ const BOT_SEAT_INDEX: SeatIndex = 1;
 const DEFAULT_BOT_ITERATION_CAP = 200;
 const DEFAULT_RATE_LIMIT = { capacity: 20, refillIntervalMs: 5_000 };
 const STORAGE_KEY = "room";
+const DEFAULT_DISCONNECT_FORFEIT_MS = 30_000;
 
 interface Env {
   TURN_TIMEOUT_MS?: string;
   RATE_LIMIT_CAPACITY?: string;
+  DISCONNECT_FORFEIT_MS?: string;
 }
 
 export class Room extends DurableObject<Env> {
@@ -60,9 +67,12 @@ export class Room extends DurableObject<Env> {
   private engineState: State | null = null;
   private botSeat: SeatIndex | null = null;
   private rematchSeats: boolean[] = new Array<boolean>(SEAT_COUNT).fill(false);
+  private disconnect: DisconnectState | null = null;
   private readonly turnTimeoutMs: number;
+  private readonly disconnectForfeitMs: number;
   private readonly botIterationCap: number;
   private readonly rateLimitCapacity: number;
+  private readonly alarms: AlarmScheduler;
   // Per-connection rate-limit buckets. WeakMap so hibernated sockets dropped
   // by miniflare clean up automatically; new buckets are lazily reconstructed
   // on first message after a wake-up (acceptable: a long quiet period refills
@@ -72,12 +82,16 @@ export class Room extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.turnTimeoutMs = Number(env.TURN_TIMEOUT_MS ?? "30000");
+    this.disconnectForfeitMs = Number(
+      env.DISCONNECT_FORFEIT_MS ?? String(DEFAULT_DISCONNECT_FORFEIT_MS),
+    );
     this.botIterationCap = DEFAULT_BOT_ITERATION_CAP;
     const capacityOverride = Number(env.RATE_LIMIT_CAPACITY ?? "");
     this.rateLimitCapacity =
       Number.isFinite(capacityOverride) && capacityOverride > 0
         ? capacityOverride
         : DEFAULT_RATE_LIMIT.capacity;
+    this.alarms = new AlarmScheduler(this.ctx.storage);
     void this.ctx.blockConcurrencyWhile(async () => {
       const persisted = await this.ctx.storage.get<PersistedRoom>(STORAGE_KEY);
       if (persisted) {
@@ -86,6 +100,8 @@ export class Room extends DurableObject<Env> {
         this.engineState = persisted.engine;
         this.botSeat = persisted.botSeat;
         if (persisted.rematchSeats) this.rematchSeats = persisted.rematchSeats.slice();
+        this.disconnect = persisted.disconnect ?? null;
+        this.alarms.load(persisted.deadlines);
       }
     });
   }
@@ -145,9 +161,18 @@ export class Room extends DurableObject<Env> {
     const server = pair[1];
     server.serializeAttachment({ seat } satisfies WsAttachment);
     this.ctx.acceptWebSocket(server);
+    if (this.disconnect !== null && this.disconnect.seat === seat) {
+      this.disconnect = null;
+      this.alarms.cancel("forfeit");
+      await this.persist();
+    }
     this.broadcastRoomState();
     if (this.engineState === null && this.bothSeatsFilled() && this.attachedSeatCount() === 2) {
       this.startGame(newSeed());
+    } else if (this.engineState !== null && this.engineState.phase === "in-round") {
+      // Mid-game reconnect: replay the current state to the rejoining seat
+      // so they don't have to wait for the next event to render.
+      this.sendCurrentState(server, seat);
     }
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -201,7 +226,7 @@ export class Room extends DurableObject<Env> {
   }
 
   override async webSocketClose(
-    _ws: WebSocket,
+    ws: WebSocket,
     _code: number,
     _reason: string,
     _wasClean: boolean,
@@ -209,6 +234,19 @@ export class Room extends DurableObject<Env> {
     // Hibernation API delivers close events across wake-ups. The peer that
     // is still attached should see the vacant seat reflect, so refresh the
     // room state.
+    const seat = this.seatForWebSocket(ws);
+    if (
+      seat !== undefined &&
+      seat !== this.botSeat &&
+      this.engineState !== null &&
+      this.engineState.phase === "in-round" &&
+      this.disconnect === null
+    ) {
+      const forfeitAt = Date.now() + this.disconnectForfeitMs;
+      this.disconnect = { seat, forfeitAt };
+      this.alarms.schedule("forfeit", forfeitAt);
+      await this.persist();
+    }
     this.broadcastRoomState();
   }
 
@@ -229,22 +267,76 @@ export class Room extends DurableObject<Env> {
   }
 
   override async alarm(): Promise<void> {
-    if (this.engineState === null || this.engineState.phase !== "in-round") return;
+    const fired = this.alarms.due(Date.now());
+    if (fired.length === 0) return;
+    let mutated = false;
+    for (const kind of fired) {
+      if (kind === "turn-timeout") {
+        if (this.handleTurnTimeout()) mutated = true;
+      } else if (kind === "forfeit") {
+        if (this.handleForfeit()) mutated = true;
+      } else {
+        kind satisfies never;
+      }
+    }
+    if (mutated) await this.persist();
+  }
+
+  // Test seam: simulate alarm firing with `now` overridden so tests don't
+  // depend on wall-clock advancement. Returns the kinds that fired.
+  async testFireAlarm(now: number): Promise<DeadlineKind[]> {
+    const fired = this.alarms.due(now);
+    let mutated = false;
+    for (const kind of fired) {
+      if (kind === "turn-timeout") {
+        if (this.handleTurnTimeout()) mutated = true;
+      } else if (kind === "forfeit") {
+        if (this.handleForfeit()) mutated = true;
+      } else {
+        kind satisfies never;
+      }
+    }
+    if (mutated) await this.persist();
+    return fired;
+  }
+
+  testDisconnect(): DisconnectState | null {
+    return this.disconnect;
+  }
+
+  private handleTurnTimeout(): boolean {
+    if (this.engineState === null || this.engineState.phase !== "in-round") return false;
     const action = synthesizeTimeoutAction(this.engineState);
     if (action === null) {
       this.scheduleTurnTimer();
-      return;
+      return false;
     }
     const result = step(this.engineState, action);
     if (!result.ok) {
       this.scheduleTurnTimer();
-      return;
+      return false;
     }
     this.engineState = result.state;
     this.broadcast(result.events);
     this.runBotTurns();
     this.scheduleTurnTimer();
-    await this.persist();
+    return true;
+  }
+
+  private handleForfeit(): boolean {
+    if (this.engineState === null || this.engineState.phase !== "in-round") {
+      this.disconnect = null;
+      return true;
+    }
+    if (this.disconnect === null) return false;
+    const seat = this.disconnect.seat;
+    const forfeit = forfeitState(this.engineState, seat);
+    this.engineState = forfeit;
+    this.disconnect = null;
+    this.alarms.cancel("turn-timeout");
+    this.broadcast([{ type: "GAME_OVER", durak: seat }]);
+    this.broadcastRoomState();
+    return true;
   }
 
   // ─── seat / token primitives ───────────────────────────────────────────
@@ -414,6 +506,7 @@ export class Room extends DurableObject<Env> {
     for (let i = 0; i < this.rematchSeats.length; i++) {
       if (this.rematchSeats[i]) rematchRequested.push(i);
     }
+    const disconnect = this.disconnect;
     for (const ws of this.ctx.getWebSockets()) {
       const seat = this.seatForWebSocket(ws);
       if (seat === undefined) continue;
@@ -423,9 +516,19 @@ export class Room extends DurableObject<Env> {
         seats,
         you: seat,
         rematchRequested,
+        disconnect,
       };
       this.send(ws, msg);
     }
+  }
+
+  // Replays the current engine state to a single WS so a rejoining seat
+  // lands directly back in the in-round screen instead of waiting for the
+  // next event.
+  private sendCurrentState(ws: WebSocket, seat: SeatIndex): void {
+    if (this.engineState === null || this.engineState.phase !== "in-round") return;
+    const snapshot = redactFor(this.engineState, seat);
+    this.send(ws, { type: "Snapshot", snapshot });
   }
 
   private send(ws: WebSocket, msg: ServerMessage): void {
@@ -447,11 +550,11 @@ export class Room extends DurableObject<Env> {
 
   private scheduleTurnTimer(): void {
     if (this.engineState === null || this.engineState.phase !== "in-round") return;
-    void this.ctx.storage.setAlarm(Date.now() + this.turnTimeoutMs);
+    this.alarms.schedule("turn-timeout", Date.now() + this.turnTimeoutMs);
   }
 
   private cancelTurnTimer(): void {
-    void this.ctx.storage.deleteAlarm();
+    this.alarms.cancel("turn-timeout");
   }
 
   private async persist(): Promise<void> {
@@ -461,6 +564,8 @@ export class Room extends DurableObject<Env> {
       engine: this.engineState,
       botSeat: this.botSeat,
       rematchSeats: this.rematchSeats.slice(),
+      disconnect: this.disconnect,
+      deadlines: this.alarms.toPersisted(),
     };
     await this.ctx.storage.put(STORAGE_KEY, snapshot);
   }
@@ -478,6 +583,24 @@ export function activeActorSeat(state: InRoundState): number {
   if (state.table.length === 0) return state.attacker;
   const undefended = state.table.some((p) => p.defense === undefined);
   return undefended ? state.defender : state.attacker;
+}
+
+// Builds a `GameOverState` declaring `durak` as the loser. ADR-0009: the
+// forfeit transition lives in the worker, not the engine, since the
+// trigger is network state. The shape mirrors what `finalizeRoundEnd`
+// produces in `packages/engine/src/step.ts` so the client receives the
+// same protocol contract.
+export function forfeitState(state: InRoundState, durak: number): GameOverState {
+  return {
+    phase: "game-over",
+    playerCount: state.playerCount,
+    rng: state.rng,
+    hands: state.hands,
+    trumpSuit: state.trumpSuit,
+    trumpCard: state.trumpCard,
+    discard: state.discard,
+    durak,
+  };
 }
 
 export function synthesizeTimeoutAction(state: State): Action | null {

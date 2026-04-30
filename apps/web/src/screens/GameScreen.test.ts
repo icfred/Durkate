@@ -321,6 +321,52 @@ describe("GameScreen", () => {
     screen.dispose();
   });
 
+  it("renders the disconnect banner with a countdown when room.disconnect is set", () => {
+    type RoomListener = (room: import("../store.js").RoomMembership | null) => void;
+    const listeners: RoomListener[] = [];
+    const snapshot = loadFixture("fresh");
+    const screen = new GameScreen({
+      snapshot,
+      submitAction: vi.fn(),
+      subscribeRoom: (listener) => {
+        listeners.push(listener);
+        return () => {
+          const idx = listeners.indexOf(listener);
+          if (idx >= 0) listeners.splice(idx, 1);
+        };
+      },
+      now: () => 1_000_000,
+    });
+    screen.layout(800, 600);
+
+    const banner = findByLabel(screen, "disconnect-banner");
+    const text = banner?.children.find((c) => (c as Text).text !== undefined) as Text | undefined;
+    expect(banner?.visible).toBe(false);
+
+    for (const listener of listeners) {
+      listener({
+        seats: [{ name: "alice" }, { name: "bob" }],
+        you: 0,
+        rematchRequested: [],
+        disconnect: { seat: 1, forfeitAt: 1_000_000 + 12_000 },
+      });
+    }
+    expect(banner?.visible).toBe(true);
+    expect(text?.text).toContain("12s");
+
+    for (const listener of listeners) {
+      listener({
+        seats: [{ name: "alice" }, { name: "bob" }],
+        you: 0,
+        rematchRequested: [],
+        disconnect: null,
+      });
+    }
+    expect(banner?.visible).toBe(false);
+
+    screen.dispose();
+  });
+
   it("renders an error toast when lastError changes", () => {
     type ErrorListener = (error: import("../store.js").ServerError | null) => void;
     const listeners: ErrorListener[] = [];

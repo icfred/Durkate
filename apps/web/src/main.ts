@@ -126,6 +126,7 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
           return new GameScreen({
             snapshot: state.snapshot,
             submitAction: (action) => appStore.getState().submitAction(action),
+            initialRoom: state.room,
             subscribe: (listener) =>
               appStore.subscribe((next, prev) => {
                 if (next.snapshot !== prev.snapshot) listener(next.snapshot);
@@ -135,6 +136,10 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
                 const delta = next.eventsTotal - prev.eventsTotal;
                 if (delta <= 0) return;
                 listener(next.events.slice(-delta));
+              }),
+            subscribeRoom: (listener) =>
+              appStore.subscribe((next, prev) => {
+                if (next.room !== prev.room) listener(next.room);
               }),
           });
         case "gameover":

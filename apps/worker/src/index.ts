@@ -9,6 +9,7 @@ interface Env {
   ROOMS: DurableObjectNamespace<Room>;
   ALLOWED_ORIGINS?: string;
   TURN_TIMEOUT_MS?: string;
+  DISCONNECT_FORFEIT_MS?: string;
 }
 
 const ROOM_ID_BYTES = 12;
