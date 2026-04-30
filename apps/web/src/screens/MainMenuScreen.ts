@@ -6,6 +6,7 @@ import { fadeTo } from "../anim/pixi.js";
 import type { TweenHandle } from "../anim/tween.js";
 import { attachButtonHover, attachFocusNavSfx, withClickSound } from "../audio/index.js";
 import type { Mode } from "../store.js";
+import { attachBackNav } from "./backNav.js";
 import type { Screen } from "./types.js";
 
 const PANEL_W = 480;
@@ -35,7 +36,7 @@ export class MainMenuScreen extends Container implements Screen {
   private viewW = 0;
   private viewH = 0;
   private transitioning: TweenHandle | null = null;
-  private readonly onWindowKeyDown: (event: KeyboardEvent) => void;
+  private readonly detachBackNav: () => void;
 
   constructor(options: MainMenuScreenOptions) {
     super();
@@ -74,17 +75,13 @@ export class MainMenuScreen extends Container implements Screen {
     this.focus = new FocusManager();
     this.detachFocusNavSfx = attachFocusNavSfx(this.focus);
 
-    // Backspace / Escape navigates back to root from a sub-view.
-    this.onWindowKeyDown = (event: KeyboardEvent): void => {
-      if (event.key !== "Backspace" && event.key !== "Escape") return;
-      if (this.view === "root") return;
-      // Don't fire while the user is typing in an input overlay.
-      const target = event.target as HTMLElement | null;
-      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
-      event.preventDefault();
-      this.transitionTo("root");
-    };
-    window.addEventListener("keydown", this.onWindowKeyDown);
+    // Backspace / Escape navigates back to root from a sub-view. Suppressed
+    // on the root view (the screen-router's outer back-nav owns "from menu
+    // to nowhere" if/when that becomes a thing).
+    this.detachBackNav = attachBackNav({
+      onBack: () => this.transitionTo("root"),
+      shouldHandle: () => this.view !== "root",
+    });
 
     // Initial render — synchronous, no transition.
     this.buildRootButtons();
@@ -108,7 +105,7 @@ export class MainMenuScreen extends Container implements Screen {
   }
 
   dispose(): void {
-    window.removeEventListener("keydown", this.onWindowKeyDown);
+    this.detachBackNav();
     this.transitioning?.cancel();
     this.transitioning = null;
     this.detachFocusNavSfx();

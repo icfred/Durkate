@@ -11,6 +11,7 @@ import {
 import { Container, Graphics, Text } from "pixi.js";
 import { attachButtonHover, attachFocusNavSfx, withClickSound } from "../audio/index.js";
 import type { Mode, RoomCreationState, RoomMembership } from "../store.js";
+import { attachBackNav } from "./backNav.js";
 import type { Screen } from "./types.js";
 
 const PANEL_W = 540;
@@ -37,6 +38,8 @@ export interface LobbyScreenOptions {
   subscribeCreation?: (listener: (state: RoomCreationState) => void) => () => void;
   /** Invoked when the user retries after a failed room creation. */
   onRetry?: () => void;
+  /** Invoked when the user navigates back (Backspace, Escape). */
+  onBack?: () => void;
   onJoin(code: string): void;
   copyToClipboard?(text: string): Promise<void> | void;
 }
@@ -80,6 +83,7 @@ export class LobbyScreen extends Container implements Screen {
   private readonly unsubscribeRoom: (() => void) | null;
   private readonly unsubscribeCreation: (() => void) | null;
   private readonly detachFocusNavSfx: () => void;
+  private readonly detachBackNav: (() => void) | null;
 
   constructor(options: LobbyScreenOptions) {
     super();
@@ -299,6 +303,8 @@ export class LobbyScreen extends Container implements Screen {
     this.unsubscribeCreation = options.subscribeCreation
       ? options.subscribeCreation((state) => this.updateCreation(state))
       : null;
+
+    this.detachBackNav = options.onBack ? attachBackNav({ onBack: options.onBack }) : null;
   }
 
   layout(viewWidth: number, viewHeight: number): void {
@@ -310,6 +316,7 @@ export class LobbyScreen extends Container implements Screen {
   dispose(): void {
     this.unsubscribeRoom?.();
     this.unsubscribeCreation?.();
+    this.detachBackNav?.();
     this.detachFocusNavSfx();
     this.overlay?.unmount();
     this.overlay = null;

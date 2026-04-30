@@ -122,6 +122,7 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
             onJoin: (next) => {
               appStore.getState().showLobby({ mode, roomCode: next });
             },
+            onBack: () => appStore.getState().showMenu(),
           });
         }
         case "game":

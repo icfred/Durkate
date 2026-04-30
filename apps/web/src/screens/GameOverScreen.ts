@@ -2,6 +2,7 @@ import { Button, color, FocusManager, Panel, spacing, typography } from "@durak/
 import { Container, Text } from "pixi.js";
 import { attachButtonHover, attachFocusNavSfx, withClickSound } from "../audio/index.js";
 import type { GameOverData } from "../store.js";
+import { attachBackNav } from "./backNav.js";
 import type { Screen } from "./types.js";
 
 const PANEL_W = 480;
@@ -59,6 +60,7 @@ export class GameOverScreen extends Container implements Screen {
   private readonly hint: Text;
   private readonly rematchButton: Button;
   private readonly detachFocusNavSfx: () => void;
+  private readonly detachBackNav: () => void;
   private readonly unsubscribeRematch: (() => void) | undefined;
   readonly outcome: Outcome;
 
@@ -146,6 +148,7 @@ export class GameOverScreen extends Container implements Screen {
     this.focus.register(mainMenu);
     this.focus.attach();
     this.detachFocusNavSfx = attachFocusNavSfx(this.focus);
+    this.detachBackNav = attachBackNav({ onBack: options.onMainMenu });
 
     if (options.initialRematch) this.applyRematchStatus(options.initialRematch);
     this.unsubscribeRematch = options.subscribeRematch?.((status) =>
@@ -178,6 +181,7 @@ export class GameOverScreen extends Container implements Screen {
   }
 
   dispose(): void {
+    this.detachBackNav();
     this.detachFocusNavSfx();
     this.unsubscribeRematch?.();
     this.focus.detach();
