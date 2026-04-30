@@ -82,6 +82,9 @@ knows whose turn it is, what's legal, and which keys do what.
 - `?sandbox=anims` boots the animation primitives sandbox - a grid of
   auto-looping cells, one per easing, plus `fadeTo`, `scaleTo`,
   `sequence`, and `parallel` demos.
+- `?sandbox=sfx` boots a grid of every named SFX clip. Each button is
+  hover-and-click playable so the crusher palette can be auditioned end
+  to end without staging a real game.
 
 Sandbox actions go to `submitAction` / `requestRematch` which drop with
 a warn while the connection is not open.
@@ -209,15 +212,28 @@ This is an app, not a library. Entry point: `src/main.ts`.
 ## Audio
 
 Code-synthesized SFX only - no external assets. `src/audio/sfx.ts` defines
-six clips (`playCard`, `takePile`, `win`, `lose`, `buttonHover`,
-`buttonClick`) as short oscillator + envelope routines.
-`src/audio/index.ts` exposes the runtime API.
+the clip palette as short oscillator + envelope routines.
+`src/audio/index.ts` exposes the runtime API. Aesthetic target is the
+Papers Please feel: pixelated, downsampled, slightly noisy.
 
+- **Crusher.** `src/audio/crusher.ts` wires every clip through a shared
+  chain before the master gain: low-pass `BiquadFilter` (~6 kHz) →
+  `WaveShaper` soft drive → `ScriptProcessorNode` doing bit-crush
+  (default 8 bits) and sample-rate reduction (sample-and-hold every 4
+  frames) → output gain. A continuous low-level `BufferSource` of white
+  noise is mixed in for tape-grit. Each stage degrades gracefully when
+  the runtime omits the underlying API (the test env keeps the chain
+  intact).
+- **Clip palette** (all routed through the crusher):
+  - Gameplay: `playCard`, `takePile`, `win`, `lose`, `dealStart`,
+    `talonDraw`, `roundEnd`.
+  - UI: `buttonHover`, `buttonClick`, `navMove`, `navConfirm`,
+    `navBack`, `actionError`.
 - **Lazy context.** `playSfx(name)` lazily creates a single `AudioContext`
-  on first call. `installAudioGestureUnlock()` wires a one-shot
-  `pointerdown`/`keydown` listener at boot to satisfy browser autoplay
-  policy. If the browser exposes no `AudioContext` (e.g. node-based test
-  env), `playSfx` silently returns `false`.
+  on first call and builds the crusher inline. `installAudioGestureUnlock()`
+  wires a one-shot `pointerdown`/`keydown` listener at boot to satisfy
+  browser autoplay policy. If the browser exposes no `AudioContext`
+  (e.g. node-based test env), `playSfx` silently returns `false`.
 - **Mute slice on the store.** `appStore.audio.muted` is the source of
   truth. `toggleMute()` and `setMuted()` flip it and persist to
   `localStorage` under `durak.audio.muted`. The store hydrates from
@@ -229,13 +245,24 @@ six clips (`playCard`, `takePile`, `win`, `lose`, `buttonHover`,
   `onActivate` with a click sound; `attachButtonHover(button)` adds the
   hover sound on `pointerover`. Use both at every `Button` construction
   site.
+- **Wiring focus.** `attachFocusNavSfx(focus)` subscribes to a screen's
+  `FocusManager` and plays `navMove` whenever focus actually changes
+  index (idempotent — a no-op when arrow keys hit the same node) and
+  `navConfirm` on Enter / Space activation. Each screen owns the
+  unsubscribe and calls it from `dispose()`.
 - **Game events.** `GameScreen` subscribes to the `appStore.events` ring
   buffer (via a `subscribeEvents` callback wired in `main.ts`) and plays
-  `playCard` on `CARD_PLAYED`, `takePile` on `PILE_TAKEN`, and
-  `win`/`lose` on `GAME_OVER` (decided against you / by you; a draw is
-  silent). The wiring uses `appStore.eventsTotal` to deliver only newly
-  appended events, so each event fires sfx exactly once even though
-  `appendEvents` may run many times in a tick.
+  `playCard` on `CARD_PLAYED`, `takePile` on `PILE_TAKEN`, `dealStart`
+  on `GAME_STARTED`, `talonDraw` on `TALON_DRAWN`, `roundEnd` on
+  `ROUND_ENDED`, and `win`/`lose` on `GAME_OVER` (decided against you /
+  by you; a draw is silent). It also fires `actionError` whenever a new
+  `lastError` arrives in the store (server-rejected action). The wiring
+  uses `appStore.eventsTotal` to deliver only newly appended events, so
+  each event fires sfx exactly once even though `appendEvents` may run
+  many times in a tick.
+- **SFX sandbox.** `?sandbox=sfx` mounts a grid of buttons - one per
+  named clip - with hover-to-preview and click-to-replay. Useful for
+  auditioning the crusher palette without staging a full match.
 
 ## Animations
 

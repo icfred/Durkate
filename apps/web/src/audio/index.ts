@@ -1,8 +1,11 @@
+import type { FocusManager } from "@durak/ui";
 import type { Container } from "pixi.js";
 import { appStore } from "../store.js";
+import { type Crusher, createCrusher } from "./crusher.js";
 import { type SfxName, sfxClips } from "./sfx.js";
 
 export type { SfxName } from "./sfx.js";
+export { SFX_NAMES } from "./sfx.js";
 
 interface AudioContextCtor {
   new (): AudioContext;
@@ -10,6 +13,7 @@ interface AudioContextCtor {
 
 let context: AudioContext | undefined;
 let master: GainNode | undefined;
+let crusher: Crusher | undefined;
 let unlockHandlerInstalled = false;
 
 function getAudioContextCtor(): AudioContextCtor | undefined {
@@ -35,9 +39,11 @@ function ensureContext(): AudioContext | undefined {
     master = context.createGain();
     master.gain.value = 0.6;
     master.connect(context.destination);
+    crusher = createCrusher(context, master);
   } catch {
     context = undefined;
     master = undefined;
+    crusher = undefined;
     return undefined;
   }
   return context;
@@ -46,9 +52,9 @@ function ensureContext(): AudioContext | undefined {
 export function playSfx(name: SfxName): boolean {
   if (appStore.getState().audio.muted) return false;
   const ctx = ensureContext();
-  if (!ctx || !master) return false;
+  if (!ctx || !crusher) return false;
   try {
-    sfxClips[name](ctx, master, ctx.currentTime);
+    sfxClips[name](ctx, crusher.input, ctx.currentTime);
     return true;
   } catch {
     return false;
@@ -79,6 +85,19 @@ export function withClickSound(handler: () => void): () => void {
   };
 }
 
+export function attachFocusNavSfx(focus: FocusManager): () => void {
+  const offMove = focus.subscribeMove(() => {
+    playSfx("navMove");
+  });
+  const offActivate = focus.subscribeActivate(() => {
+    playSfx("navConfirm");
+  });
+  return () => {
+    offMove();
+    offActivate();
+  };
+}
+
 export function bindMuteShortcut(): () => void {
   if (typeof window === "undefined") return () => {};
   const handler = (event: KeyboardEvent): void => {
@@ -97,10 +116,18 @@ export function bindMuteShortcut(): () => void {
 }
 
 export function __resetAudioForTests(): void {
+  if (crusher) {
+    try {
+      crusher.dispose();
+    } catch {
+      // ignore
+    }
+  }
   if (context) {
     void context.close().catch(() => {});
   }
   context = undefined;
   master = undefined;
+  crusher = undefined;
   unlockHandlerInstalled = false;
 }

@@ -2,6 +2,7 @@ export { Button, type ButtonOptions } from "./components/Button.js";
 export { Panel, type PanelOptions } from "./components/Panel.js";
 export {
   type Focusable,
+  type FocusEventListener,
   FocusManager,
   type FocusManagerOptions,
 } from "./focus/FocusManager.js";

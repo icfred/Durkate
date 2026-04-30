@@ -269,6 +269,66 @@ describe("FocusManager", () => {
     expect(b.activate).toHaveBeenCalledTimes(1);
   });
 
+  it("subscribeMove fires on focus moves and not on initial registration", () => {
+    const move = vi.fn();
+    mgr.subscribeMove(move);
+    const a = new FakeNode();
+    const b = new FakeNode();
+    mgr.register(a);
+    mgr.register(b);
+    expect(move).not.toHaveBeenCalled();
+
+    window.dispatchEvent(press("ArrowDown"));
+    expect(move).toHaveBeenCalledTimes(1);
+
+    window.dispatchEvent(press("ArrowUp"));
+    expect(move).toHaveBeenCalledTimes(2);
+  });
+
+  it("subscribeMove does not fire when focus stays on the same node", () => {
+    const move = vi.fn();
+    mgr.subscribeMove(move);
+    const a = new FakeNode();
+    mgr.register(a);
+
+    window.dispatchEvent(press("ArrowDown"));
+    window.dispatchEvent(press("ArrowDown"));
+    window.dispatchEvent(press("ArrowDown"));
+    expect(move).not.toHaveBeenCalled();
+  });
+
+  it("subscribeMove returns an unsubscribe", () => {
+    const move = vi.fn();
+    const off = mgr.subscribeMove(move);
+    const a = new FakeNode();
+    const b = new FakeNode();
+    mgr.register(a);
+    mgr.register(b);
+    off();
+    window.dispatchEvent(press("ArrowDown"));
+    expect(move).not.toHaveBeenCalled();
+  });
+
+  it("subscribeActivate fires on Enter / Space activation", () => {
+    const activate = vi.fn();
+    mgr.subscribeActivate(activate);
+    const a = new FakeNode();
+    mgr.register(a);
+
+    window.dispatchEvent(press("Enter"));
+    expect(activate).toHaveBeenCalledTimes(1);
+
+    window.dispatchEvent(press(" "));
+    expect(activate).toHaveBeenCalledTimes(2);
+  });
+
+  it("subscribeActivate does nothing when no node is focused", () => {
+    const activate = vi.fn();
+    mgr.subscribeActivate(activate);
+    window.dispatchEvent(press("Enter"));
+    expect(activate).not.toHaveBeenCalled();
+  });
+
   it("suspend and resume are idempotent", () => {
     const a = new FakeNode();
     mgr.register(a);

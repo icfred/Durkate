@@ -2,7 +2,7 @@ import { type Action, beats, type Card, type Event, type TablePair } from "@dura
 import type { SeatIndex, Snapshot } from "@durak/protocol";
 import { color, type Focusable, FocusManager, spacing, typography } from "@durak/ui";
 import { Container, Graphics, Text, Ticker } from "pixi.js";
-import { playSfx } from "../audio/index.js";
+import { attachFocusNavSfx, playSfx } from "../audio/index.js";
 import { appStore, type ServerError } from "../store.js";
 import type { Screen } from "./types.js";
 
@@ -170,6 +170,7 @@ export class GameScreen extends Container implements Screen {
   private readonly subscribeUnsub: (() => void) | null;
   private readonly subscribeEventsUnsub: (() => void) | null;
   private readonly subscribeErrorUnsub: (() => void) | null;
+  private readonly detachFocusNavSfx: () => void;
   private readonly ticker: Ticker;
   private readonly tickCallback: () => void;
   private readonly flashes: FlashState[] = [];
@@ -283,6 +284,7 @@ export class GameScreen extends Container implements Screen {
     this.ticker.add(this.tickCallback);
 
     this.focus.attach();
+    this.detachFocusNavSfx = attachFocusNavSfx(this.focus);
     this.render();
   }
 
@@ -297,6 +299,7 @@ export class GameScreen extends Container implements Screen {
     this.subscribeUnsub?.();
     this.subscribeEventsUnsub?.();
     this.subscribeErrorUnsub?.();
+    this.detachFocusNavSfx();
     this.ticker.remove(this.tickCallback);
     this.flashes.length = 0;
     this.focus.detach();
@@ -321,6 +324,15 @@ export class GameScreen extends Container implements Screen {
       case "PILE_TAKEN":
         playSfx("takePile");
         return;
+      case "GAME_STARTED":
+        playSfx("dealStart");
+        return;
+      case "TALON_DRAWN":
+        playSfx("talonDraw");
+        return;
+      case "ROUND_ENDED":
+        playSfx("roundEnd");
+        return;
       case "GAME_OVER": {
         if (event.durak === null) return;
         const seat = this.snapshot?.you.seat;
@@ -344,6 +356,7 @@ export class GameScreen extends Container implements Screen {
     this.errorBanner.visible = true;
     this.errorVisibleMs = 0;
     this.layoutSections();
+    playSfx("actionError");
   }
 
   private drawErrorBanner(): void {

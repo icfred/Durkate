@@ -1,6 +1,6 @@
 import { Button, color, FocusManager, Panel, spacing, typography } from "@durak/ui";
 import { Container, Text } from "pixi.js";
-import { attachButtonHover, withClickSound } from "../audio/index.js";
+import { attachButtonHover, attachFocusNavSfx, withClickSound } from "../audio/index.js";
 import type { Mode } from "../store.js";
 import type { Screen } from "./types.js";
 
@@ -14,6 +14,7 @@ export interface MainMenuScreenOptions {
 export class MainMenuScreen extends Container implements Screen {
   private readonly focus = new FocusManager();
   private readonly panel: Panel;
+  private readonly detachFocusNavSfx: () => void;
 
   constructor(options: MainMenuScreenOptions) {
     super();
@@ -77,6 +78,7 @@ export class MainMenuScreen extends Container implements Screen {
     this.focus.register(playBot);
     this.focus.register(playFriend);
     this.focus.attach();
+    this.detachFocusNavSfx = attachFocusNavSfx(this.focus);
   }
 
   layout(viewWidth: number, viewHeight: number): void {
@@ -85,6 +87,7 @@ export class MainMenuScreen extends Container implements Screen {
   }
 
   dispose(): void {
+    this.detachFocusNavSfx();
     this.focus.detach();
     this.focus.clear();
   }
