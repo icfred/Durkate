@@ -13,6 +13,13 @@ export interface ConnectionControllerOptions {
 
 export interface ConnectionController {
   start(): () => void;
+  /**
+   * Force-close the active websocket (dev tool). The reconnect loop will
+   * not fire because the controller's reconcile path is what would re-open
+   * a connection, and `closeActive` clears `active` so the next reconcile
+   * sees no socket and opens a fresh one only when the store says so.
+   */
+  forceDisconnect(): void;
 }
 
 /**
@@ -110,6 +117,9 @@ export function createConnectionController(
         unsub();
         closeActive();
       };
+    },
+    forceDisconnect: () => {
+      closeActive();
     },
   };
 }

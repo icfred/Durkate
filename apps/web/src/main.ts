@@ -5,6 +5,7 @@ import { loadSkinAssets } from "@durak/skins-spike";
 import { color, typography } from "@durak/ui";
 import { Application } from "pixi.js";
 import { bindMuteShortcut, installAudioGestureUnlock } from "./audio/index.js";
+import { bindDevtoolsShortcut, DevPanel, subscribeAutoplay } from "./devtools/index.js";
 import { gameOverFixture } from "./fixtures/gameOverFixtures.js";
 import { createConnectionController } from "./net/connection.js";
 import { CreateRoomError, createRoom, httpFromWsUrl } from "./net/rooms.js";
@@ -155,8 +156,19 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
   installAudioGestureUnlock();
   bindMuteShortcut();
 
+  const devPanel = new DevPanel({
+    store: appStore,
+    forceDisconnect: () => connection.forceDisconnect(),
+  });
+  devPanel.layout(app.screen.width, app.screen.height);
+  app.stage.addChild(devPanel);
+  devPanel.attach();
+  bindDevtoolsShortcut({ store: appStore });
+  subscribeAutoplay({ store: appStore });
+
   app.renderer.on("resize", () => {
     router.setView(app.screen.width, app.screen.height);
+    devPanel.layout(app.screen.width, app.screen.height);
   });
 }
 

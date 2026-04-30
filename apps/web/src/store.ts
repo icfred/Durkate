@@ -28,6 +28,16 @@ export interface AudioState {
   muted: boolean;
 }
 
+export interface DevtoolsState {
+  open: boolean;
+  autoplay: boolean;
+  animSpeed: number;
+}
+
+export const ANIM_SPEED_MIN = 0;
+export const ANIM_SPEED_MAX = 2;
+export const ANIM_SPEED_DEFAULT = 1;
+
 export interface ServerError {
   code: string;
   message: string;
@@ -62,6 +72,7 @@ export interface AppState {
   room: RoomMembership | null;
   gameover: GameOverData | undefined;
   audio: AudioState;
+  devtools: DevtoolsState;
   lastError: ServerError | null;
   submitAction: (action: Action) => void;
   requestRematch: () => void;
@@ -80,6 +91,10 @@ export interface AppState {
   setSender(sender: ClientSender | null): void;
   toggleMute(): void;
   setMuted(muted: boolean): void;
+  setDevtoolsOpen(open: boolean): void;
+  toggleDevtools(): void;
+  setAutoplay(autoplay: boolean): void;
+  setAnimSpeed(speed: number): void;
   setError(code: string, message: string): void;
   clearError(): void;
 }
@@ -88,6 +103,7 @@ const INITIAL_CONNECTION: ConnectionState = { status: "idle", attempts: 0 };
 const INITIAL_ROOM_CREATION: RoomCreationState = { status: "idle" };
 
 const MUTED_STORAGE_KEY = "durak.audio.muted";
+const DEVTOOLS_STORAGE_KEY = "durak.devtools";
 
 interface StorageLike {
   getItem(key: string): string | null;
@@ -120,6 +136,48 @@ function writeMuted(muted: boolean): void {
   }
 }
 
+export function clampAnimSpeed(speed: number): number {
+  if (!Number.isFinite(speed)) return ANIM_SPEED_DEFAULT;
+  if (speed < ANIM_SPEED_MIN) return ANIM_SPEED_MIN;
+  if (speed > ANIM_SPEED_MAX) return ANIM_SPEED_MAX;
+  return speed;
+}
+
+function readDevtools(): DevtoolsState {
+  const fallback: DevtoolsState = {
+    open: false,
+    autoplay: false,
+    animSpeed: ANIM_SPEED_DEFAULT,
+  };
+  const storage = getStorage();
+  if (!storage) return fallback;
+  try {
+    const raw = storage.getItem(DEVTOOLS_STORAGE_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as Partial<DevtoolsState>;
+    return {
+      open: typeof parsed.open === "boolean" ? parsed.open : fallback.open,
+      autoplay: typeof parsed.autoplay === "boolean" ? parsed.autoplay : fallback.autoplay,
+      animSpeed:
+        typeof parsed.animSpeed === "number"
+          ? clampAnimSpeed(parsed.animSpeed)
+          : fallback.animSpeed,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function writeDevtools(state: DevtoolsState): void {
+  const storage = getStorage();
+  if (!storage) return;
+  try {
+    storage.setItem(DEVTOOLS_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // localStorage can throw in private mode or quota-exceeded; swallow.
+  }
+}
+
 interface InternalState extends AppState {
   __sender: ClientSender | null;
 }
@@ -139,6 +197,7 @@ export const appStore = createStore<AppState>((set, get) => {
     room: null,
     gameover: undefined,
     audio: { muted: readMuted() },
+    devtools: readDevtools(),
     lastError: null,
     __sender: null,
     showMenu: () =>
@@ -245,6 +304,26 @@ export const appStore = createStore<AppState>((set, get) => {
     setMuted: (muted: boolean) => {
       writeMuted(muted);
       set({ audio: { muted } });
+    },
+    setDevtoolsOpen: (open: boolean) => {
+      const next = { ...get().devtools, open };
+      writeDevtools(next);
+      set({ devtools: next });
+    },
+    toggleDevtools: () => {
+      const next = { ...get().devtools, open: !get().devtools.open };
+      writeDevtools(next);
+      set({ devtools: next });
+    },
+    setAutoplay: (autoplay: boolean) => {
+      const next = { ...get().devtools, autoplay };
+      writeDevtools(next);
+      set({ devtools: next });
+    },
+    setAnimSpeed: (speed: number) => {
+      const next = { ...get().devtools, animSpeed: clampAnimSpeed(speed) };
+      writeDevtools(next);
+      set({ devtools: next });
     },
     setError: (code, message) =>
       set((state) => ({
