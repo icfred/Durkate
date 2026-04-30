@@ -9,7 +9,7 @@ import {
   typography,
 } from "@durak/ui";
 import { Container, Graphics, Text } from "pixi.js";
-import { attachButtonHover, withClickSound } from "../audio/index.js";
+import { attachButtonHover, attachFocusNavSfx, withClickSound } from "../audio/index.js";
 import type { Mode, RoomCreationState, RoomMembership } from "../store.js";
 import type { Screen } from "./types.js";
 
@@ -79,6 +79,7 @@ export class LobbyScreen extends Container implements Screen {
   private creation: RoomCreationState;
   private readonly unsubscribeRoom: (() => void) | null;
   private readonly unsubscribeCreation: (() => void) | null;
+  private readonly detachFocusNavSfx: () => void;
 
   constructor(options: LobbyScreenOptions) {
     super();
@@ -290,6 +291,7 @@ export class LobbyScreen extends Container implements Screen {
     this.applyCreationState();
 
     this.focus.attach();
+    this.detachFocusNavSfx = attachFocusNavSfx(this.focus);
 
     this.unsubscribeRoom = options.subscribe
       ? options.subscribe((room) => this.update(room))
@@ -308,6 +310,7 @@ export class LobbyScreen extends Container implements Screen {
   dispose(): void {
     this.unsubscribeRoom?.();
     this.unsubscribeCreation?.();
+    this.detachFocusNavSfx();
     this.overlay?.unmount();
     this.overlay = null;
     this.focus.detach();

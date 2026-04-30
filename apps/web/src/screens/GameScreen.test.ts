@@ -9,6 +9,7 @@ import { loadFixture } from "./sandboxFixtures.js";
 
 vi.mock("../audio/index.js", () => ({
   playSfx: vi.fn().mockReturnValue(true),
+  attachFocusNavSfx: vi.fn().mockReturnValue(() => {}),
 }));
 
 const playSfxMock = vi.mocked(audio.playSfx);
@@ -290,6 +291,36 @@ describe("GameScreen", () => {
     screen.dispose();
   });
 
+  it("plays actionError when lastError surfaces", () => {
+    type ErrorListener = (error: import("../store.js").ServerError | null) => void;
+    const listeners: ErrorListener[] = [];
+    const snapshot = loadFixture("fresh");
+    const screen = new GameScreen({
+      snapshot,
+      submitAction: vi.fn(),
+      subscribeError: (listener) => {
+        listeners.push(listener);
+        return () => {
+          const idx = listeners.indexOf(listener);
+          if (idx >= 0) listeners.splice(idx, 1);
+        };
+      },
+    });
+    screen.layout(800, 600);
+
+    playSfxMock.mockClear();
+    for (const listener of listeners) {
+      listener({ code: "DOES_NOT_BEAT", message: "card does not beat", seq: 1 });
+    }
+    expect(playSfxMock).toHaveBeenCalledWith("actionError");
+
+    playSfxMock.mockClear();
+    for (const listener of listeners) listener(null);
+    expect(playSfxMock).not.toHaveBeenCalledWith("actionError");
+
+    screen.dispose();
+  });
+
   it("renders an error toast when lastError changes", () => {
     type ErrorListener = (error: import("../store.js").ServerError | null) => void;
     const listeners: ErrorListener[] = [];
@@ -422,6 +453,30 @@ describe("GameScreen SFX wiring", () => {
     expect(playSfxMock).toHaveBeenCalledTimes(1);
     expect(playSfxMock).toHaveBeenCalledWith("lose");
 
+    screen.dispose();
+  });
+
+  it("plays dealStart on GAME_STARTED", () => {
+    const screen = makeScreen();
+    emit?.([{ type: "GAME_STARTED", trump: { suit: "hearts", rank: 6 }, attacker: 0 }]);
+    expect(playSfxMock).toHaveBeenCalledTimes(1);
+    expect(playSfxMock).toHaveBeenCalledWith("dealStart");
+    screen.dispose();
+  });
+
+  it("plays talonDraw on TALON_DRAWN", () => {
+    const screen = makeScreen();
+    emit?.([{ type: "TALON_DRAWN", by: 0, cards: [{ suit: "spades", rank: 7 }] }]);
+    expect(playSfxMock).toHaveBeenCalledTimes(1);
+    expect(playSfxMock).toHaveBeenCalledWith("talonDraw");
+    screen.dispose();
+  });
+
+  it("plays roundEnd on ROUND_ENDED", () => {
+    const screen = makeScreen();
+    emit?.([{ type: "ROUND_ENDED", discarded: [], attacker: 1, defender: 0 }]);
+    expect(playSfxMock).toHaveBeenCalledTimes(1);
+    expect(playSfxMock).toHaveBeenCalledWith("roundEnd");
     screen.dispose();
   });
 

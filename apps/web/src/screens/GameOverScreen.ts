@@ -1,5 +1,6 @@
 import { Button, color, FocusManager, Panel, spacing, typography } from "@durak/ui";
 import { Container, Text } from "pixi.js";
+import { attachButtonHover, attachFocusNavSfx, withClickSound } from "../audio/index.js";
 import type { GameOverData } from "../store.js";
 import type { Screen } from "./types.js";
 
@@ -44,6 +45,7 @@ function sublineFor(data: GameOverData, outcome: Outcome): string {
 export class GameOverScreen extends Container implements Screen {
   private readonly focus = new FocusManager();
   private readonly panel: Panel;
+  private readonly detachFocusNavSfx: () => void;
   readonly outcome: Outcome;
 
   constructor(options: GameOverScreenOptions) {
@@ -102,8 +104,9 @@ export class GameOverScreen extends Container implements Screen {
       label: "REMATCH",
       width: BUTTON_W,
       height: BUTTON_H,
-      onActivate: () => options.onRematch(),
+      onActivate: withClickSound(() => options.onRematch()),
     });
+    attachButtonHover(rematch);
     rematch.x = rowX;
     rematch.y = rowY;
     this.panel.addChild(rematch);
@@ -112,8 +115,9 @@ export class GameOverScreen extends Container implements Screen {
       label: "MAIN MENU",
       width: BUTTON_W,
       height: BUTTON_H,
-      onActivate: () => options.onMainMenu(),
+      onActivate: withClickSound(() => options.onMainMenu()),
     });
+    attachButtonHover(mainMenu);
     mainMenu.x = rowX + BUTTON_W + rowGap;
     mainMenu.y = rowY;
     this.panel.addChild(mainMenu);
@@ -121,6 +125,7 @@ export class GameOverScreen extends Container implements Screen {
     this.focus.register(rematch);
     this.focus.register(mainMenu);
     this.focus.attach();
+    this.detachFocusNavSfx = attachFocusNavSfx(this.focus);
   }
 
   layout(viewWidth: number, viewHeight: number): void {
@@ -129,6 +134,7 @@ export class GameOverScreen extends Container implements Screen {
   }
 
   dispose(): void {
+    this.detachFocusNavSfx();
     this.focus.detach();
     this.focus.clear();
   }

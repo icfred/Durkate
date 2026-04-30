@@ -8,12 +8,17 @@ export interface FocusManagerOptions {
   target?: Window | HTMLElement;
 }
 
+export type FocusEventListener = () => void;
+
 export class FocusManager {
   private nodes: Focusable[] = [];
   private index = -1;
   private readonly target: Window | HTMLElement;
   private readonly onEscape: (() => void) | undefined;
   private readonly onKeyDown: (event: KeyboardEvent) => void;
+  private readonly moveListeners = new Set<FocusEventListener>();
+  private readonly activateListeners = new Set<FocusEventListener>();
+  private readonly escapeListeners = new Set<FocusEventListener>();
   private attached = false;
   private suspended = false;
 
@@ -81,14 +86,39 @@ export class FocusManager {
     this.focusAt((this.index - 1 + this.nodes.length) % this.nodes.length);
   }
 
+  subscribeMove(listener: FocusEventListener): () => void {
+    this.moveListeners.add(listener);
+    return () => {
+      this.moveListeners.delete(listener);
+    };
+  }
+
+  subscribeActivate(listener: FocusEventListener): () => void {
+    this.activateListeners.add(listener);
+    return () => {
+      this.activateListeners.delete(listener);
+    };
+  }
+
+  subscribeEscape(listener: FocusEventListener): () => void {
+    this.escapeListeners.add(listener);
+    return () => {
+      this.escapeListeners.delete(listener);
+    };
+  }
+
   private focusAt(next: number): void {
     if (this.index === next) {
       this.nodes[next]?.setFocus(true);
       return;
     }
+    const prev = this.index;
     this.nodes[this.index]?.setFocus(false);
     this.index = next;
     this.nodes[next]?.setFocus(true);
+    if (prev !== -1) {
+      for (const listener of this.moveListeners) listener();
+    }
   }
 
   private handleKeyDown(event: KeyboardEvent): void {
@@ -113,13 +143,15 @@ export class FocusManager {
       case " ":
         if (this.index >= 0) {
           event.preventDefault();
+          for (const listener of this.activateListeners) listener();
           this.nodes[this.index]?.activate();
         }
         return;
       case "Escape":
-        if (this.onEscape) {
+        if (this.onEscape || this.escapeListeners.size > 0) {
           event.preventDefault();
-          this.onEscape();
+          for (const listener of this.escapeListeners) listener();
+          this.onEscape?.();
         }
         return;
     }

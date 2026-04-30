@@ -9,6 +9,7 @@ import { gameOverFixture } from "./fixtures/gameOverFixtures.js";
 import { createConnectionController } from "./net/connection.js";
 import { CreateRoomError, createRoom, httpFromWsUrl } from "./net/rooms.js";
 import { AnimSandboxScreen } from "./sandbox/anims/AnimSandboxScreen.js";
+import { SfxSandboxScreen } from "./sandbox/sfx/SfxSandboxScreen.js";
 import { SkinSandboxScreen } from "./sandbox/skins/SkinSandboxScreen.js";
 import { SkinTunerScreen } from "./sandbox/skins/SkinTunerScreen.js";
 import { ScreenRouter } from "./screenRouter.js";
@@ -58,6 +59,7 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
   app.renderer.on("resize", () => {
     screen.layout(app.screen.width, app.screen.height);
   });
+  installAudioGestureUnlock();
 } else if (sandboxParam === "anims") {
   const screen = new AnimSandboxScreen({ ticker: app.ticker });
   screen.layout(app.screen.width, app.screen.height);
@@ -65,6 +67,15 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
   app.renderer.on("resize", () => {
     screen.layout(app.screen.width, app.screen.height);
   });
+} else if (sandboxParam === "sfx") {
+  const screen = new SfxSandboxScreen();
+  screen.layout(app.screen.width, app.screen.height);
+  app.stage.addChild(screen);
+  app.renderer.on("resize", () => {
+    screen.layout(app.screen.width, app.screen.height);
+  });
+  installAudioGestureUnlock();
+  bindMuteShortcut();
 } else {
   applyBootRouting();
 
