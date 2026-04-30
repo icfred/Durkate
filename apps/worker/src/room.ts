@@ -54,6 +54,10 @@ const DEFAULT_BOT_ITERATION_CAP = 200;
 const DEFAULT_RATE_LIMIT = { capacity: 20, refillIntervalMs: 5_000 };
 const STORAGE_KEY = "room";
 const DEFAULT_DISCONNECT_FORFEIT_MS = 30_000;
+// Room GC eviction timeouts. See apps/worker/README.md.
+const ABANDONED_MS = 5 * 60 * 1000;
+const IDLE_MS = 5 * 60 * 1000;
+const STALE_MS = 10 * 60 * 1000;
 
 interface Env {
   TURN_TIMEOUT_MS?: string;
@@ -134,6 +138,8 @@ export class Room extends DurableObject<Env> {
       const guest = this.addPlayer("Guest");
       response.joinToken = guest.token;
     }
+    // Schedule abandoned-on-create eviction. The first ws attach cancels it.
+    this.alarms.schedule("abandoned", Date.now() + ABANDONED_MS);
     await this.persist();
     return Response.json(response, { status: 201 });
   }
@@ -161,6 +167,10 @@ export class Room extends DurableObject<Env> {
     const server = pair[1];
     server.serializeAttachment({ seat } satisfies WsAttachment);
     this.ctx.acceptWebSocket(server);
+    // Any attach cancels both abandoned-on-create and idle eviction. They're
+    // re-scheduled on close if appropriate.
+    this.alarms.cancel("abandoned");
+    this.alarms.cancel("idle");
     if (this.disconnect !== null && this.disconnect.seat === seat) {
       this.disconnect = null;
       this.alarms.cancel("forfeit");
@@ -171,8 +181,11 @@ export class Room extends DurableObject<Env> {
       this.startGame(newSeed());
     } else if (this.engineState !== null && this.engineState.phase === "in-round") {
       // Mid-game reconnect: replay the current state to the rejoining seat
-      // so they don't have to wait for the next event to render.
+      // so they don't have to wait for the next event to render. Re-arm the
+      // turn timer in case it was paused while the room was unattended.
       this.sendCurrentState(server, seat);
+      this.scheduleTurnTimer();
+      await this.persist();
     }
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -247,6 +260,16 @@ export class Room extends DurableObject<Env> {
       this.alarms.schedule("forfeit", forfeitAt);
       await this.persist();
     }
+    // No human clients left + game not finished → pause the turn clock and
+    // schedule idle eviction. Reconnect (handleWsUpgrade) clears `idle` and
+    // re-arms the turn timer via the existing scheduleTurnTimer path.
+    if (this.ctx.getWebSockets().length === 0 && this.engineState?.phase !== "game-over") {
+      this.cancelTurnTimer();
+      if (!this.alarms.has("idle")) {
+        this.alarms.schedule("idle", Date.now() + IDLE_MS);
+      }
+      await this.persist();
+    }
     this.broadcastRoomState();
   }
 
@@ -269,39 +292,78 @@ export class Room extends DurableObject<Env> {
   override async alarm(): Promise<void> {
     const fired = this.alarms.due(Date.now());
     if (fired.length === 0) return;
-    let mutated = false;
-    for (const kind of fired) {
-      if (kind === "turn-timeout") {
-        if (this.handleTurnTimeout()) mutated = true;
-      } else if (kind === "forfeit") {
-        if (this.handleForfeit()) mutated = true;
-      } else {
-        kind satisfies never;
-      }
-    }
-    if (mutated) await this.persist();
+    if (await this.dispatchFired(fired)) await this.persist();
   }
 
   // Test seam: simulate alarm firing with `now` overridden so tests don't
   // depend on wall-clock advancement. Returns the kinds that fired.
   async testFireAlarm(now: number): Promise<DeadlineKind[]> {
     const fired = this.alarms.due(now);
+    if (await this.dispatchFired(fired)) await this.persist();
+    return fired;
+  }
+
+  testDisconnect(): DisconnectState | null {
+    return this.disconnect;
+  }
+
+  // Test seam: read the current deadline map so tests can assert which
+  // GC / forfeit / turn deadlines are armed.
+  testDeadlines(): PersistedDeadlines {
+    return this.alarms.toPersisted();
+  }
+
+  private async dispatchFired(fired: DeadlineKind[]): Promise<boolean> {
     let mutated = false;
     for (const kind of fired) {
       if (kind === "turn-timeout") {
         if (this.handleTurnTimeout()) mutated = true;
       } else if (kind === "forfeit") {
         if (this.handleForfeit()) mutated = true;
+      } else if (kind === "abandoned" || kind === "idle" || kind === "stale") {
+        await this.evict(kind);
+        // evict deletes all storage so we don't persist after.
+        return false;
       } else {
         kind satisfies never;
       }
     }
-    if (mutated) await this.persist();
-    return fired;
+    return mutated;
   }
 
-  testDisconnect(): DisconnectState | null {
-    return this.disconnect;
+  // Hard delete: clear DO storage and in-memory state. After this returns
+  // the DO can be hibernated and re-instantiated; loading from empty
+  // storage produces a fresh, uninitialized room (which `handleInit` will
+  // refuse since `seats.some(s => s !== null)` is false but `mode` defaults
+  // to "human" — actually a re-init is fine: any lingering ws-upgrade
+  // attempt with an old token returns 403).
+  private async evict(reason: "abandoned" | "idle" | "stale"): Promise<void> {
+    console.info(`[room] evicted (${reason}) roomId=${this.ctx.id.toString()} mode=${this.mode}`);
+    this.engineState = null;
+    this.seats = new Array<Seat | null>(SEAT_COUNT).fill(null);
+    this.botSeat = null;
+    this.rematchSeats = new Array<boolean>(SEAT_COUNT).fill(false);
+    this.disconnect = null;
+    // Clear all alarm bookkeeping before deleteAll wipes the persisted map.
+    this.alarms.cancel("turn-timeout");
+    this.alarms.cancel("forfeit");
+    this.alarms.cancel("abandoned");
+    this.alarms.cancel("idle");
+    this.alarms.cancel("stale");
+    await this.ctx.storage.deleteAll();
+  }
+
+  // Schedule (or refresh) the stale-finished eviction iff the engine has
+  // entered game-over. Cancel it otherwise. Called after every action /
+  // rematch / forfeit so phase transitions are tracked centrally.
+  private bumpStaleIfFinished(): void {
+    if (this.engineState !== null && this.engineState.phase === "game-over") {
+      if (!this.alarms.has("stale")) {
+        this.alarms.schedule("stale", Date.now() + STALE_MS);
+      }
+    } else {
+      this.alarms.cancel("stale");
+    }
   }
 
   private handleTurnTimeout(): boolean {
@@ -320,6 +382,7 @@ export class Room extends DurableObject<Env> {
     this.broadcast(result.events);
     this.runBotTurns();
     this.scheduleTurnTimer();
+    this.bumpStaleIfFinished();
     return true;
   }
 
@@ -336,6 +399,7 @@ export class Room extends DurableObject<Env> {
     this.alarms.cancel("turn-timeout");
     this.broadcast([{ type: "GAME_OVER", durak: seat }]);
     this.broadcastRoomState();
+    this.bumpStaleIfFinished();
     return true;
   }
 
@@ -437,6 +501,7 @@ export class Room extends DurableObject<Env> {
 
   private fireRematch(): void {
     this.cancelTurnTimer();
+    this.alarms.cancel("stale");
     this.engineState = null;
     this.rematchSeats = new Array<boolean>(SEAT_COUNT).fill(false);
     this.broadcastRoomState();
@@ -461,6 +526,7 @@ export class Room extends DurableObject<Env> {
     this.broadcast(result.events);
     this.runBotTurns();
     this.scheduleTurnTimer();
+    this.bumpStaleIfFinished();
     return { ok: true, state: this.engineState, events: result.events };
   }
 

@@ -36,6 +36,17 @@ implements.
   rejoiner lands directly back in the game. On deadline fire the DO
   synthesizes a `GameOverState` declaring the absent seat the durak
   and emits a `GAME_OVER` event - the engine package is untouched.
+- **Room GC** - three eviction triggers, all routed through the same
+  `AlarmScheduler` slot:
+  - `abandoned` (5 min) - room created via `POST /rooms` but no client
+    ever attached; first ws upgrade cancels it.
+  - `idle` (5 min) - all clients have closed and the game isn't yet
+    over; a reconnect cancels it.
+  - `stale` (10 min) - game-over has lingered without rematch; any
+    rematch firing cancels it.
+  Eviction = `state.storage.deleteAll()` plus an in-memory clear, then
+  the DO can be hibernated freely. Logged via `console.info` on each
+  eviction so prod logs show the GC rhythm.
 - **Persistence** - `mode`, `seats`, `engine`, and `botSeat` are
   stored under a single `room` key in `state.storage` after every
   change. The constructor reloads them via `blockConcurrencyWhile`.
