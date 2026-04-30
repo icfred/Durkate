@@ -15,14 +15,19 @@ import { attachBackNav } from "./backNav.js";
 import type { Screen } from "./types.js";
 
 const PANEL_W = 540;
-const PANEL_H = 440;
+const PANEL_H = 480;
 const FIELD_W = 240;
 const FIELD_H = 48;
 const COPY_BUTTON_W = 140;
 const COPY_BUTTON_H = 36;
+const BACK_BUTTON_W = 140;
+const BACK_BUTTON_H = 36;
 const RETRY_BUTTON_W = 160;
 const RETRY_BUTTON_H = 40;
 const ROOM_CODE_MAX = 8;
+// Truncate the share URL display so a full join token doesn't overflow the
+// panel. The full URL is still copied verbatim by COPY LINK.
+const SHARE_URL_MAX_CHARS = 56;
 
 export type LobbyStatus = "waiting" | "starting";
 
@@ -173,7 +178,7 @@ export class LobbyScreen extends Container implements Screen {
       this.readyContent.addChild(shareLabel);
 
       const shareUrlText = new Text({
-        text: this.shareUrl,
+        text: truncateForDisplay(this.shareUrl, SHARE_URL_MAX_CHARS),
         style: {
           fontFamily: typography.family,
           fontSize: typography.size.sm,
@@ -257,6 +262,22 @@ export class LobbyScreen extends Container implements Screen {
       this.fieldHint = null;
       this.fieldLocalX = 0;
       this.fieldLocalY = 0;
+    }
+
+    if (options.onBack) {
+      const onBack = options.onBack;
+      const backButton = new Button({
+        label: "BACK",
+        width: BACK_BUTTON_W,
+        height: BACK_BUTTON_H,
+        onActivate: withClickSound(() => onBack()),
+      });
+      attachButtonHover(backButton);
+      backButton.x = Math.round((PANEL_W - BACK_BUTTON_W) / 2);
+      backButton.y = nextY + spacing.lg;
+      this.readyContent.addChild(backButton);
+      this.focus.register(backButton);
+      nextY = backButton.y + BACK_BUTTON_H;
     }
 
     void nextY;
@@ -440,4 +461,11 @@ function defaultCopyToClipboard(text: string): Promise<void> | void {
   if (typeof navigator !== "undefined" && navigator.clipboard) {
     return navigator.clipboard.writeText(text);
   }
+}
+
+function truncateForDisplay(text: string, max: number): string {
+  if (text.length <= max) return text;
+  // Keep the prefix (so the user sees the host) and trim the long token middle.
+  const head = Math.max(0, max - 1);
+  return `${text.slice(0, head)}…`;
 }

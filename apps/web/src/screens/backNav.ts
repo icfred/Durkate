@@ -15,8 +15,16 @@ export function attachBackNav(options: BackNavOptions): () => void {
   const handler = (event: KeyboardEvent): void => {
     if (event.key !== "Backspace" && event.key !== "Escape") return;
     if (options.shouldHandle && !options.shouldHandle()) return;
-    const target = event.target as HTMLElement | null;
-    if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
+    // When focus is in a text input, suppress Backspace (so it can delete
+    // characters) but still honour Escape (it has no default behaviour
+    // there). On an *empty* input, even Backspace navigates back —
+    // otherwise the user is stuck if the input has stolen focus.
+    if (event.key === "Backspace") {
+      const target = event.target as HTMLElement | null;
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+        if (target.value && target.value.length > 0) return;
+      }
+    }
     event.preventDefault();
     options.onBack();
   };
