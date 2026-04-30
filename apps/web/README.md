@@ -79,6 +79,9 @@ knows whose turn it is, what's legal, and which keys do what.
   `GameOverScreen` with a fixture from `src/fixtures/gameOverFixtures.ts`.
   Lets a reviewer eyeball each outcome without playing a full round.
 - `?sandbox=skins` boots the cosmetic skin spike sandbox.
+- `?sandbox=anims` boots the animation primitives sandbox - a grid of
+  auto-looping cells, one per easing, plus `fadeTo`, `scaleTo`,
+  `sequence`, and `parallel` demos.
 
 Sandbox actions go to `submitAction` / `requestRematch` which drop with
 a warn while the connection is not open.
@@ -234,7 +237,33 @@ six clips (`playCard`, `takePile`, `win`, `lose`, `buttonHover`,
   appended events, so each event fires sfx exactly once even though
   `appendEvents` may run many times in a tick.
 
-## Deployment
+## Animations
+
+`src/anim/` is the shared tween engine. No external dependency; everything
+runs on the Pixi `Ticker`.
+
+- **`tween({ from, to, durationMs, easing, onUpdate, onComplete, ticker?, now?, speed? })`**
+  -> `{ cancel }`. Numeric interpolation called once per frame. `now` is
+  the time source - defaults to `performance.now`, swapped in tests for
+  deterministic clocks. `speed` is an optional `() => number` factor;
+  TODO once DUR-42 lands, wire `appStore.devtools.animSpeed` here so a
+  global slider scales every tween.
+- **Easings** in `easings.ts`: `linear`, `easeOutQuad`, `easeInQuad`,
+  `easeInOutCubic`, `easeOutBack`. Pure `(t) -> number` over `[0, 1]`,
+  always returning `0` at `t=0` and `1` at `t=1` (back-overshoot
+  excepted, by design).
+- **`compose.ts`** wraps `Anim = (done) => TweenHandle` factories.
+  `sequence(anims, onComplete?)` runs in order, each anim's `done`
+  triggers the next. `parallel(anims, onComplete?)` starts all
+  immediately and fires `onComplete` once every child has signalled
+  done. Both return `{ cancel }` and propagate cancel to running
+  children.
+- **`pixi.ts`** sugar for the common cases: `fadeTo(target, alpha, ms,
+  easing?, opts?)`, `moveTo(target, x, y, ms, easing?, opts?)`,
+  `scaleTo(target, scale, ms, easing?, opts?)`. Each returns the
+  underlying `TweenHandle`.
+- **Sandbox.** `?sandbox=anims` mounts a grid auditioning every
+  primitive. Cells loop forever; the screen's `dispose()` cancels them.
 
 Hosted on [Firebase Hosting](https://firebase.google.com/docs/hosting)
 in the `durak-icfred` Firebase project. See
