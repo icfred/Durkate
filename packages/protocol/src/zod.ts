@@ -128,6 +128,10 @@ const eventSchema = z.discriminatedUnion("type", [
     cards: z.array(cardSchema),
   }),
   z.object({
+    type: z.literal("PLAYER_OUT"),
+    seat: seatSchema,
+  }),
+  z.object({
     type: z.literal("GAME_OVER"),
     durak: z.number().int().nonnegative().nullable(),
   }),
