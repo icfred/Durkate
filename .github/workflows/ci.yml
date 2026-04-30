@@ -32,22 +32,30 @@ jobs:
 
       - run: pnpm build
 
-  deploy-server:
+  deploy-worker:
     needs: check
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     concurrency:
-      group: deploy-server
+      group: deploy-worker
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 
-      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - uses: pnpm/action-setup@v4
 
-      - name: Deploy server to Fly
-        run: flyctl deploy --remote-only --config fly.toml
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Deploy worker (Cloudflare Workers + Durable Objects)
+        run: pnpm --filter @durak/worker exec wrangler deploy --env production
         env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
   deploy-web:
     needs: check
@@ -71,11 +79,12 @@ jobs:
       - name: Build web with deploy URL
         run: pnpm --filter @durak/web build
         env:
-          VITE_WS_URL: ${{ vars.WEB_WS_URL }}
+          VITE_WS_URL: ${{ vars.VITE_WS_URL }}
 
-      - name: Deploy web to Cloudflare Pages
-        uses: cloudflare/wrangler-action@v3
+      - name: Deploy web (Firebase Hosting)
+        uses: FirebaseExtended/action-hosting-deploy@v0
         with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy apps/web/dist --project-name=durak-web --branch=main
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          projectId: durak-icfred
+          channelId: live

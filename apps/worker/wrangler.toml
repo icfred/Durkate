@@ -1,0 +1,29 @@
+# Cloudflare Worker config for the Durak game server.
+# See docs/decisions/0007-hosting.md and apps/worker/README.md.
+name = "durak-server"
+main = "src/index.ts"
+compatibility_date = "2025-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+# One Durable Object class, one DO instance per match.
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "Room"
+
+# DO migrations: a single class, no historical migrations yet. The first deploy
+# creates the namespace; future class renames or deletions get appended here.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]
+
+# Origin allowlist read at runtime. Set in CI / `wrangler secret` for prod.
+# Leave empty (default) in local dev so any browser origin is accepted.
+[vars]
+ALLOWED_ORIGINS = ""
+TURN_TIMEOUT_MS = "30000"
+
+# Per-environment overrides. Production deploy uses `--env production` from CI;
+# local `wrangler dev` (no --env) inherits the top-level [vars].
+[env.production.vars]
+ALLOWED_ORIGINS = "https://durak-icfred.web.app"
+TURN_TIMEOUT_MS = "30000"
