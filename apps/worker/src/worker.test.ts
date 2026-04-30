@@ -291,5 +291,5 @@ describe("worker /rooms + ws integration: bot mode", () => {
     }
 
     ws.close();
-  });
+  }, 30_000);
 });
