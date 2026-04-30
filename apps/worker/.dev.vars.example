@@ -1,0 +1,7 @@
+# Local-dev overrides for `wrangler dev`. Copy to `apps/worker/.dev.vars`
+# (gitignored) before running `pnpm --filter @durak/worker dev`.
+#
+# An empty allowlist tells the worker to reflect any browser origin, which
+# is what we want when the Vite dev server on :5173 proxies to wrangler on
+# :8787.
+ALLOWED_ORIGINS=

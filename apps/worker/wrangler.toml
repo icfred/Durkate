@@ -16,14 +16,15 @@ class_name = "Room"
 tag = "v1"
 new_sqlite_classes = ["Room"]
 
-# Origin allowlist read at runtime. Set in CI / `wrangler secret` for prod.
-# Leave empty (default) in local dev so any browser origin is accepted.
+# Runtime config baked into the deployed worker. For local `wrangler dev`,
+# override these via `apps/worker/.dev.vars` (gitignored). The default values
+# here are the production values, so a bare `wrangler deploy` ships the right
+# config — no `--env` flag needed.
+#
+# Wrangler env splits (`[env.production]`) are intentionally not used: per-env
+# blocks do not inherit `[[durable_objects.bindings]]` or `[[migrations]]`
+# from the top level, and `--env <name>` appends `-<name>` to the worker name
+# unless explicitly overridden, both of which broke the first prod deploy.
 [vars]
-ALLOWED_ORIGINS = ""
-TURN_TIMEOUT_MS = "30000"
-
-# Per-environment overrides. Production deploy uses `--env production` from CI;
-# local `wrangler dev` (no --env) inherits the top-level [vars].
-[env.production.vars]
 ALLOWED_ORIGINS = "https://durak-icfred.web.app"
 TURN_TIMEOUT_MS = "30000"

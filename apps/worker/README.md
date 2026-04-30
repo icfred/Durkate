@@ -88,18 +88,23 @@ Worker name: `durak-server`. Public URL:
 
 ### Pieces
 
-- `wrangler.toml` - worker name, DO binding (`ROOMS` → `Room` class),
-  the SQLite-backed DO migration tag, env vars (`ALLOWED_ORIGINS`,
-  `TURN_TIMEOUT_MS`).
+- `wrangler.toml` - single env (no `[env.*]` blocks). Wrangler env
+  splits don't inherit `[[durable_objects.bindings]]` or
+  `[[migrations]]` from the top level, and `--env <name>` appends
+  `-<name>` to the worker name unless overridden — both bit the
+  first prod deploy. Single config sidesteps both. Defaults are
+  the production values; local dev overrides via `.dev.vars`.
 - `.github/workflows/ci.yml` - the `deploy-worker` job runs on push
   to `main` after `check` passes:
-  `pnpm --filter @durak/worker exec wrangler deploy --env production`.
+  `pnpm --filter @durak/worker exec wrangler deploy` (no `--env`).
 
 ### Env / variables
 
-- `ALLOWED_ORIGINS` (runtime, `[env.production.vars]` in
-  `wrangler.toml`) - comma-separated origin allowlist for `POST
-  /rooms` and ws upgrades. Local dev leaves it empty (any origin OK).
+- `ALLOWED_ORIGINS` (runtime, `[vars]` in `wrangler.toml`) -
+  comma-separated origin allowlist for `POST /rooms` and ws
+  upgrades. Default: `https://durak-icfred.web.app`. For `wrangler
+  dev` on localhost, override to empty in `apps/worker/.dev.vars`
+  (gitignored) so any origin is accepted.
 - `TURN_TIMEOUT_MS` (runtime, default 30000) - per-turn deadline; the
   DO sets an Alarm for this many ms after each action.
 - `CLOUDFLARE_API_TOKEN` (CI secret) - Workers + DO scopes.
@@ -111,7 +116,7 @@ Worker name: `durak-server`. Public URL:
 wrangler login
 wrangler whoami
 # Confirm Workers Paid plan is active on the account; DOs require it.
-pnpm --filter @durak/worker exec wrangler deploy --env production
+pnpm --filter @durak/worker exec wrangler deploy
 ```
 
 Generate a CI API token in the Cloudflare dashboard

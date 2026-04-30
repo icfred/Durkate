@@ -6,6 +6,15 @@ export default defineConfig({
     cloudflareTest({
       wrangler: { configPath: "./wrangler.toml" },
       singleWorker: true,
+      // The wrangler.toml ships the production allowlist as the default.
+      // Tests fetch from `https://example.com`, so override to empty here
+      // (any origin reflected) — same shape `wrangler dev` gets via
+      // `apps/worker/.dev.vars`.
+      miniflare: {
+        bindings: {
+          ALLOWED_ORIGINS: "",
+        },
+      },
     }),
   ],
 });
