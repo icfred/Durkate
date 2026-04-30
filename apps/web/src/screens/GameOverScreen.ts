@@ -11,11 +11,22 @@ const BUTTON_H = 56;
 
 export type Outcome = "victory" | "defeat" | "draw";
 
+export interface RematchStatus {
+  youRequested: boolean;
+  opponentRequested: boolean;
+}
+
 export interface GameOverScreenOptions {
   data: GameOverData;
+  initialRematch?: RematchStatus;
+  subscribeRematch?: (cb: (status: RematchStatus) => void) => () => void;
   onRematch(): void;
   onMainMenu(): void;
 }
+
+const KEYBOARD_HINT = "ARROWS MOVE  -  ENTER ACTIVATES";
+const REMATCH_LABEL = "REMATCH";
+const REMATCH_PENDING_LABEL = "WAITING...";
 
 export function classifyOutcome(data: GameOverData): Outcome {
   if (data.durak === null) return "draw";
@@ -45,7 +56,10 @@ function sublineFor(data: GameOverData, outcome: Outcome): string {
 export class GameOverScreen extends Container implements Screen {
   private readonly focus = new FocusManager();
   private readonly panel: Panel;
+  private readonly hint: Text;
+  private readonly rematchButton: Button;
   private readonly detachFocusNavSfx: () => void;
+  private readonly unsubscribeRematch: (() => void) | undefined;
   readonly outcome: Outcome;
 
   constructor(options: GameOverScreenOptions) {
@@ -82,8 +96,8 @@ export class GameOverScreen extends Container implements Screen {
     subline.y = headline.y + headline.height + spacing.md;
     this.panel.addChild(subline);
 
-    const hint = new Text({
-      text: "ARROWS MOVE  -  ENTER ACTIVATES",
+    this.hint = new Text({
+      text: KEYBOARD_HINT,
       style: {
         fontFamily: typography.family,
         fontSize: typography.size.xs,
@@ -91,25 +105,31 @@ export class GameOverScreen extends Container implements Screen {
         letterSpacing: typography.letterSpacing.wide,
       },
     });
-    hint.x = Math.round((PANEL_W - hint.width) / 2);
-    hint.y = subline.y + subline.height + spacing.xs;
-    this.panel.addChild(hint);
+    this.hint.x = Math.round((PANEL_W - this.hint.width) / 2);
+    this.hint.y = subline.y + subline.height + spacing.xs;
+    this.panel.addChild(this.hint);
 
     const rowGap = spacing.md;
     const rowWidth = BUTTON_W * 2 + rowGap;
     const rowX = Math.round((PANEL_W - rowWidth) / 2);
     const rowY = PANEL_H - BUTTON_H - spacing.xl;
 
-    const rematch = new Button({
-      label: "REMATCH",
+    this.rematchButton = new Button({
+      label: REMATCH_LABEL,
       width: BUTTON_W,
       height: BUTTON_H,
-      onActivate: withClickSound(() => options.onRematch()),
+      onActivate: withClickSound(() => {
+        // Optimistic local feedback. The server round-trip then either
+        // fires the rematch (snapshot drops the screen) or echoes a
+        // RoomState that confirms the pending hint.
+        this.applyRematchStatus({ youRequested: true, opponentRequested: false });
+        options.onRematch();
+      }),
     });
-    attachButtonHover(rematch);
-    rematch.x = rowX;
-    rematch.y = rowY;
-    this.panel.addChild(rematch);
+    attachButtonHover(this.rematchButton);
+    this.rematchButton.x = rowX;
+    this.rematchButton.y = rowY;
+    this.panel.addChild(this.rematchButton);
 
     const mainMenu = new Button({
       label: "MAIN MENU",
@@ -122,10 +142,34 @@ export class GameOverScreen extends Container implements Screen {
     mainMenu.y = rowY;
     this.panel.addChild(mainMenu);
 
-    this.focus.register(rematch);
+    this.focus.register(this.rematchButton);
     this.focus.register(mainMenu);
     this.focus.attach();
     this.detachFocusNavSfx = attachFocusNavSfx(this.focus);
+
+    if (options.initialRematch) this.applyRematchStatus(options.initialRematch);
+    this.unsubscribeRematch = options.subscribeRematch?.((status) =>
+      this.applyRematchStatus(status),
+    );
+  }
+
+  private applyRematchStatus(status: RematchStatus): void {
+    if (status.youRequested) {
+      this.rematchButton.setLabel(REMATCH_PENDING_LABEL);
+      this.setHint("WAITING FOR OPPONENT");
+      return;
+    }
+    this.rematchButton.setLabel(REMATCH_LABEL);
+    if (status.opponentRequested) {
+      this.setHint("OPPONENT WANTS REMATCH");
+      return;
+    }
+    this.setHint(KEYBOARD_HINT);
+  }
+
+  private setHint(text: string): void {
+    this.hint.text = text;
+    this.hint.x = Math.round((PANEL_W - this.hint.width) / 2);
   }
 
   layout(viewWidth: number, viewHeight: number): void {
@@ -135,6 +179,7 @@ export class GameOverScreen extends Container implements Screen {
 
   dispose(): void {
     this.detachFocusNavSfx();
+    this.unsubscribeRematch?.();
     this.focus.detach();
     this.focus.clear();
   }

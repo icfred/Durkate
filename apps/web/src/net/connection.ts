@@ -40,7 +40,9 @@ export function createConnectionController(
     onSnapshot: (msg) => {
       const state = store.getState();
       state.setSnapshot(msg.snapshot);
-      if (state.phase === "lobby") state.showGame();
+      // lobby→game on first snapshot of a new game; gameover→game on a
+      // rematch snapshot from the same connection.
+      if (state.phase === "lobby" || state.phase === "gameover") state.showGame();
     },
     onEvents: (msg) => {
       const state = store.getState();
@@ -61,7 +63,11 @@ export function createConnectionController(
       store.getState().setError(msg.code, msg.message);
     },
     onRoomState: (msg) => {
-      store.getState().setRoomMembership({ seats: msg.seats, you: msg.you });
+      store.getState().setRoomMembership({
+        seats: msg.seats,
+        you: msg.you,
+        rematchRequested: msg.rematchRequested,
+      });
     },
     onStatus: (status, info) => {
       const state = store.getState();
@@ -96,7 +102,7 @@ export function createConnectionController(
   };
 
   const reconcile = (state: AppState) => {
-    if (state.phase === "lobby" || state.phase === "game") {
+    if (state.phase === "lobby" || state.phase === "game" || state.phase === "gameover") {
       const { roomCode, currentToken } = state;
       if (!roomCode || !currentToken) {
         closeActive();

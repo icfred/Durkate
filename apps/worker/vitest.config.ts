@@ -13,6 +13,10 @@ export default defineConfig({
       miniflare: {
         bindings: {
           ALLOWED_ORIGINS: "",
+          // Tests dispatch many actions in tight loops — production
+          // rate-limit (20/5s) would silently drop most of them. Set
+          // a high ceiling so flow-of-control behavior is what's tested.
+          RATE_LIMIT_CAPACITY: "10000",
         },
       },
     }),

@@ -31,6 +31,7 @@ function makeRoom(occupants: (string | null)[], you: number | null = 0): RoomMem
   return {
     seats: occupants.map((name) => ({ name })),
     you,
+    rematchRequested: [],
   };
 }
 

@@ -26,6 +26,8 @@ export interface RoomStateMessage {
   roomId: string;
   seats: RoomSeat[];
   you: SeatIndex | null;
+  /** Seats that have requested a rematch while in `game-over`. Empty otherwise. */
+  rematchRequested: SeatIndex[];
 }
 
 export type ServerMessage = SnapshotMessage | EventsMessage | ErrorMessage | RoomStateMessage;

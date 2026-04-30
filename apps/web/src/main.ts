@@ -140,6 +140,12 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
         case "gameover":
           return new GameOverScreen({
             data: state.gameover ?? { youSeat: 0, durak: null },
+            initialRematch: deriveRematchStatus(state),
+            subscribeRematch: (listener) =>
+              appStore.subscribe((next, prev) => {
+                if (next.room === prev.room) return;
+                listener(deriveRematchStatus(next));
+              }),
             onRematch: () => appStore.getState().requestRematch(),
             onMainMenu: () => appStore.getState().showMenu(),
           });
@@ -224,6 +230,19 @@ function resolveHttpServerUrl(wsUrl: string): string {
   // Default: derive from VITE_WS_URL (or same-origin) so the dev Vite proxy
   // forwards both /ws and /rooms to the server without manual env setup.
   return httpFromWsUrl(wsUrl);
+}
+
+function deriveRematchStatus(state: AppState): {
+  youRequested: boolean;
+  opponentRequested: boolean;
+} {
+  const room = state.room;
+  if (!room) return { youRequested: false, opponentRequested: false };
+  const requested = room.rematchRequested;
+  const you = room.you;
+  const youRequested = you !== null && requested.includes(you);
+  const opponentRequested = requested.some((seat) => seat !== you);
+  return { youRequested, opponentRequested };
 }
 
 async function loadFonts(): Promise<void> {
