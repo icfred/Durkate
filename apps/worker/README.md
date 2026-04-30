@@ -31,6 +31,30 @@ implements.
   `POST /rooms`, `GET /ws/:roomId`, `OPTIONS /rooms`, `GET /health`,
   with origin allowlist and per-IP create-room rate limit.
 
+## Rematch
+
+When the engine reaches `phase: "game-over"`, clients can request a
+fresh round with `RequestRematch`. The DO tracks per-seat opt-in
+flags (`rematchSeats[]`) alongside the engine state and seat tokens.
+
+- Bot mode: rematch fires the moment the human's `RequestRematch`
+  arrives — no second seat to wait for.
+- Human mode: rematch fires only when both seats have opted in.
+  While only one seat has requested, the DO broadcasts a fresh
+  `RoomState` whose `rematchRequested: SeatIndex[]` carries the
+  pending set so the other client can render a "WAITING FOR
+  OPPONENT" hint. Pending state is the only signal — no separate
+  server message variant is introduced.
+- On fire: the DO picks a fresh seed via `crypto.getRandomValues`,
+  re-runs `initialState({ seed }) -> step({ type: "START_GAME" })`,
+  resets `rematchSeats[]`, and broadcasts a new `Snapshot` plus
+  `Events` (which include `GAME_STARTED`). Tokens are unchanged —
+  the same connected clients are used. The bot driver is re-armed
+  via the existing `runBotTurns` path.
+- A `RequestRematch` outside of `phase: "game-over"` returns an
+  `Error { code: "REMATCH_NOT_AVAILABLE" }` and otherwise leaves
+  state untouched.
+
 ## Public API
 
 This is an app, not a library. The wire surface is:

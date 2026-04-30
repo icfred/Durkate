@@ -35,6 +35,7 @@ interface PersistedRoom {
   seats: (Seat | null)[];
   engine: State | null;
   botSeat: SeatIndex | null;
+  rematchSeats?: boolean[];
 }
 
 interface WsAttachment {
@@ -50,6 +51,7 @@ const STORAGE_KEY = "room";
 
 interface Env {
   TURN_TIMEOUT_MS?: string;
+  RATE_LIMIT_CAPACITY?: string;
 }
 
 export class Room extends DurableObject<Env> {
@@ -57,8 +59,10 @@ export class Room extends DurableObject<Env> {
   private seats: (Seat | null)[] = new Array<Seat | null>(SEAT_COUNT).fill(null);
   private engineState: State | null = null;
   private botSeat: SeatIndex | null = null;
+  private rematchSeats: boolean[] = new Array<boolean>(SEAT_COUNT).fill(false);
   private readonly turnTimeoutMs: number;
   private readonly botIterationCap: number;
+  private readonly rateLimitCapacity: number;
   // Per-connection rate-limit buckets. WeakMap so hibernated sockets dropped
   // by miniflare clean up automatically; new buckets are lazily reconstructed
   // on first message after a wake-up (acceptable: a long quiet period refills
@@ -69,6 +73,11 @@ export class Room extends DurableObject<Env> {
     super(ctx, env);
     this.turnTimeoutMs = Number(env.TURN_TIMEOUT_MS ?? "30000");
     this.botIterationCap = DEFAULT_BOT_ITERATION_CAP;
+    const capacityOverride = Number(env.RATE_LIMIT_CAPACITY ?? "");
+    this.rateLimitCapacity =
+      Number.isFinite(capacityOverride) && capacityOverride > 0
+        ? capacityOverride
+        : DEFAULT_RATE_LIMIT.capacity;
     void this.ctx.blockConcurrencyWhile(async () => {
       const persisted = await this.ctx.storage.get<PersistedRoom>(STORAGE_KEY);
       if (persisted) {
@@ -76,6 +85,7 @@ export class Room extends DurableObject<Env> {
         this.seats = persisted.seats;
         this.engineState = persisted.engine;
         this.botSeat = persisted.botSeat;
+        if (persisted.rematchSeats) this.rematchSeats = persisted.rematchSeats.slice();
       }
     });
   }
@@ -179,13 +189,14 @@ export class Room extends DurableObject<Env> {
         await this.persist();
         return;
       }
-      case "RequestRematch":
-        this.send(ws, {
-          type: "Error",
-          code: "NOT_IMPLEMENTED",
-          message: "rematch not yet implemented",
-        });
+      case "RequestRematch": {
+        const result = this.requestRematch(seat);
+        if (!result.ok) {
+          this.send(ws, { type: "Error", code: result.reason, message: result.reason });
+        }
+        await this.persist();
         return;
+      }
     }
   }
 
@@ -211,6 +222,10 @@ export class Room extends DurableObject<Env> {
 
   testMode(): RoomMode {
     return this.mode;
+  }
+
+  testRematchSeats(): boolean[] {
+    return this.rematchSeats.slice();
   }
 
   override async alarm(): Promise<void> {
@@ -274,7 +289,10 @@ export class Room extends DurableObject<Env> {
   private bucketFor(ws: WebSocket): TokenBucket {
     let bucket = this.buckets.get(ws);
     if (!bucket) {
-      bucket = new TokenBucket(DEFAULT_RATE_LIMIT);
+      bucket = new TokenBucket({
+        capacity: this.rateLimitCapacity,
+        refillIntervalMs: DEFAULT_RATE_LIMIT.refillIntervalMs,
+      });
       this.buckets.set(ws, bucket);
     }
     return bucket;
@@ -289,10 +307,48 @@ export class Room extends DurableObject<Env> {
     const result = step(initial, { type: "START_GAME" });
     if (!result.ok) throw new Error(`START_GAME failed: ${result.reason}`);
     this.engineState = result.state;
+    this.rematchSeats = new Array<boolean>(SEAT_COUNT).fill(false);
     this.broadcast(result.events);
     this.runBotTurns();
     this.scheduleTurnTimer();
     void this.persist();
+  }
+
+  private requestRematch(seat: SeatIndex): RematchResult {
+    if (this.engineState === null || this.engineState.phase !== "game-over") {
+      return { ok: false, reason: "REMATCH_NOT_AVAILABLE" };
+    }
+    if (this.rematchSeats[seat]) {
+      // Idempotent — re-broadcast room state so the requester sees the
+      // current pending set (e.g. after a reconnect).
+      this.broadcastRoomState();
+      return { ok: true };
+    }
+    this.rematchSeats[seat] = true;
+    if (this.shouldFireRematch()) {
+      this.fireRematch();
+    } else {
+      this.broadcastRoomState();
+    }
+    return { ok: true };
+  }
+
+  private shouldFireRematch(): boolean {
+    // Bot seats never click rematch; bot mode fires on the human's first
+    // request. Human mode requires both seats to opt in.
+    if (this.mode === "bot") {
+      const human = this.botSeat === 0 ? 1 : 0;
+      return this.rematchSeats[human] === true;
+    }
+    return this.rematchSeats.every((flag) => flag === true);
+  }
+
+  private fireRematch(): void {
+    this.cancelTurnTimer();
+    this.engineState = null;
+    this.rematchSeats = new Array<boolean>(SEAT_COUNT).fill(false);
+    this.broadcastRoomState();
+    this.startGame(newSeed());
   }
 
   private applyAction(seat: SeatIndex, action: Action): ApplyResult {
@@ -354,6 +410,10 @@ export class Room extends DurableObject<Env> {
 
   private broadcastRoomState(): void {
     const seats: RoomSeat[] = this.seats.map((s) => ({ name: s ? s.name : null }));
+    const rematchRequested: number[] = [];
+    for (let i = 0; i < this.rematchSeats.length; i++) {
+      if (this.rematchSeats[i]) rematchRequested.push(i);
+    }
     for (const ws of this.ctx.getWebSockets()) {
       const seat = this.seatForWebSocket(ws);
       if (seat === undefined) continue;
@@ -362,6 +422,7 @@ export class Room extends DurableObject<Env> {
         roomId: this.ctx.id.toString(),
         seats,
         you: seat,
+        rematchRequested,
       };
       this.send(ws, msg);
     }
@@ -399,6 +460,7 @@ export class Room extends DurableObject<Env> {
       seats: this.seats,
       engine: this.engineState,
       botSeat: this.botSeat,
+      rematchSeats: this.rematchSeats.slice(),
     };
     await this.ctx.storage.put(STORAGE_KEY, snapshot);
   }
@@ -409,6 +471,8 @@ export class Room extends DurableObject<Env> {
 export type ApplyResult =
   | { ok: true; state: State; events: Event[] }
   | { ok: false; reason: RejectReason | "GAME_NOT_STARTED" | "FORBIDDEN_ACTION" };
+
+export type RematchResult = { ok: true } | { ok: false; reason: "REMATCH_NOT_AVAILABLE" };
 
 export function activeActorSeat(state: InRoundState): number {
   if (state.table.length === 0) return state.attacker;

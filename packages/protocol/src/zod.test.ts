@@ -195,6 +195,7 @@ describe("serverMessageSchema round-trip", () => {
       roomId: "ABCD",
       seats: [{ name: "fred" }, { name: null }],
       you: 0,
+      rematchRequested: [],
     };
     expect(serverMessageSchema.parse(msg)).toEqual(msg);
   });
@@ -242,6 +243,18 @@ describe("serverMessageSchema rejects malformed input", () => {
       serverMessageSchema.parse({
         type: "RoomState",
         roomId: 42,
+        seats: [],
+        you: null,
+        rematchRequested: [],
+      }),
+    ).toThrow();
+  });
+
+  it("rejects RoomState with missing rematchRequested", () => {
+    expect(() =>
+      serverMessageSchema.parse({
+        type: "RoomState",
+        roomId: "ABCD",
         seats: [],
         you: null,
       }),

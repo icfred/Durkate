@@ -293,3 +293,156 @@ describe("worker /rooms + ws integration: bot mode", () => {
     ws.close();
   }, 30_000);
 });
+
+type RoomStub = ReturnType<typeof env.ROOMS.get>;
+
+async function readEngineState(stub: RoomStub): Promise<State | null> {
+  let out: State | null = null;
+  await runInDurableObject(stub, async (room: Room) => {
+    out = room.testCurrentState();
+  });
+  return out;
+}
+
+async function playToGameOver(stub: RoomStub, sockets: Record<number, WebSocket>): Promise<void> {
+  let safety = 0;
+  while (safety < 4000) {
+    const state = await readEngineState(stub);
+    if (!state) throw new Error("missing engine state");
+    if (state.phase === "game-over") return;
+    if (state.phase !== "in-round") {
+      await new Promise<void>((r) => setTimeout(r, 5));
+      safety++;
+      continue;
+    }
+    const action = bot.choose(state);
+    if (action.type === "START_GAME") throw new Error("bot returned START_GAME");
+    const ws = sockets[action.by];
+    if (!ws) {
+      // Server-side bot drives this seat; just wait for its turn.
+      await new Promise<void>((r) => setTimeout(r, 10));
+      safety++;
+      continue;
+    }
+    ws.send(JSON.stringify({ type: "SubmitAction", action }));
+    await new Promise<void>((r) => setTimeout(r, 5));
+    safety++;
+  }
+  throw new Error("playToGameOver exceeded safety bound");
+}
+
+describe("worker rematch", () => {
+  it("rematches a bot game on the human's first request", async () => {
+    const created = await postRooms({ mode: "bot" });
+    const body = (await created.json()) as CreateRoomResponse;
+    const ws = await openWs(body.roomId, body.hostToken);
+    const q = new MessageQueue(ws);
+    await findUntil(q, isRoomState);
+    await findUntil(q, isSnapshot);
+
+    const stub = env.ROOMS.get(env.ROOMS.idFromName(body.roomId));
+    await playToGameOver(stub, { 0: ws });
+    expect((await readEngineState(stub))?.phase).toBe("game-over");
+
+    q.drain();
+    ws.send(JSON.stringify({ type: "RequestRematch" }));
+    // Server fires immediately: a fresh in-round Snapshot followed by
+    // Events including GAME_STARTED.
+    const snap = await findUntil(q, isSnapshot);
+    expect(snap.snapshot.phase).toBe("in-round");
+    expect(snap.snapshot.you.hand.length).toBe(6);
+    const events = await findUntil(q, isEvents);
+    expect(events.events.some((e) => e.type === "GAME_STARTED")).toBe(true);
+
+    const after = await readEngineState(stub);
+    expect(after?.phase).toBe("in-round");
+
+    ws.close();
+  }, 30_000);
+
+  it("plays bot mode through several rematches in a row", async () => {
+    const created = await postRooms({ mode: "bot" });
+    const body = (await created.json()) as CreateRoomResponse;
+    const ws = await openWs(body.roomId, body.hostToken);
+    const q = new MessageQueue(ws);
+    await findUntil(q, isRoomState);
+    await findUntil(q, isSnapshot);
+
+    const stub = env.ROOMS.get(env.ROOMS.idFromName(body.roomId));
+    for (let round = 0; round < 3; round++) {
+      await playToGameOver(stub, { 0: ws });
+      expect((await readEngineState(stub))?.phase).toBe("game-over");
+      q.drain();
+      ws.send(JSON.stringify({ type: "RequestRematch" }));
+      await findUntil(q, isSnapshot);
+      const events = await findUntil(q, isEvents);
+      expect(events.events.some((e) => e.type === "GAME_STARTED")).toBe(true);
+    }
+
+    ws.close();
+  }, 60_000);
+
+  it("requires both seats to request rematch in human mode", async () => {
+    const created = await postRooms({ mode: "human" });
+    const body = (await created.json()) as CreateRoomResponse;
+    if (!body.joinToken) throw new Error("expected joinToken");
+
+    const a = await openWs(body.roomId, body.hostToken);
+    const qa = new MessageQueue(a);
+    await findUntil(qa, isRoomState);
+
+    const b = await openWs(body.roomId, body.joinToken);
+    const qb = new MessageQueue(b);
+
+    await findUntil(qa, isSnapshot);
+    await findUntil(qb, isSnapshot);
+    await findUntil(qa, isEvents);
+    await findUntil(qb, isEvents);
+
+    const stub = env.ROOMS.get(env.ROOMS.idFromName(body.roomId));
+    await playToGameOver(stub, { 0: a, 1: b });
+    expect((await readEngineState(stub))?.phase).toBe("game-over");
+
+    qa.drain();
+    qb.drain();
+
+    // Seat 0 alone is insufficient. Both clients receive a RoomState
+    // with rematchRequested:[0]; engine stays in game-over.
+    a.send(JSON.stringify({ type: "RequestRematch" }));
+    const roomA = await findUntil(qa, isRoomState);
+    const roomB = await findUntil(qb, isRoomState);
+    expect(roomA.rematchRequested).toEqual([0]);
+    expect(roomB.rematchRequested).toEqual([0]);
+    expect((await readEngineState(stub))?.phase).toBe("game-over");
+
+    // Seat 1 confirms — both seats see a fresh in-round Snapshot and
+    // GAME_STARTED.
+    b.send(JSON.stringify({ type: "RequestRematch" }));
+    const snapA = await findUntil(qa, isSnapshot);
+    const snapB = await findUntil(qb, isSnapshot);
+    expect(snapA.snapshot.phase).toBe("in-round");
+    expect(snapB.snapshot.phase).toBe("in-round");
+    const eventsA = await findUntil(qa, isEvents);
+    const eventsB = await findUntil(qb, isEvents);
+    expect(eventsA.events.some((e) => e.type === "GAME_STARTED")).toBe(true);
+    expect(eventsB.events.some((e) => e.type === "GAME_STARTED")).toBe(true);
+
+    a.close();
+    b.close();
+  }, 30_000);
+
+  it("rejects rematch when not in game-over phase", async () => {
+    const created = await postRooms({ mode: "bot" });
+    const body = (await created.json()) as CreateRoomResponse;
+    const ws = await openWs(body.roomId, body.hostToken);
+    const q = new MessageQueue(ws);
+    await findUntil(q, isRoomState);
+    await findUntil(q, isSnapshot);
+
+    ws.send(JSON.stringify({ type: "RequestRematch" }));
+    const err = await findUntil(q, isError);
+    expect(err.code).toBe("REMATCH_NOT_AVAILABLE");
+
+    ws.close();
+  });
+});

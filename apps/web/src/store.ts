@@ -48,6 +48,7 @@ export interface ServerError {
 export interface RoomMembership {
   seats: RoomSeat[];
   you: SeatIndex | null;
+  rematchRequested: SeatIndex[];
 }
 
 export type RoomCreationState =

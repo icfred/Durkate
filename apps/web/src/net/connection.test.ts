@@ -166,6 +166,7 @@ describe("createConnectionController", () => {
     appStore.getState().setRoomMembership({
       seats: [{ name: "alice" }, { name: "bob" }],
       you: 1,
+      rematchRequested: [],
     });
     conns[0]?.handlers.onSnapshot({ type: "Snapshot", snapshot: makeSnapshot(1) });
     expect(appStore.getState().phase).toBe("game");
@@ -259,11 +260,39 @@ describe("createConnectionController", () => {
       roomId: "ABCD",
       seats: [{ name: "alice" }, { name: null }],
       you: 0,
+      rematchRequested: [],
     });
     expect(appStore.getState().room).toEqual({
       seats: [{ name: "alice" }, { name: null }],
       you: 0,
+      rematchRequested: [],
     });
+    stop();
+  });
+
+  it("transitions gameover -> game when a fresh snapshot arrives (rematch)", () => {
+    const { conns, impl } = makeFakeConnect();
+    const controller = createConnectionController({
+      store: appStore,
+      serverUrl: "ws://host/ws",
+      connectImpl: impl,
+    });
+    const stop = controller.start();
+    appStore.getState().showLobby({ mode: "friend", roomCode: "ABCD", token: "test-token" });
+    conns[0]?.handlers.onSnapshot({ type: "Snapshot", snapshot: makeSnapshot(0) });
+    conns[0]?.handlers.onEvents({
+      type: "Events",
+      events: [{ type: "GAME_OVER", durak: 1 }],
+    });
+    expect(appStore.getState().phase).toBe("gameover");
+
+    // Server fires a rematch and pushes a new in-round snapshot on the
+    // same connection. The client must drop the gameover screen and
+    // resume the game without reopening the socket.
+    conns[0]?.handlers.onSnapshot({ type: "Snapshot", snapshot: makeSnapshot(0) });
+    expect(appStore.getState().phase).toBe("game");
+    expect(conns).toHaveLength(1);
+    expect(conns[0]?.closed).toBe(false);
     stop();
   });
 });
