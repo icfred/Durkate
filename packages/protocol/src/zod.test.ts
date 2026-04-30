@@ -200,6 +200,30 @@ describe("serverMessageSchema round-trip", () => {
     expect(serverMessageSchema.parse(msg)).toEqual(msg);
   });
 
+  it("accepts RoomState with disconnect", () => {
+    const msg: RoomStateMessage = {
+      type: "RoomState",
+      roomId: "ABCD",
+      seats: [{ name: "fred" }, { name: "alice" }],
+      you: 0,
+      rematchRequested: [],
+      disconnect: { seat: 1, forfeitAt: 1234567890 },
+    };
+    expect(serverMessageSchema.parse(msg)).toEqual(msg);
+  });
+
+  it("accepts RoomState with disconnect: null", () => {
+    const msg: RoomStateMessage = {
+      type: "RoomState",
+      roomId: "ABCD",
+      seats: [{ name: "fred" }, { name: "alice" }],
+      you: 0,
+      rematchRequested: [],
+      disconnect: null,
+    };
+    expect(serverMessageSchema.parse(msg)).toEqual(msg);
+  });
+
   it("parseServerMessage exposes the same parser", () => {
     expect(parseServerMessage({ type: "Error", code: "X", message: "y" })).toEqual({
       type: "Error",

@@ -1,5 +1,11 @@
 import type { Action, Event } from "@durak/engine";
-import type { ClientMessage, RoomSeat, SeatIndex, Snapshot } from "@durak/protocol";
+import type {
+  ClientMessage,
+  DisconnectState,
+  RoomSeat,
+  SeatIndex,
+  Snapshot,
+} from "@durak/protocol";
 import { createStore } from "zustand/vanilla";
 
 export type Phase = "menu" | "lobby" | "game" | "gameover";
@@ -49,6 +55,7 @@ export interface RoomMembership {
   seats: RoomSeat[];
   you: SeatIndex | null;
   rematchRequested: SeatIndex[];
+  disconnect: DisconnectState | null;
 }
 
 export type RoomCreationState =

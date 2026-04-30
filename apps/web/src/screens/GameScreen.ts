@@ -1,9 +1,9 @@
 import { type Action, beats, type Card, type Event, type TablePair } from "@durak/engine";
-import type { SeatIndex, Snapshot } from "@durak/protocol";
+import type { DisconnectState, SeatIndex, Snapshot } from "@durak/protocol";
 import { color, type Focusable, FocusManager, spacing, typography } from "@durak/ui";
 import { Container, Graphics, Text, Ticker } from "pixi.js";
 import { attachFocusNavSfx, playSfx } from "../audio/index.js";
-import { appStore, type ServerError } from "../store.js";
+import { appStore, type RoomMembership, type ServerError } from "../store.js";
 import type { Screen } from "./types.js";
 
 const CARD_W = 60;
@@ -148,8 +148,14 @@ export interface GameScreenOptions {
   subscribeEvents?: (listener: (events: Event[]) => void) => () => void;
   /** Test seam: subscribe to lastError changes. Defaults to appStore. */
   subscribeError?: (listener: (error: ServerError | null) => void) => () => void;
+  /** Initial room membership (carries the disconnect banner state). */
+  initialRoom?: RoomMembership | null;
+  /** Test seam: subscribe to room-membership changes. Defaults to appStore. */
+  subscribeRoom?: (listener: (room: RoomMembership | null) => void) => () => void;
   /** Test seam: replaces Ticker.shared. */
   ticker?: Ticker;
+  /** Test seam: replaces Date.now() for the disconnect countdown. */
+  now?: () => number;
 }
 
 export class GameScreen extends Container implements Screen {
@@ -160,6 +166,9 @@ export class GameScreen extends Container implements Screen {
   private readonly errorBanner: Container;
   private readonly errorBannerBg: Graphics;
   private readonly errorBannerText: Text;
+  private readonly disconnectBanner: Container;
+  private readonly disconnectBannerBg: Graphics;
+  private readonly disconnectBannerText: Text;
   private readonly opponentRow: Container;
   private readonly tableRow: Container;
   private readonly leftStack: Container;
@@ -171,6 +180,9 @@ export class GameScreen extends Container implements Screen {
   private readonly subscribeEventsUnsub: (() => void) | null;
   private readonly subscribeErrorUnsub: (() => void) | null;
   private readonly detachFocusNavSfx: () => void;
+  private readonly subscribeRoomUnsub: (() => void) | null;
+  private readonly now: () => number;
+  private disconnect: DisconnectState | null = null;
   private readonly ticker: Ticker;
   private readonly tickCallback: () => void;
   private readonly flashes: FlashState[] = [];
@@ -245,6 +257,24 @@ export class GameScreen extends Container implements Screen {
     this.errorBanner.addChild(this.errorBannerText);
     this.addChild(this.errorBanner);
 
+    this.disconnectBanner = new Container();
+    this.disconnectBanner.label = "disconnect-banner";
+    this.disconnectBanner.visible = false;
+    this.disconnectBannerBg = new Graphics();
+    this.disconnectBannerText = new Text({
+      text: "",
+      style: {
+        fontFamily: typography.family,
+        fontSize: typography.size.sm,
+        fontWeight: typography.weight.bold,
+        fill: color.text,
+        letterSpacing: typography.letterSpacing.wide,
+      },
+    });
+    this.disconnectBanner.addChild(this.disconnectBannerBg);
+    this.disconnectBanner.addChild(this.disconnectBannerText);
+    this.addChild(this.disconnectBanner);
+
     this.opponentRow = new Container();
     this.tableRow = new Container();
     this.leftStack = new Container();
@@ -279,6 +309,18 @@ export class GameScreen extends Container implements Screen {
         }));
     this.subscribeErrorUnsub = subscribeError((error) => this.handleError(error));
 
+    const subscribeRoom =
+      options.subscribeRoom ??
+      ((listener) =>
+        appStore.subscribe((next, prev) => {
+          if (next.room !== prev.room) listener(next.room);
+        }));
+    const initialRoom = options.initialRoom ?? appStore.getState().room;
+    this.disconnect = initialRoom?.disconnect ?? null;
+    this.subscribeRoomUnsub = subscribeRoom((room) => this.handleRoom(room));
+
+    this.now = options.now ?? (() => Date.now());
+
     this.ticker = options.ticker ?? Ticker.shared;
     this.tickCallback = () => this.onTick(this.ticker.deltaMS);
     this.ticker.add(this.tickCallback);
@@ -286,6 +328,7 @@ export class GameScreen extends Container implements Screen {
     this.focus.attach();
     this.detachFocusNavSfx = attachFocusNavSfx(this.focus);
     this.render();
+    this.renderDisconnectBanner();
   }
 
   layout(viewWidth: number, viewHeight: number): void {
@@ -300,6 +343,7 @@ export class GameScreen extends Container implements Screen {
     this.subscribeEventsUnsub?.();
     this.subscribeErrorUnsub?.();
     this.detachFocusNavSfx();
+    this.subscribeRoomUnsub?.();
     this.ticker.remove(this.tickCallback);
     this.flashes.length = 0;
     this.focus.detach();
@@ -343,6 +387,33 @@ export class GameScreen extends Container implements Screen {
       default:
         return;
     }
+  }
+
+  private handleRoom(room: RoomMembership | null): void {
+    this.disconnect = room?.disconnect ?? null;
+    this.renderDisconnectBanner();
+    this.layoutSections();
+  }
+
+  private renderDisconnectBanner(): void {
+    if (!this.disconnect) {
+      this.disconnectBanner.visible = false;
+      return;
+    }
+    const remaining = Math.max(0, Math.ceil((this.disconnect.forfeitAt - this.now()) / 1000));
+    this.disconnectBannerText.text = `Opponent disconnected — forfeit in ${remaining}s`;
+    const padX = spacing.md;
+    const padY = spacing.sm;
+    const w = Math.round(this.disconnectBannerText.width + padX * 2);
+    const h = Math.round(this.disconnectBannerText.height + padY * 2);
+    this.disconnectBannerBg
+      .clear()
+      .roundRect(0, 0, w, h, 4)
+      .fill({ color: color.bgRaised })
+      .stroke({ color: color.danger, width: 2, alignment: 0 });
+    this.disconnectBannerText.x = padX;
+    this.disconnectBannerText.y = padY;
+    this.disconnectBanner.visible = true;
   }
 
   private handleError(error: ServerError | null): void {
@@ -405,6 +476,10 @@ export class GameScreen extends Container implements Screen {
         this.errorVisibleMs = 0;
         appStore.getState().clearError();
       }
+    }
+
+    if (this.disconnect !== null) {
+      this.renderDisconnectBanner();
     }
   }
 
@@ -647,6 +722,12 @@ export class GameScreen extends Container implements Screen {
       const bw = this.errorBanner.width;
       this.errorBanner.x = Math.round((this.viewWidth - bw) / 2);
       this.errorBanner.y = this.keyHint.y - this.errorBanner.height - spacing.sm;
+    }
+
+    if (this.disconnectBanner.visible) {
+      const dw = this.disconnectBanner.width;
+      this.disconnectBanner.x = Math.round((this.viewWidth - dw) / 2);
+      this.disconnectBanner.y = this.opponentRow.y + this.opponentRow.height + spacing.md;
     }
   }
 

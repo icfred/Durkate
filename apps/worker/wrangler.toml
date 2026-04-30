@@ -28,3 +28,4 @@ new_sqlite_classes = ["Room"]
 [vars]
 ALLOWED_ORIGINS = "https://durak-icfred.web.app"
 TURN_TIMEOUT_MS = "30000"
+DISCONNECT_FORFEIT_MS = "30000"

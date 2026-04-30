@@ -21,6 +21,11 @@ export interface RoomSeat {
   name: string | null;
 }
 
+export interface DisconnectState {
+  seat: SeatIndex;
+  forfeitAt: number;
+}
+
 export interface RoomStateMessage {
   type: "RoomState";
   roomId: string;
@@ -28,6 +33,7 @@ export interface RoomStateMessage {
   you: SeatIndex | null;
   /** Seats that have requested a rematch while in `game-over`. Empty otherwise. */
   rematchRequested: SeatIndex[];
+  disconnect?: DisconnectState | null;
 }
 
 export type ServerMessage = SnapshotMessage | EventsMessage | ErrorMessage | RoomStateMessage;

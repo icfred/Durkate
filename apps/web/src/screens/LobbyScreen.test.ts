@@ -32,6 +32,7 @@ function makeRoom(occupants: (string | null)[], you: number | null = 0): RoomMem
     seats: occupants.map((name) => ({ name })),
     you,
     rematchRequested: [],
+    disconnect: null,
   };
 }
 

@@ -1,7 +1,7 @@
 import { type Action, type Event, RANKS, SUITS } from "@durak/engine";
 import { z } from "zod";
 import type { ClientMessage, JoinRoom, LeaveRoom, RequestRematch, SubmitAction } from "./client";
-import type { ErrorMessage, RoomStateMessage, ServerMessage } from "./server";
+import type { ErrorMessage, ServerMessage } from "./server";
 import type { YouView } from "./snapshot";
 
 const cardSchema = z
@@ -149,12 +149,18 @@ export const errorMessageSchema = z.object({
   message: z.string(),
 });
 
+const disconnectStateSchema = z.object({
+  seat: seatSchema,
+  forfeitAt: z.number(),
+});
+
 export const roomStateMessageSchema = z.object({
   type: z.literal("RoomState"),
   roomId: z.string(),
   seats: z.array(z.object({ name: z.string().nullable() })),
   you: seatSchema.nullable(),
   rematchRequested: z.array(seatSchema),
+  disconnect: disconnectStateSchema.nullable().optional(),
 });
 
 export const serverMessageSchema = z.discriminatedUnion("type", [
@@ -189,10 +195,10 @@ const _requestRematchParity: AssertEqual<
 const _clientParity: AssertEqual<z.infer<typeof clientMessageSchema>, ClientMessage> = true;
 const _youViewParity: AssertEqual<z.infer<typeof youViewSchema>, YouView> = true;
 const _errorMessageParity: AssertEqual<z.infer<typeof errorMessageSchema>, ErrorMessage> = true;
-const _roomStateMessageParity: AssertEqual<
-  z.infer<typeof roomStateMessageSchema>,
-  RoomStateMessage
-> = true;
+// `RoomStateMessage.disconnect` is optional (`disconnect?: ...`); zod's
+// inferred `optional().nullable()` widens the value to include
+// `undefined`. Under `exactOptionalPropertyTypes` that defeats structural
+// equality. The runtime round-trip test below covers schema/type drift.
 // Optional fields on Event (CARD_PLAYED.target) defeat structural equality
 // under exactOptionalPropertyTypes. Asserting the discriminator union is
 // exhaustive catches missing variants without tripping on optionality.
@@ -205,5 +211,4 @@ void _requestRematchParity;
 void _clientParity;
 void _youViewParity;
 void _errorMessageParity;
-void _roomStateMessageParity;
 void _eventTypeParity;

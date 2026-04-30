@@ -13,6 +13,7 @@ export {
   parseCreateRoomResponse,
 } from "./http";
 export type {
+  DisconnectState,
   ErrorMessage,
   EventsMessage,
   RoomSeat,

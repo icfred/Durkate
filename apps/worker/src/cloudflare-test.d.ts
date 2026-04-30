@@ -9,6 +9,7 @@ declare global {
       ALLOWED_ORIGINS: string;
       TURN_TIMEOUT_MS: string;
       RATE_LIMIT_CAPACITY?: string;
+      DISCONNECT_FORFEIT_MS: string;
     }
   }
 }
