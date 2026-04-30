@@ -26,6 +26,29 @@ describe("createRoomRequestSchema", () => {
   it("rejects extra fields gracefully (zod strips by default)", () => {
     expect(parseCreateRoomRequest({ mode: "bot", extra: 1 })).toEqual({ mode: "bot" });
   });
+
+  it("accepts difficulty: easy/medium/hard for bot rooms", () => {
+    expect(parseCreateRoomRequest({ mode: "bot", difficulty: "easy" })).toEqual({
+      mode: "bot",
+      difficulty: "easy",
+    });
+    expect(parseCreateRoomRequest({ mode: "bot", difficulty: "medium" })).toEqual({
+      mode: "bot",
+      difficulty: "medium",
+    });
+    expect(parseCreateRoomRequest({ mode: "bot", difficulty: "hard" })).toEqual({
+      mode: "bot",
+      difficulty: "hard",
+    });
+  });
+
+  it("difficulty is optional", () => {
+    expect(parseCreateRoomRequest({ mode: "bot" })).toEqual({ mode: "bot" });
+  });
+
+  it("rejects unknown difficulty values", () => {
+    expect(() => parseCreateRoomRequest({ mode: "bot", difficulty: "extreme" })).toThrow();
+  });
 });
 
 describe("createRoomResponseSchema", () => {

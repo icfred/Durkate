@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import {
   type Action,
+  type BotDifficulty,
   bot,
   type Event,
   type GameOverState,
@@ -38,6 +39,7 @@ interface PersistedRoom {
   seats: (Seat | null)[];
   engine: State | null;
   botSeat: SeatIndex | null;
+  botDifficulty?: BotDifficulty;
   rematchSeats?: boolean[];
   disconnect?: DisconnectState | null;
   deadlines?: PersistedDeadlines;
@@ -50,6 +52,7 @@ interface WsAttachment {
 const SEAT_COUNT = 2;
 const TOKEN_BYTES = 32;
 const BOT_SEAT_INDEX: SeatIndex = 1;
+const DEFAULT_BOT_DIFFICULTY: BotDifficulty = "medium";
 const DEFAULT_BOT_ITERATION_CAP = 200;
 const DEFAULT_RATE_LIMIT = { capacity: 20, refillIntervalMs: 5_000 };
 const STORAGE_KEY = "room";
@@ -66,6 +69,7 @@ export class Room extends DurableObject<Env> {
   private seats: (Seat | null)[] = new Array<Seat | null>(SEAT_COUNT).fill(null);
   private engineState: State | null = null;
   private botSeat: SeatIndex | null = null;
+  private botDifficulty: BotDifficulty = DEFAULT_BOT_DIFFICULTY;
   private rematchSeats: boolean[] = new Array<boolean>(SEAT_COUNT).fill(false);
   private disconnect: DisconnectState | null = null;
   private readonly turnTimeoutMs: number;
@@ -99,6 +103,7 @@ export class Room extends DurableObject<Env> {
         this.seats = persisted.seats;
         this.engineState = persisted.engine;
         this.botSeat = persisted.botSeat;
+        this.botDifficulty = persisted.botDifficulty ?? DEFAULT_BOT_DIFFICULTY;
         if (persisted.rematchSeats) this.rematchSeats = persisted.rematchSeats.slice();
         this.disconnect = persisted.disconnect ?? null;
         this.alarms.load(persisted.deadlines);
@@ -121,11 +126,12 @@ export class Room extends DurableObject<Env> {
     if (this.seats.some((s) => s !== null)) {
       return new Response("room already initialized", { status: 409 });
     }
-    const body = (await request.json()) as { mode?: unknown };
+    const body = (await request.json()) as { mode?: unknown; difficulty?: unknown };
     const mode: RoomMode = body.mode === "bot" ? "bot" : "human";
     this.mode = mode;
     if (mode === "bot") {
       this.botSeat = BOT_SEAT_INDEX;
+      this.botDifficulty = parseDifficulty(body.difficulty);
       this.seats[BOT_SEAT_INDEX] = { name: "Bot", token: randomBase64Url(TOKEN_BYTES) };
     }
     const host = this.addPlayer("Host");
@@ -470,7 +476,7 @@ export class Room extends DurableObject<Env> {
       if (this.engineState === null || this.engineState.phase !== "in-round") return;
       const active = activeActorSeat(this.engineState);
       if (active !== this.botSeat) return;
-      const action = bot.choose(this.engineState);
+      const action = bot.choose(this.engineState, { difficulty: this.botDifficulty });
       const result = step(this.engineState, action);
       if (!result.ok) {
         this.sendErrorToHuman("BOT_ILLEGAL_ACTION", `bot rejected: ${result.reason}`);
@@ -563,11 +569,16 @@ export class Room extends DurableObject<Env> {
       seats: this.seats,
       engine: this.engineState,
       botSeat: this.botSeat,
+      botDifficulty: this.botDifficulty,
       rematchSeats: this.rematchSeats.slice(),
       disconnect: this.disconnect,
       deadlines: this.alarms.toPersisted(),
     };
     await this.ctx.storage.put(STORAGE_KEY, snapshot);
+  }
+
+  testBotDifficulty(): BotDifficulty {
+    return this.botDifficulty;
   }
 }
 
@@ -619,6 +630,11 @@ export function newSeed(): number {
   const buf = new Uint32Array(1);
   crypto.getRandomValues(buf);
   return (buf[0] ?? 0) & 0x7fff_ffff;
+}
+
+function parseDifficulty(raw: unknown): BotDifficulty {
+  if (raw === "easy" || raw === "medium" || raw === "hard") return raw;
+  return DEFAULT_BOT_DIFFICULTY;
 }
 
 export function randomBase64Url(byteLength: number): string {

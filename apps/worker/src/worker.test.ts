@@ -146,6 +146,34 @@ describe("worker POST /rooms", () => {
     const res = await postRooms("not json");
     expect(res.status).toBe(400);
   });
+
+  it("threads bot difficulty into the durable object", async () => {
+    const res = await postRooms({ mode: "bot", difficulty: "hard" });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as CreateRoomResponse;
+    const stub = env.ROOMS.get(env.ROOMS.idFromName(body.roomId));
+    let difficulty: string | null = null;
+    await runInDurableObject(stub, async (room: Room) => {
+      difficulty = room.testBotDifficulty();
+    });
+    expect(difficulty).toBe("hard");
+  });
+
+  it("defaults bot difficulty to medium when omitted", async () => {
+    const res = await postRooms({ mode: "bot" });
+    const body = (await res.json()) as CreateRoomResponse;
+    const stub = env.ROOMS.get(env.ROOMS.idFromName(body.roomId));
+    let difficulty: string | null = null;
+    await runInDurableObject(stub, async (room: Room) => {
+      difficulty = room.testBotDifficulty();
+    });
+    expect(difficulty).toBe("medium");
+  });
+
+  it("rejects unknown difficulty with 400", async () => {
+    const res = await postRooms({ mode: "bot", difficulty: "extreme" });
+    expect(res.status).toBe(400);
+  });
 });
 
 describe("worker /ws upgrade", () => {

@@ -1,7 +1,13 @@
-import { type CreateRoomResponse, parseCreateRoomResponse } from "@durak/protocol";
+import {
+  type BotDifficulty,
+  type CreateRoomResponse,
+  parseCreateRoomResponse,
+} from "@durak/protocol";
 
 export interface CreateRoomOptions {
   serverUrl: string;
+  /** Bot difficulty for `mode: "bot"` rooms. Ignored otherwise. */
+  difficulty?: BotDifficulty;
   /** Test seam: replaces global fetch. */
   fetchImpl?: typeof fetch;
 }
@@ -22,12 +28,14 @@ export async function createRoom(
 ): Promise<CreateRoomResponse> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const url = new URL("/rooms", normalizeBase(options.serverUrl)).toString();
+  const body: { mode: "human" | "bot"; difficulty?: BotDifficulty } = { mode };
+  if (mode === "bot" && options.difficulty !== undefined) body.difficulty = options.difficulty;
   let response: Response;
   try {
     response = await fetchImpl(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode }),
+      body: JSON.stringify(body),
     });
   } catch (err) {
     throw new CreateRoomError(`network: ${(err as Error).message}`);

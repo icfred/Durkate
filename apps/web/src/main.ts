@@ -1,6 +1,7 @@
 import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/700.css";
 
+import type { BotDifficulty } from "@durak/protocol";
 import { loadSkinAssets } from "@durak/skins-spike";
 import { color, typography } from "@durak/ui";
 import { Application } from "pixi.js";
@@ -83,8 +84,8 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
   const wsUrl = resolveWsUrl();
   const httpUrl = resolveHttpServerUrl(wsUrl);
 
-  const startCreate = (mode: Mode) => {
-    void runRoomCreation(mode, httpUrl);
+  const startCreate = (mode: Mode, difficulty?: BotDifficulty) => {
+    void runRoomCreation(mode, httpUrl, difficulty);
   };
 
   const router = new ScreenRouter({
@@ -93,7 +94,8 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
       switch (state.phase) {
         case "menu":
           return new MainMenuScreen({
-            onPlay: (mode) => startCreate(mode),
+            onPlayBot: (difficulty) => startCreate("bot", difficulty),
+            onPlayFriend: () => startCreate("friend"),
           });
         case "lobby": {
           const mode = state.mode ?? "friend";
@@ -116,7 +118,7 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
               appStore.subscribe((next, prev) => {
                 if (next.roomCreation !== prev.roomCreation) listener(next.roomCreation);
               }),
-            onRetry: () => startCreate(mode),
+            onRetry: () => startCreate(mode, state.botDifficulty),
             onJoin: (next) => {
               appStore.getState().showLobby({ mode, roomCode: next });
             },
@@ -205,11 +207,17 @@ function applyBootRouting(): void {
   }
 }
 
-async function runRoomCreation(mode: Mode, httpUrl: string): Promise<void> {
-  appStore.getState().beginRoomCreation(mode);
+async function runRoomCreation(
+  mode: Mode,
+  httpUrl: string,
+  difficulty?: BotDifficulty,
+): Promise<void> {
+  appStore.getState().beginRoomCreation(difficulty === undefined ? { mode } : { mode, difficulty });
   const apiMode = mode === "bot" ? "bot" : "human";
+  const createOptions =
+    difficulty === undefined ? { serverUrl: httpUrl } : { serverUrl: httpUrl, difficulty };
   try {
-    const response = await createRoom(apiMode, { serverUrl: httpUrl });
+    const response = await createRoom(apiMode, createOptions);
     appStore.getState().roomCreated({
       roomId: response.roomId,
       hostToken: response.hostToken,
