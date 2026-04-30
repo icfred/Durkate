@@ -8,6 +8,7 @@ import { bindMuteShortcut, installAudioGestureUnlock } from "./audio/index.js";
 import { gameOverFixture } from "./fixtures/gameOverFixtures.js";
 import { createConnectionController } from "./net/connection.js";
 import { CreateRoomError, createRoom, httpFromWsUrl } from "./net/rooms.js";
+import { AnimSandboxScreen } from "./sandbox/anims/AnimSandboxScreen.js";
 import { SkinSandboxScreen } from "./sandbox/skins/SkinSandboxScreen.js";
 import { SkinTunerScreen } from "./sandbox/skins/SkinTunerScreen.js";
 import { ScreenRouter } from "./screenRouter.js";
@@ -52,6 +53,13 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
     sandboxParam === "skins"
       ? new SkinSandboxScreen({ assets: skinAssets, ticker: app.ticker })
       : new SkinTunerScreen({ assets: skinAssets, ticker: app.ticker });
+  screen.layout(app.screen.width, app.screen.height);
+  app.stage.addChild(screen);
+  app.renderer.on("resize", () => {
+    screen.layout(app.screen.width, app.screen.height);
+  });
+} else if (sandboxParam === "anims") {
+  const screen = new AnimSandboxScreen({ ticker: app.ticker });
   screen.layout(app.screen.width, app.screen.height);
   app.stage.addChild(screen);
   app.renderer.on("resize", () => {
