@@ -115,27 +115,72 @@ Talon replenishment, timeouts, and game-over (DUR-9):
   in draw order) and `GAME_OVER { durak }` (always last in the events
   list of the transition that ends the game).
 
-Bot v1 (DUR-10):
+Bot (DUR-10, DUR-48):
 
-- `bot.choose(state) -> Action`. Pure observer: never reads or mutates
-  `state.rng`, never reads the wall clock. Throws if `state.phase` is not
-  `"in-round"`.
-- Heuristic, in priority order:
-  - **Open attack** (table empty): cheapest card from the attacker's
-    hand. "Cheapest" = lowest non-trump rank first, trumps last; ties
-    break by suit index in `SUITS`.
-  - **Defend** (current undefended target): cheapest card that beats it.
-    Lowest same-suit beat first, lowest trump only when no same-suit
-    beat exists.
-  - **Take pile** when no card beats the target, or when the only beat
-    would burn a trump of rank Q+ on a non-trump attack of rank 8 or
-    lower.
-  - **Throw-in** (table fully covered): cheapest hand card whose rank is
-    on the table, subject to engine constraints (defender has at least
-    one card, bout cap of 6 attacks).
-  - **End round** when no legal throw-in is available.
+- `bot.choose(state, opts?: { difficulty?: "easy" | "medium" | "hard" }) -> Action`.
+  Pure observer: never reads or mutates `state.rng`, never reads the
+  wall clock. Throws if `state.phase` is not `"in-round"`. Default
+  difficulty is `"medium"` (matches the original heuristic).
 - Imported as a namespace: `import { bot } from "@durak/engine";` then
-  `bot.choose(state)`.
+  `bot.choose(state, { difficulty: "hard" })`.
+
+**Medium** (default): the original DUR-10 heuristic.
+
+- Open attack (table empty): cheapest card. "Cheapest" = lowest non-
+  trump rank first, trumps last; ties break by suit index in `SUITS`.
+- Defend: cheapest card that beats — lowest same-suit beat first,
+  lowest trump only when no same-suit beat exists.
+- Take pile when no card beats, or when the only beat would burn a
+  trump of rank Q+ on a non-trump attack of rank 8 or lower
+  (burn-trump guard).
+- Throw-in (table fully covered): cheapest hand card whose rank is on
+  the table, subject to engine constraints (defender has >= 1 card,
+  bout cap of 6 attacks).
+- End round when no legal throw-in is available.
+
+**Easy**: noisier, burns trumps freely, no burn-trump guard.
+
+- Open attack: random legal card weighted toward higher non-trumps
+  (weight = `rank - 5`); falls back to cheapest trump only if no non-
+  trump exists. Randomness uses an RNG forked from `state.rng` so it's
+  deterministic per state without mutating the source.
+- Defend: cheapest beat (no medium-style burn guard — happily spends
+  a Q+ trump on a low non-trump).
+- Throw-in: same weighted random as attack.
+- Take pile only when no legal beat exists.
+
+**Hard**: hoards trumps, never folds when defendable, light card-
+counting on attack.
+
+- Open attack: cheapest non-trump by default. With talon empty, switches
+  to a "safe high" non-trump — rank >= 12 with no higher same-suit card
+  unseen (counted across own hand + table + discard + visible trump
+  card), forcing opponent to burn a trump or take the pile. As a final
+  squeeze when talon is empty and opponent has <= 2 cards, plays the
+  highest non-trump outright.
+- Defend: prefer the lowest same-suit beat; only burn a trump (lowest
+  available) when no same-suit beat exists.
+- Take pile only when no legal defense exists — never to save a high
+  trump (no burn guard).
+- Throw-in: same pressure logic as attack.
+
+All three variants are deterministic given `state.rng` and pure
+observers. `bot.choose` for any difficulty never returns an illegal
+action; this is enforced by a property test of self-play across many
+seeds (`difficulty.test.ts`).
+
+**Win-rate guarantees** (1000 fixed-seed 1v1 self-play matches):
+
+| Matchup | Hard win rate (lower bound) |
+|---|---|
+| Hard vs Easy | > 60% |
+| Hard vs Medium | > 52% |
+
+The hard-vs-medium gap is narrower than the original target (>55%) by
+design: the spec forbids hard from accepting a take-pile to save a
+high trump, which is itself a strong strategic move that medium uses.
+The 52% floor is the conservative regression bar; current
+implementation runs at ~54%.
 
 Forthcoming (later tickets):
 

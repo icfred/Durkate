@@ -1,5 +1,6 @@
 import type { Action, Event } from "@durak/engine";
 import type {
+  BotDifficulty,
   ClientMessage,
   DisconnectState,
   RoomSeat,
@@ -67,6 +68,8 @@ export type RoomCreationState =
 export interface AppState {
   phase: Phase;
   mode: Mode | undefined;
+  /** Bot difficulty selected by the host for `mode: "bot"` rooms. */
+  botDifficulty: BotDifficulty | undefined;
   roomCode: string | undefined;
   /** Seat-bound token used when opening the ws to this room. */
   currentToken: string | null;
@@ -88,7 +91,7 @@ export interface AppState {
   showLobby(args: { mode: Mode; roomCode: string; token?: string | null }): void;
   showGame(args?: { mode?: Mode; roomCode?: string }): void;
   showGameOver(data: GameOverData): void;
-  beginRoomCreation(mode: Mode): void;
+  beginRoomCreation(args: { mode: Mode; difficulty?: BotDifficulty }): void;
   roomCreated(args: { roomId: string; hostToken: string; shareToken?: string | null }): void;
   roomCreationFailed(error: string): void;
   enterLobbyAsJoiner(args: { roomCode: string; token: string }): void;
@@ -194,6 +197,7 @@ export const appStore = createStore<AppState>((set, get) => {
   const internal: InternalState = {
     phase: "menu",
     mode: undefined,
+    botDifficulty: undefined,
     roomCode: undefined,
     currentToken: null,
     shareToken: null,
@@ -212,6 +216,7 @@ export const appStore = createStore<AppState>((set, get) => {
       set({
         phase: "menu",
         mode: undefined,
+        botDifficulty: undefined,
         roomCode: undefined,
         currentToken: null,
         shareToken: null,
@@ -237,10 +242,11 @@ export const appStore = createStore<AppState>((set, get) => {
         roomCode: args?.roomCode ?? state.roomCode,
       })),
     showGameOver: (data) => set({ phase: "gameover", gameover: data }),
-    beginRoomCreation: (mode) =>
+    beginRoomCreation: ({ mode, difficulty }) =>
       set({
         phase: "lobby",
         mode,
+        botDifficulty: mode === "bot" ? difficulty : undefined,
         roomCode: undefined,
         currentToken: null,
         shareToken: null,
@@ -260,6 +266,7 @@ export const appStore = createStore<AppState>((set, get) => {
       set({
         phase: "lobby",
         mode: "friend",
+        botDifficulty: undefined,
         roomCode,
         currentToken: token,
         shareToken: null,

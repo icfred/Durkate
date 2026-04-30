@@ -271,7 +271,7 @@ describe("appStore room creation", () => {
   });
 
   it("beginRoomCreation enters lobby with creating state and clears prior creds", () => {
-    appStore.getState().beginRoomCreation("bot");
+    appStore.getState().beginRoomCreation({ mode: "bot" });
     const state = appStore.getState();
     expect(state.phase).toBe("lobby");
     expect(state.mode).toBe("bot");
@@ -281,8 +281,18 @@ describe("appStore room creation", () => {
     expect(state.roomCreation).toEqual({ status: "creating" });
   });
 
+  it("beginRoomCreation stores bot difficulty for bot rooms", () => {
+    appStore.getState().beginRoomCreation({ mode: "bot", difficulty: "hard" });
+    expect(appStore.getState().botDifficulty).toBe("hard");
+  });
+
+  it("beginRoomCreation does not record difficulty for friend rooms", () => {
+    appStore.getState().beginRoomCreation({ mode: "friend", difficulty: "hard" });
+    expect(appStore.getState().botDifficulty).toBeUndefined();
+  });
+
   it("roomCreated populates roomCode, token, and ready state", () => {
-    appStore.getState().beginRoomCreation("friend");
+    appStore.getState().beginRoomCreation({ mode: "friend" });
     appStore.getState().roomCreated({
       roomId: "abc-123",
       hostToken: "host-tok",
@@ -296,7 +306,7 @@ describe("appStore room creation", () => {
   });
 
   it("roomCreationFailed records the error", () => {
-    appStore.getState().beginRoomCreation("bot");
+    appStore.getState().beginRoomCreation({ mode: "bot" });
     appStore.getState().roomCreationFailed("network down");
     expect(appStore.getState().roomCreation).toEqual({ status: "error", error: "network down" });
   });
@@ -312,7 +322,7 @@ describe("appStore room creation", () => {
   });
 
   it("showMenu clears all room-creation state", () => {
-    appStore.getState().beginRoomCreation("bot");
+    appStore.getState().beginRoomCreation({ mode: "bot" });
     appStore.getState().roomCreated({ roomId: "x", hostToken: "y" });
     appStore.getState().showMenu();
     const state = appStore.getState();

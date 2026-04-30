@@ -1,3 +1,4 @@
+export type { BotChooseOpts, BotDifficulty } from "./bot";
 export * as bot from "./bot";
 export { buildDeck, type Card, RANKS, type Rank, SUITS, type Suit } from "./cards";
 export { shuffle } from "./deck";

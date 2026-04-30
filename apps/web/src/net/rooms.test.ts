@@ -63,6 +63,26 @@ describe("createRoom", () => {
       CreateRoomError,
     );
   });
+
+  it("includes difficulty for bot rooms when provided", async () => {
+    const calls: { body: string }[] = [];
+    const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ body: String(init?.body) });
+      return jsonResponse({ roomId: "x", hostToken: "y" }, { status: 201 });
+    }) as typeof fetch;
+    await createRoom("bot", { serverUrl: "http://s", fetchImpl, difficulty: "hard" });
+    expect(calls[0]?.body).toBe('{"mode":"bot","difficulty":"hard"}');
+  });
+
+  it("omits difficulty for human rooms even when provided", async () => {
+    const calls: { body: string }[] = [];
+    const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ body: String(init?.body) });
+      return jsonResponse({ roomId: "x", hostToken: "y", joinToken: "j" }, { status: 201 });
+    }) as typeof fetch;
+    await createRoom("human", { serverUrl: "http://s", fetchImpl, difficulty: "hard" });
+    expect(calls[0]?.body).toBe('{"mode":"human"}');
+  });
 });
 
 describe("httpFromWsUrl", () => {

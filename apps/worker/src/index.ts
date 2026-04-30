@@ -126,9 +126,13 @@ const worker: ExportedHandler<Env> = {
 
       const roomId = randomBase64Url(ROOM_ID_BYTES);
       const stub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
+      const initBody: { mode: typeof parsed.mode; difficulty?: typeof parsed.difficulty } = {
+        mode: parsed.mode,
+      };
+      if (parsed.difficulty !== undefined) initBody.difficulty = parsed.difficulty;
       const initRes = await stub.fetch("https://room/init", {
         method: "POST",
-        body: JSON.stringify({ mode: parsed.mode }),
+        body: JSON.stringify(initBody),
       });
       if (!initRes.ok) {
         const text = await initRes.text();
