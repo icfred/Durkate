@@ -14,10 +14,12 @@ server state over websocket and to local Zustand stores for UI state.
 - **Screen**: a Pixi `Container` that implements `layout(viewW, viewH)`
   and `dispose()`. Owns its own `FocusManager`. Built from primitives in
   `@durak/ui`.
-- **ScreenRouter**: subscribes to `appStore`, rebuilds the active screen
-  on relevant state change, calls `dispose()` + `destroy()` on the old
-  screen before mounting the new one. No fade by default - matches the
-  Tetrio-feel snappy swap.
+- **ScreenRouter**: subscribes to `appStore` and rebuilds the active
+  screen on relevant state change. Phase changes animate via the
+  `src/anim/` engine (see "Boot flow" → transition matrix); same-phase
+  swaps and the first mount swap instantly. The router only calls
+  `dispose()` + `destroy()` on the old screen once the transition has
+  completed.
 - **URL hash**: on boot, `#room=ABCD` deep-links into the lobby with the
   code prefilled and `mode = "friend"`.
 - **Boot**: awaits `@fontsource/jetbrains-mono` via `document.fonts.load`
@@ -106,6 +108,30 @@ a warn while the connection is not open.
      rematch / main-menu callbacks.
 5. Calls `router.setView(width, height)` and `router.start()`. Re-runs
    `setView` on Pixi `resize`.
+
+### Transition matrix
+
+Phase changes route through `src/transitions.ts`. Each transition runs
+on the Pixi `Ticker` via the `src/anim/` engine; the old screen is only
+disposed after the tween completes.
+
+| From → To           | Animation                                          |
+|---------------------|----------------------------------------------------|
+| `menu → lobby`      | Lobby slides up from below; menu slides up off.    |
+| `lobby → menu`      | Inverse: menu drops in from above; lobby drops off.|
+| `lobby → game`      | Cross-fade.                                        |
+| `game → lobby`      | Cross-fade.                                        |
+| `game → gameover`   | Gameover panel slides down from top.               |
+| `gameover → game`   | Cross-fade (rematch path).                         |
+| `gameover → menu`   | Menu fades in over a darkening overlay.            |
+| `menu → gameover`   | Inverse: menu fades out under a darkening overlay. |
+| any other pair      | Default cross-fade.                                |
+
+Durations multiply by `appStore.devtools.animSpeed` (the dev panel
+slider). `animSpeed === 0` skips the tween entirely and disposes the
+old screen immediately. The first mount (`prevPhase === null`) and any
+key change inside a single phase (e.g. `lobby → lobby` with a different
+room code) also skip animation.
 
 ## Networking
 
