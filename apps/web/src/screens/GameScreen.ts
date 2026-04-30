@@ -2,6 +2,14 @@ import { type Action, beats, type Card, type Event, type TablePair } from "@dura
 import type { DisconnectState, SeatIndex, Snapshot } from "@durak/protocol";
 import { color, type Focusable, FocusManager, spacing, typography } from "@durak/ui";
 import { Container, Graphics, Text, Ticker } from "pixi.js";
+import {
+  type Anim,
+  easeOutBack,
+  fadeTo,
+  moveTo,
+  parallel,
+  type TweenHandle,
+} from "../anim/index.js";
 import { attachFocusNavSfx, playSfx } from "../audio/index.js";
 import { appStore, type RoomMembership, type ServerError } from "../store.js";
 import type { Screen } from "./types.js";
@@ -11,10 +19,18 @@ const CARD_H = 88;
 const HAND_GAP = 6;
 const SECTION_PADDING = spacing.lg;
 
-const FLASH_DURATION_MS = 180;
 const ERROR_TOAST_MS = 3000;
 const TURN_PULSE_PERIOD_MS = 1200;
 const ILLEGAL_ALPHA = 0.45;
+
+const FADE_IN_MS = 80;
+const PLAY_MOVE_MS = 220;
+const TAKE_MOVE_MS = 280;
+const ROUND_END_MOVE_MS = 280;
+const TALON_PER_CARD_MS = 200;
+const TALON_STAGGER_MS = 50;
+const DEAL_PER_CARD_MS = 220;
+const DEAL_STAGGER_MS = 35;
 
 const SUIT_GLYPH = {
   spades: "♠",
@@ -134,13 +150,6 @@ class CardView extends Container implements Focusable {
   }
 }
 
-interface FlashState {
-  view: CardView;
-  pivotX: number;
-  pivotY: number;
-  elapsed: number;
-}
-
 export interface GameScreenOptions {
   snapshot: Snapshot | null;
   submitAction: (action: Action) => void;
@@ -174,6 +183,7 @@ export class GameScreen extends Container implements Screen {
   private readonly leftStack: Container;
   private readonly rightStack: Container;
   private readonly myHandRow: Container;
+  private readonly animLayer: Container;
   private readonly submitAction: (action: Action) => void;
   private readonly extraKeysHandler: (event: KeyboardEvent) => void;
   private readonly subscribeUnsub: (() => void) | null;
@@ -185,10 +195,10 @@ export class GameScreen extends Container implements Screen {
   private disconnect: DisconnectState | null = null;
   private readonly ticker: Ticker;
   private readonly tickCallback: () => void;
-  private readonly flashes: FlashState[] = [];
+  private readonly activeAnims: TweenHandle[] = [];
+  private readonly animSpeed: () => number;
   private snapshot: Snapshot | null;
-  private prevTableKeys: Set<string>;
-  private isInitialRender = true;
+  private prevSnapshot: Snapshot | null = null;
   private viewWidth = 0;
   private viewHeight = 0;
   private turnPulseElapsed = 0;
@@ -199,7 +209,7 @@ export class GameScreen extends Container implements Screen {
     super();
     this.snapshot = options.snapshot;
     this.submitAction = options.submitAction;
-    this.prevTableKeys = new Set();
+    this.animSpeed = () => appStore.getState().devtools.animSpeed;
 
     this.waiting = new Text({
       text: "WAITING FOR GAME...",
@@ -280,18 +290,21 @@ export class GameScreen extends Container implements Screen {
     this.leftStack = new Container();
     this.rightStack = new Container();
     this.myHandRow = new Container();
+    this.animLayer = new Container();
 
     this.opponentRow.label = "opponent-hand";
     this.tableRow.label = "table";
     this.leftStack.label = "talon";
     this.rightStack.label = "discard";
     this.myHandRow.label = "my-hand";
+    this.animLayer.label = "anim-layer";
 
     this.addChild(this.opponentRow);
     this.addChild(this.tableRow);
     this.addChild(this.leftStack);
     this.addChild(this.rightStack);
     this.addChild(this.myHandRow);
+    this.addChild(this.animLayer);
 
     this.extraKeysHandler = (event) => this.handleKeyDown(event);
     window.addEventListener("keydown", this.extraKeysHandler);
@@ -345,22 +358,33 @@ export class GameScreen extends Container implements Screen {
     this.detachFocusNavSfx();
     this.subscribeRoomUnsub?.();
     this.ticker.remove(this.tickCallback);
-    this.flashes.length = 0;
+    this.cancelAnims();
     this.focus.detach();
     this.focus.clear();
   }
 
   update(snapshot: Snapshot | null): void {
+    this.cancelAnims();
+    this.prevSnapshot = this.snapshot;
     this.snapshot = snapshot;
     this.render();
     this.layoutSections();
   }
 
-  private handleEvents(events: Event[]): void {
-    for (const event of events) this.handleEvent(event);
+  private cancelAnims(): void {
+    for (const handle of this.activeAnims) handle.cancel();
+    this.activeAnims.length = 0;
+    this.animLayer.removeChildren();
   }
 
-  private handleEvent(event: Event): void {
+  private handleEvents(events: Event[]): void {
+    for (const event of events) {
+      this.playEventSfx(event);
+      this.animateEvent(event);
+    }
+  }
+
+  private playEventSfx(event: Event): void {
     switch (event.type) {
       case "CARD_PLAYED":
         playSfx("playCard");
@@ -384,6 +408,29 @@ export class GameScreen extends Container implements Screen {
         playSfx(event.durak === seat ? "lose" : "win");
         return;
       }
+      default:
+        return;
+    }
+  }
+
+  private animateEvent(event: Event): void {
+    if (this.animSpeed() === 0) return;
+    switch (event.type) {
+      case "CARD_PLAYED":
+        this.animateCardPlayed(event);
+        return;
+      case "PILE_TAKEN":
+        this.animatePileTaken(event);
+        return;
+      case "ROUND_ENDED":
+        this.animateRoundEnded(event);
+        return;
+      case "TALON_DRAWN":
+        this.animateTalonDrawn(event);
+        return;
+      case "GAME_STARTED":
+        this.animateGameStarted();
+        return;
       default:
         return;
     }
@@ -451,24 +498,6 @@ export class GameScreen extends Container implements Screen {
       this.turnLabel.alpha = 0.7 + 0.3 * (0.5 + 0.5 * Math.cos(phase));
     }
 
-    if (this.flashes.length > 0) {
-      for (let i = this.flashes.length - 1; i >= 0; i -= 1) {
-        const flash = this.flashes[i];
-        if (!flash) continue;
-        flash.elapsed += deltaMs;
-        const t = Math.min(1, flash.elapsed / FLASH_DURATION_MS);
-        const eased = 1 - (1 - t) * (1 - t) * (1 - t);
-        const scale = 0.85 + 0.15 * eased;
-        flash.view.scale.set(scale);
-        flash.view.alpha = eased;
-        if (t >= 1) {
-          flash.view.scale.set(1);
-          flash.view.alpha = 1;
-          this.flashes.splice(i, 1);
-        }
-      }
-    }
-
     if (this.errorBanner.visible) {
       this.errorVisibleMs += deltaMs;
       if (this.errorVisibleMs >= ERROR_TOAST_MS) {
@@ -489,7 +518,6 @@ export class GameScreen extends Container implements Screen {
     this.leftStack.removeChildren();
     this.rightStack.removeChildren();
     this.myHandRow.removeChildren();
-    this.flashes.length = 0;
     this.focus.clear();
 
     const snapshot = this.snapshot;
@@ -503,8 +531,6 @@ export class GameScreen extends Container implements Screen {
       this.turnLabel.visible = false;
       this.keyHint.visible = false;
       this.turnPulseActive = false;
-      this.prevTableKeys = new Set();
-      this.isInitialRender = true;
       return;
     }
 
@@ -524,9 +550,6 @@ export class GameScreen extends Container implements Screen {
     this.renderMyHand(snapshot);
     this.renderTurnLabel(snapshot);
     this.renderKeyHint(snapshot);
-
-    this.prevTableKeys = collectTableKeys(snapshot.table);
-    this.isInitialRender = false;
   }
 
   private renderOpponentHand(snapshot: Snapshot): void {
@@ -546,28 +569,13 @@ export class GameScreen extends Container implements Screen {
       attackView.x = i * pairColumnWidth;
       attackView.y = 0;
       this.tableRow.addChild(attackView);
-      this.maybeFlash(attackView, pair.attack);
       if (pair.defense) {
         const defenseView = new CardView(pair.defense);
         defenseView.x = i * pairColumnWidth + Math.round(CARD_W * 0.25);
         defenseView.y = Math.round(CARD_H * 0.4);
         this.tableRow.addChild(defenseView);
-        this.maybeFlash(defenseView, pair.defense);
       }
     });
-  }
-
-  private maybeFlash(view: CardView, card: Card): void {
-    if (this.isInitialRender) return;
-    if (this.prevTableKeys.has(cardKey(card))) return;
-    const pivotX = CARD_W / 2;
-    const pivotY = CARD_H / 2;
-    view.pivot.set(pivotX, pivotY);
-    view.x += pivotX;
-    view.y += pivotY;
-    view.scale.set(0.85);
-    view.alpha = 0;
-    this.flashes.push({ view, pivotX, pivotY, elapsed: 0 });
   }
 
   private renderTalonAndTrump(snapshot: Snapshot): void {
@@ -731,6 +739,248 @@ export class GameScreen extends Container implements Screen {
     }
   }
 
+  private animateCardPlayed(event: Extract<Event, { type: "CARD_PLAYED" }>): void {
+    const snapshot = this.snapshot;
+    if (!snapshot) return;
+    const view = this.findTableCardView(event.card);
+    if (!view) return;
+
+    const targetX = view.x;
+    const targetY = view.y;
+    const sourceWorld = this.handRowWorldCenter(event.by);
+    const sourceX = sourceWorld.x - this.tableRow.x;
+    const sourceY = sourceWorld.y - this.tableRow.y;
+
+    view.x = sourceX;
+    view.y = sourceY;
+    view.alpha = 0;
+
+    const handle = parallel([
+      this.tweenAnim((onComplete) =>
+        fadeTo(view, 1, FADE_IN_MS, undefined, this.tweenOpts(onComplete)),
+      ),
+      this.tweenAnim((onComplete) =>
+        moveTo(view, targetX, targetY, PLAY_MOVE_MS, easeOutBack, this.tweenOpts(onComplete)),
+      ),
+    ]);
+    this.activeAnims.push(handle);
+  }
+
+  private animatePileTaken(event: Extract<Event, { type: "PILE_TAKEN" }>): void {
+    const prev = this.prevSnapshot;
+    if (!prev || prev.table.length === 0) return;
+
+    const dest = this.handRowWorldCenter(event.by);
+    const ghosts = this.spawnTableGhosts(prev);
+    const animsList: Anim[] = ghosts.map((g) => this.takeGhostAnim(g, dest));
+
+    if (animsList.length === 0) return;
+    const handle = parallel(animsList, () => {
+      for (const g of ghosts) this.animLayer.removeChild(g);
+    });
+    this.activeAnims.push(handle);
+  }
+
+  private animateRoundEnded(_event: Extract<Event, { type: "ROUND_ENDED" }>): void {
+    const prev = this.prevSnapshot;
+    if (!prev || prev.table.length === 0) return;
+
+    const dest = this.discardWorldPos();
+    const ghosts = this.spawnTableGhosts(prev);
+    const animsList: Anim[] = ghosts.map((g) => this.discardGhostAnim(g, dest));
+
+    if (animsList.length === 0) return;
+    const handle = parallel(animsList, () => {
+      for (const g of ghosts) this.animLayer.removeChild(g);
+    });
+    this.activeAnims.push(handle);
+  }
+
+  private animateTalonDrawn(event: Extract<Event, { type: "TALON_DRAWN" }>): void {
+    const snapshot = this.snapshot;
+    if (!snapshot) return;
+    const drawn = event.cards;
+    if (drawn.length === 0) return;
+
+    const sourceWorld = this.talonWorldPos();
+    const isYou = event.by === snapshot.you.seat;
+    const row = isYou ? this.myHandRow : this.opponentRow;
+    const sourceX = sourceWorld.x - row.x;
+    const sourceY = sourceWorld.y - row.y;
+
+    const targets: { view: Container; finalX: number; finalY: number }[] = [];
+
+    if (isYou) {
+      for (const card of drawn) {
+        const v = this.findHandCardView(card);
+        if (!v) continue;
+        targets.push({ view: v, finalX: v.x, finalY: v.y });
+      }
+    } else {
+      const childCount = row.children.length;
+      const startIdx = Math.max(0, childCount - drawn.length);
+      for (let i = startIdx; i < childCount; i += 1) {
+        const v = row.children[i] as Container | undefined;
+        if (!v) continue;
+        targets.push({ view: v, finalX: v.x, finalY: v.y });
+      }
+    }
+
+    if (targets.length === 0) return;
+
+    for (const t of targets) {
+      t.view.x = sourceX;
+      t.view.y = sourceY;
+    }
+
+    const animsList: Anim[] = targets.map(
+      (t, i): Anim =>
+        (onComplete) =>
+          moveTo(
+            t.view,
+            t.finalX,
+            t.finalY,
+            TALON_PER_CARD_MS + i * TALON_STAGGER_MS,
+            easeOutBack,
+            this.tweenOpts(onComplete),
+          ),
+    );
+
+    const handle = parallel(animsList);
+    this.activeAnims.push(handle);
+  }
+
+  private animateGameStarted(): void {
+    const snapshot = this.snapshot;
+    if (!snapshot) return;
+
+    const sourceWorld = this.talonWorldPos();
+    const targets: { view: Container; row: Container; finalX: number; finalY: number }[] = [];
+
+    for (const child of this.myHandRow.children) {
+      const v = child as Container;
+      targets.push({ view: v, row: this.myHandRow, finalX: v.x, finalY: v.y });
+    }
+    for (const child of this.opponentRow.children) {
+      const v = child as Container;
+      targets.push({ view: v, row: this.opponentRow, finalX: v.x, finalY: v.y });
+    }
+
+    if (targets.length === 0) return;
+
+    for (const t of targets) {
+      t.view.x = sourceWorld.x - t.row.x;
+      t.view.y = sourceWorld.y - t.row.y;
+    }
+
+    const animsList: Anim[] = targets.map(
+      (t, i): Anim =>
+        (onComplete) =>
+          moveTo(
+            t.view,
+            t.finalX,
+            t.finalY,
+            DEAL_PER_CARD_MS + i * DEAL_STAGGER_MS,
+            easeOutBack,
+            this.tweenOpts(onComplete),
+          ),
+    );
+
+    const handle = parallel(animsList);
+    this.activeAnims.push(handle);
+  }
+
+  private spawnTableGhosts(snapshot: Snapshot): Container[] {
+    const pairColumnWidth = CARD_W + HAND_GAP;
+    const ghosts: Container[] = [];
+    snapshot.table.forEach((pair: TablePair, i: number) => {
+      const a = new CardView(pair.attack);
+      a.x = this.tableRow.x + i * pairColumnWidth;
+      a.y = this.tableRow.y;
+      this.animLayer.addChild(a);
+      ghosts.push(a);
+      if (pair.defense) {
+        const d = new CardView(pair.defense);
+        d.x = this.tableRow.x + i * pairColumnWidth + Math.round(CARD_W * 0.25);
+        d.y = this.tableRow.y + Math.round(CARD_H * 0.4);
+        this.animLayer.addChild(d);
+        ghosts.push(d);
+      }
+    });
+    return ghosts;
+  }
+
+  private takeGhostAnim(view: Container, dest: { x: number; y: number }): Anim {
+    return (onComplete) =>
+      parallel(
+        [
+          this.tweenAnim((cb) =>
+            moveTo(view, dest.x, dest.y, TAKE_MOVE_MS, easeOutBack, this.tweenOpts(cb)),
+          ),
+          this.tweenAnim((cb) => fadeTo(view, 0, TAKE_MOVE_MS, undefined, this.tweenOpts(cb))),
+        ],
+        onComplete,
+      );
+  }
+
+  private discardGhostAnim(view: Container, dest: { x: number; y: number }): Anim {
+    return (onComplete) =>
+      parallel(
+        [
+          this.tweenAnim((cb) =>
+            moveTo(view, dest.x, dest.y, ROUND_END_MOVE_MS, easeOutBack, this.tweenOpts(cb)),
+          ),
+          this.tweenAnim((cb) => fadeTo(view, 0, ROUND_END_MOVE_MS, undefined, this.tweenOpts(cb))),
+        ],
+        onComplete,
+      );
+  }
+
+  private findTableCardView(card: Card): CardView | undefined {
+    for (const child of this.tableRow.children) {
+      const v = child as CardView;
+      if (v.card && cardKey(v.card) === cardKey(card)) return v;
+    }
+    return undefined;
+  }
+
+  private findHandCardView(card: Card): CardView | undefined {
+    for (const child of this.myHandRow.children) {
+      const v = child as CardView;
+      if (v.card && cardKey(v.card) === cardKey(card)) return v;
+    }
+    return undefined;
+  }
+
+  private handRowWorldCenter(seat: SeatIndex): { x: number; y: number } {
+    const isYou = this.snapshot ? seat === this.snapshot.you.seat : true;
+    const row = isYou ? this.myHandRow : this.opponentRow;
+    return {
+      x: row.x + Math.round(row.width / 2 - CARD_W / 2),
+      y: row.y,
+    };
+  }
+
+  private talonWorldPos(): { x: number; y: number } {
+    return { x: this.leftStack.x, y: this.leftStack.y };
+  }
+
+  private discardWorldPos(): { x: number; y: number } {
+    return { x: this.rightStack.x, y: this.rightStack.y };
+  }
+
+  private tweenOpts(onComplete: () => void) {
+    return {
+      ticker: this.ticker,
+      speed: this.animSpeed,
+      onComplete,
+    };
+  }
+
+  private tweenAnim(factory: (onComplete: () => void) => TweenHandle): Anim {
+    return (onComplete) => factory(onComplete);
+  }
+
   private handleKeyDown(event: KeyboardEvent): void {
     if (!this.snapshot) return;
     const key = event.key.toLowerCase();
@@ -756,15 +1006,6 @@ export class GameScreen extends Container implements Screen {
 
 function nextSeat(seat: SeatIndex, playerCount: number): SeatIndex {
   return (seat + 1) % playerCount;
-}
-
-function collectTableKeys(table: TablePair[]): Set<string> {
-  const keys = new Set<string>();
-  for (const pair of table) {
-    keys.add(cardKey(pair.attack));
-    if (pair.defense) keys.add(cardKey(pair.defense));
-  }
-  return keys;
 }
 
 function ranksOnTable(table: TablePair[]): Set<number> {
