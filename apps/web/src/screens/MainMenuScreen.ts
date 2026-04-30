@@ -1,6 +1,9 @@
 import type { BotDifficulty } from "@durak/protocol";
 import { Button, color, FocusManager, Panel, spacing, typography } from "@durak/ui";
 import { Container, Text } from "pixi.js";
+import { easeOutQuad } from "../anim/easings.js";
+import { fadeTo } from "../anim/pixi.js";
+import type { TweenHandle } from "../anim/tween.js";
 import { attachButtonHover, attachFocusNavSfx, withClickSound } from "../audio/index.js";
 import type { Mode } from "../store.js";
 import type { Screen } from "./types.js";
@@ -10,6 +13,7 @@ const PANEL_W = 480;
 // root view's height. layout() centers using the current value.
 const PANEL_H_ROOT = 360;
 const PANEL_H_BOT_DIFFICULTY = 460;
+const FADE_IN_MS = 220;
 
 export interface MainMenuScreenOptions {
   onPlayBot(difficulty: BotDifficulty): void;
@@ -30,6 +34,8 @@ export class MainMenuScreen extends Container implements Screen {
   private panelH = PANEL_H_ROOT;
   private viewW = 0;
   private viewH = 0;
+  private transitioning: TweenHandle | null = null;
+  private readonly onWindowKeyDown: (event: KeyboardEvent) => void;
 
   constructor(options: MainMenuScreenOptions) {
     super();
@@ -53,7 +59,7 @@ export class MainMenuScreen extends Container implements Screen {
     this.panel.addChild(this.title);
 
     this.hint = new Text({
-      text: "ARROWS / TAB MOVE  -  ENTER ACTIVATES",
+      text: "ARROWS / TAB MOVE  -  ENTER ACTIVATES  -  BACKSPACE BACK",
       style: {
         fontFamily: typography.family,
         fontSize: typography.size.xs,
@@ -67,7 +73,22 @@ export class MainMenuScreen extends Container implements Screen {
 
     this.focus = new FocusManager();
     this.detachFocusNavSfx = attachFocusNavSfx(this.focus);
-    this.renderRoot();
+
+    // Backspace / Escape navigates back to root from a sub-view.
+    this.onWindowKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== "Backspace" && event.key !== "Escape") return;
+      if (this.view === "root") return;
+      // Don't fire while the user is typing in an input overlay.
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
+      event.preventDefault();
+      this.transitionTo("root");
+    };
+    window.addEventListener("keydown", this.onWindowKeyDown);
+
+    // Initial render — synchronous, no transition.
+    this.buildRootButtons();
+    this.refreshFocus();
   }
 
   layout(viewWidth: number, viewHeight: number): void {
@@ -87,15 +108,55 @@ export class MainMenuScreen extends Container implements Screen {
   }
 
   dispose(): void {
+    window.removeEventListener("keydown", this.onWindowKeyDown);
+    this.transitioning?.cancel();
+    this.transitioning = null;
     this.detachFocusNavSfx();
     this.focus.detach();
     this.focus.clear();
   }
 
-  private renderRoot(): void {
-    this.view = "root";
-    this.setPanelHeight(PANEL_H_ROOT);
-    this.resetButtons();
+  private transitionTo(target: View): void {
+    if (this.view === target) return;
+    // Cancel any in-flight transition; new view takes over immediately.
+    this.transitioning?.cancel();
+
+    // Tear down old buttons synchronously. Logical view + DOM update happen
+    // in one tick so tests and any synchronous reader see the new state right
+    // away. The animation is a visual layer on top — the new buttons start at
+    // alpha 0 and fade in.
+    for (const b of this.buttons) {
+      this.panel.removeChild(b);
+      b.destroy();
+    }
+    this.buttons = [];
+
+    this.detachFocusNavSfx();
+    this.focus.detach();
+    this.focus.clear();
+    this.focus = new FocusManager();
+    this.detachFocusNavSfx = attachFocusNavSfx(this.focus);
+
+    this.view = target;
+    if (target === "root") {
+      this.setPanelHeight(PANEL_H_ROOT);
+      this.buildRootButtons();
+    } else {
+      this.setPanelHeight(PANEL_H_BOT_DIFFICULTY);
+      this.buildBotDifficultyButtons();
+    }
+    for (const b of this.buttons) b.alpha = 0;
+    this.refreshFocus();
+
+    const fadeInAnims = this.buttons.map(
+      (b) => (done: () => void) => fadeTo(b, 1, FADE_IN_MS, easeOutQuad, { onComplete: done }),
+    );
+    this.transitioning = parallelOnce(fadeInAnims, () => {
+      this.transitioning = null;
+    });
+  }
+
+  private buildRootButtons(): void {
     const buttonW = 260;
     const buttonH = 56;
     const stackY = this.title.y + this.title.height + spacing.xl + spacing.lg;
@@ -104,7 +165,7 @@ export class MainMenuScreen extends Container implements Screen {
       label: "PLAY VS BOT",
       width: buttonW,
       height: buttonH,
-      onActivate: withClickSound(() => this.renderBotDifficulty()),
+      onActivate: withClickSound(() => this.transitionTo("bot-difficulty")),
     });
     attachButtonHover(playBot);
     playBot.x = Math.round((PANEL_W - buttonW) / 2);
@@ -123,14 +184,9 @@ export class MainMenuScreen extends Container implements Screen {
     playFriend.y = stackY + buttonH + spacing.md;
     this.panel.addChild(playFriend);
     this.buttons.push(playFriend);
-
-    this.refreshFocus();
   }
 
-  private renderBotDifficulty(): void {
-    this.view = "bot-difficulty";
-    this.setPanelHeight(PANEL_H_BOT_DIFFICULTY);
-    this.resetButtons();
+  private buildBotDifficultyButtons(): void {
     const buttonW = 260;
     const buttonH = 48;
     const stackY = this.title.y + this.title.height + spacing.xl + spacing.lg;
@@ -158,28 +214,13 @@ export class MainMenuScreen extends Container implements Screen {
       label: "BACK",
       width: buttonW,
       height: buttonH,
-      onActivate: withClickSound(() => this.renderRoot()),
+      onActivate: withClickSound(() => this.transitionTo("root")),
     });
     attachButtonHover(back);
     back.x = Math.round((PANEL_W - buttonW) / 2);
     back.y = stackY + difficulties.length * (buttonH + spacing.sm) + spacing.md;
     this.panel.addChild(back);
     this.buttons.push(back);
-
-    this.refreshFocus();
-  }
-
-  private resetButtons(): void {
-    for (const button of this.buttons) {
-      this.panel.removeChild(button);
-      button.destroy();
-    }
-    this.buttons = [];
-    this.detachFocusNavSfx();
-    this.focus.detach();
-    this.focus.clear();
-    this.focus = new FocusManager();
-    this.detachFocusNavSfx = attachFocusNavSfx(this.focus);
   }
 
   private refreshFocus(): void {
@@ -191,6 +232,40 @@ export class MainMenuScreen extends Container implements Screen {
   testView(): View {
     return this.view;
   }
+
+  // Test seam: trigger a view transition without animation timing concerns.
+  testTransitionTo(target: View): void {
+    this.transitionTo(target);
+  }
+}
+
+// Local helper: run anims in parallel, fire onComplete once when all finish
+// (or immediately if there are none). Mirrors the parallel() compose primitive
+// but lets us avoid wrapping every animation list in an extra closure.
+function parallelOnce(
+  anims: ReadonlyArray<(done: () => void) => TweenHandle>,
+  onComplete: () => void,
+): TweenHandle {
+  if (anims.length === 0) {
+    onComplete();
+    return { cancel: () => {} };
+  }
+  let cancelled = false;
+  let remaining = anims.length;
+  const handles: TweenHandle[] = [];
+  const childDone = (): void => {
+    if (cancelled) return;
+    remaining -= 1;
+    if (remaining === 0) onComplete();
+  };
+  for (const a of anims) handles.push(a(childDone));
+  return {
+    cancel(): void {
+      if (cancelled) return;
+      cancelled = true;
+      for (const h of handles) h.cancel();
+    },
+  };
 }
 
 export type { Mode };
