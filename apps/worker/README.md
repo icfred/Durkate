@@ -54,6 +54,32 @@ implements.
   `POST /rooms`, `GET /ws/:roomId`, `OPTIONS /rooms`, `GET /health`,
   with origin allowlist and per-IP create-room rate limit.
 
+## Bot pacing
+
+Bots don't snap moves the instant it's their turn. Every transition that
+hands the active seat to a bot schedules a `bot-think` deadline via the
+`AlarmScheduler`; firing the alarm runs one bot move and, if the active
+seat is still a bot, schedules the next deadline. The driver replaces the
+old synchronous `runBotTurns()` loop with an alarm chain bounded by the
+existing `botIterationCap` so a misbehaving heuristic still can't spin
+forever.
+
+- Delay model lives in `src/bot-pacing.ts`. Default bounds: 400-1400 ms,
+  scaled per difficulty (easy 0.7, medium 1.0, hard 1.2). The bound is
+  blended from a complexity factor (count of legal actions for the bot at
+  the current state — more options "thinks longer") and a single jitter
+  draw from a *clone* of `state.rng`. Cloning preserves engine purity per
+  ADR-0003: the bot remains a pure observer of `state.rng`.
+- Determinism: same seed + same action sequence -> same think-delay
+  sequence. The pure unit tests in `bot-pacing.test.ts` enforce both the
+  bounds property and the no-mutation contract.
+- Tunable via env: `BOT_THINK_MIN_MS`, `BOT_THINK_MAX_MS`. Setting both to
+  `0` disables pacing — the room falls back to the synchronous fast path
+  for tests and dev.
+- Protocol surface: `RoomStateMessage.thinkingSeats?: SeatIndex[]` lists
+  any bot seats currently in their pre-move delay. The worker populates
+  this whenever a `bot-think` alarm is pending and clears it on fire.
+
 ## Rematch
 
 When the engine reaches `phase: "game-over"`, clients can request a
@@ -158,6 +184,10 @@ Worker name: `durak-server`. Public URL:
   between mid-round `webSocketClose` and forfeit. Same-token
   reconnect inside the window cancels the forfeit. Tests override
   this and use a test-only alarm fire seam.
+- `BOT_THINK_MIN_MS` / `BOT_THINK_MAX_MS` (runtime, defaults 400 / 1400) -
+  bounds for the bot pre-move "thinking" delay. Both `0` disables pacing
+  (bot acts synchronously). The vitest pool sets both to `0` so existing
+  end-to-end bot games stay deterministic without advancing fake time.
 - `CLOUDFLARE_API_TOKEN` (CI secret) - Workers + DO scopes.
 - `CLOUDFLARE_ACCOUNT_ID` (CI secret) - account id for the deploy.
 

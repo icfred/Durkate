@@ -18,7 +18,9 @@ export type DeadlineKind =
   // Room GC: all clients closed mid-game; reconnect cancels.
   | "idle"
   // Room GC: game-over has lingered without rematch / re-engagement.
-  | "stale";
+  | "stale"
+  // Bot pacing: pre-move "thinking" delay before a bot's next action.
+  | "bot-think";
 
 export type PersistedDeadlines = Partial<Record<DeadlineKind, number>>;
 

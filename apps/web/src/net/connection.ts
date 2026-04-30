@@ -68,6 +68,7 @@ export function createConnectionController(
         you: msg.you,
         rematchRequested: msg.rematchRequested,
         disconnect: msg.disconnect ?? null,
+        thinkingSeats: msg.thinkingSeats ?? [],
       });
     },
     onStatus: (status, info) => {

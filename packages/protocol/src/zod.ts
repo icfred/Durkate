@@ -165,6 +165,7 @@ export const roomStateMessageSchema = z.object({
   you: seatSchema.nullable(),
   rematchRequested: z.array(seatSchema),
   disconnect: disconnectStateSchema.nullable().optional(),
+  thinkingSeats: z.array(seatSchema).optional(),
 });
 
 export const serverMessageSchema = z.discriminatedUnion("type", [

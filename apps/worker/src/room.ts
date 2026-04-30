@@ -23,6 +23,7 @@ import {
 } from "@durak/protocol";
 import { ZodError } from "zod";
 import { AlarmScheduler, type DeadlineKind, type PersistedDeadlines } from "./alarms.js";
+import { computeThinkDelay, readThinkBoundsFromEnv, type ThinkBounds } from "./bot-pacing.js";
 import { TokenBucket } from "./rate-limit.js";
 import { redactFor } from "./redact.js";
 
@@ -66,6 +67,8 @@ interface Env {
   TURN_TIMEOUT_MS?: string;
   RATE_LIMIT_CAPACITY?: string;
   DISCONNECT_FORFEIT_MS?: string;
+  BOT_THINK_MIN_MS?: string;
+  BOT_THINK_MAX_MS?: string;
 }
 
 export class Room extends DurableObject<Env> {
@@ -80,6 +83,7 @@ export class Room extends DurableObject<Env> {
   private readonly disconnectForfeitMs: number;
   private readonly botIterationCap: number;
   private readonly rateLimitCapacity: number;
+  private thinkBounds: ThinkBounds;
   private readonly alarms: AlarmScheduler;
   // Per-connection rate-limit buckets. WeakMap so hibernated sockets dropped
   // by miniflare clean up automatically; new buckets are lazily reconstructed
@@ -99,6 +103,7 @@ export class Room extends DurableObject<Env> {
       Number.isFinite(capacityOverride) && capacityOverride > 0
         ? capacityOverride
         : DEFAULT_RATE_LIMIT.capacity;
+    this.thinkBounds = readThinkBoundsFromEnv(env);
     this.alarms = new AlarmScheduler(this.ctx.storage);
     void this.ctx.blockConcurrencyWhile(async () => {
       const persisted = await this.ctx.storage.get<PersistedRoom>(STORAGE_KEY);
@@ -326,6 +331,8 @@ export class Room extends DurableObject<Env> {
         if (this.handleTurnTimeout()) mutated = true;
       } else if (kind === "forfeit") {
         if (this.handleForfeit()) mutated = true;
+      } else if (kind === "bot-think") {
+        if (this.handleBotThink()) mutated = true;
       } else if (kind === "abandoned" || kind === "idle" || kind === "stale") {
         await this.evict(kind);
         // evict deletes all storage so we don't persist after.
@@ -356,14 +363,20 @@ export class Room extends DurableObject<Env> {
     this.alarms.cancel("abandoned");
     this.alarms.cancel("idle");
     this.alarms.cancel("stale");
+    this.alarms.cancel("bot-think");
     await this.ctx.storage.deleteAll();
   }
 
   // Schedule (or refresh) the stale-finished eviction iff the engine has
   // entered game-over. Cancel it otherwise. Called after every action /
-  // rematch / forfeit so phase transitions are tracked centrally.
+  // rematch / forfeit so phase transitions are tracked centrally. Also
+  // tears down the turn timer and any pending bot-think alarm — once the
+  // game is over neither has anything to act on.
   private bumpStaleIfFinished(): void {
     if (this.engineState !== null && this.engineState.phase === "game-over") {
+      this.alarms.cancel("turn-timeout");
+      this.alarms.cancel("bot-think");
+      this.botChainCount = 0;
       if (!this.alarms.has("stale")) {
         this.alarms.schedule("stale", Date.now() + STALE_MS);
       }
@@ -386,8 +399,8 @@ export class Room extends DurableObject<Env> {
     }
     this.engineState = result.state;
     this.broadcast(result.events);
-    this.runBotTurns();
     this.scheduleTurnTimer();
+    this.armBotTurnIfNeeded();
     this.bumpStaleIfFinished();
     return true;
   }
@@ -403,6 +416,8 @@ export class Room extends DurableObject<Env> {
     this.engineState = forfeit;
     this.disconnect = null;
     this.alarms.cancel("turn-timeout");
+    this.alarms.cancel("bot-think");
+    this.botChainCount = 0;
     this.broadcast([{ type: "GAME_OVER", durak: seat }]);
     this.broadcastRoomState();
     this.bumpStaleIfFinished();
@@ -471,8 +486,8 @@ export class Room extends DurableObject<Env> {
     this.engineState = result.state;
     this.rematchSeats = new Array<boolean>(SEAT_COUNT).fill(false);
     this.broadcast(result.events);
-    this.runBotTurns();
     this.scheduleTurnTimer();
+    this.armBotTurnIfNeeded();
     void this.persist();
   }
 
@@ -508,6 +523,8 @@ export class Room extends DurableObject<Env> {
   private fireRematch(): void {
     this.cancelTurnTimer();
     this.alarms.cancel("stale");
+    this.alarms.cancel("bot-think");
+    this.botChainCount = 0;
     this.engineState = null;
     this.rematchSeats = new Array<boolean>(SEAT_COUNT).fill(false);
     this.broadcastRoomState();
@@ -530,28 +547,117 @@ export class Room extends DurableObject<Env> {
     this.engineState = result.state;
     this.cancelTurnTimer();
     this.broadcast(result.events);
-    this.runBotTurns();
+    this.armBotTurnIfNeeded();
     this.scheduleTurnTimer();
     this.bumpStaleIfFinished();
     return { ok: true, state: this.engineState, events: result.events };
   }
 
-  private runBotTurns(): void {
-    if (this.botSeat === null) return;
-    for (let i = 0; i < this.botIterationCap; i++) {
-      if (this.engineState === null || this.engineState.phase !== "in-round") return;
-      const active = activeActorSeat(this.engineState);
-      if (active !== this.botSeat) return;
-      const action = bot.choose(this.engineState, { difficulty: this.botDifficulty });
-      const result = step(this.engineState, action);
-      if (!result.ok) {
-        this.sendErrorToHuman("BOT_ILLEGAL_ACTION", `bot rejected: ${result.reason}`);
-        return;
-      }
-      this.engineState = result.state;
-      this.broadcast(result.events);
+  // Single bot iteration counter, reset whenever a non-bot move lands. The
+  // counter exists to bound runaway alarm chains (every fire schedules the
+  // next), echoing the old synchronous loop's botIterationCap. Reset by the
+  // engine reaching a phase change or a non-bot active seat.
+  private botChainCount = 0;
+
+  // If the active seat is a bot, schedule a `bot-think` alarm and announce
+  // the thinking seat to clients via RoomState. Otherwise clears any
+  // outstanding bot-think state. Idempotent — safe to call after every
+  // engine transition.
+  private armBotTurnIfNeeded(): void {
+    if (this.botSeat === null) {
+      this.botChainCount = 0;
+      this.clearThinkingState();
+      return;
     }
-    this.sendErrorToHuman("BOT_LOOP_CAP", "bot iteration cap reached");
+    if (this.engineState === null || this.engineState.phase !== "in-round") {
+      this.botChainCount = 0;
+      this.clearThinkingState();
+      return;
+    }
+    const active = activeActorSeat(this.engineState);
+    if (active !== this.botSeat) {
+      this.botChainCount = 0;
+      this.clearThinkingState();
+      return;
+    }
+    if (this.botChainCount >= this.botIterationCap) {
+      this.botChainCount = 0;
+      this.clearThinkingState();
+      this.sendErrorToHuman("BOT_LOOP_CAP", "bot iteration cap reached");
+      return;
+    }
+    this.botChainCount += 1;
+    const delay = computeThinkDelay({
+      state: this.engineState,
+      seat: this.botSeat,
+      difficulty: this.botDifficulty,
+      bounds: this.thinkBounds,
+    });
+    if (delay <= 0) {
+      // Pacing disabled (env override) — fall back to synchronous play so
+      // tests that rely on instant bot turns keep their existing shape.
+      const moved = this.runBotMoveNow();
+      if (moved) {
+        this.scheduleTurnTimer();
+        this.bumpStaleIfFinished();
+        this.armBotTurnIfNeeded();
+      }
+      return;
+    }
+    this.alarms.schedule("bot-think", Date.now() + delay);
+    this.broadcastRoomState();
+  }
+
+  private clearThinkingState(): void {
+    if (this.alarms.has("bot-think")) {
+      this.alarms.cancel("bot-think");
+      this.broadcastRoomState();
+    }
+  }
+
+  // Alarm handler: run one bot move, then reschedule if still the bot's
+  // turn. Caller (`dispatchFired`) calls `persist()` afterwards when this
+  // returns true.
+  private handleBotThink(): boolean {
+    if (this.botSeat === null) return false;
+    if (this.engineState === null || this.engineState.phase !== "in-round") {
+      this.botChainCount = 0;
+      this.broadcastRoomState();
+      return true;
+    }
+    const active = activeActorSeat(this.engineState);
+    if (active !== this.botSeat) {
+      this.botChainCount = 0;
+      this.broadcastRoomState();
+      return true;
+    }
+    // Clear thinking before running the move so the broadcast in the move
+    // doesn't carry stale `thinkingSeats`.
+    this.broadcastRoomState();
+    const moved = this.runBotMoveNow();
+    if (!moved) return true;
+    this.scheduleTurnTimer();
+    this.armBotTurnIfNeeded();
+    this.bumpStaleIfFinished();
+    return true;
+  }
+
+  // Synchronously runs one bot.choose -> step. Returns true if a move
+  // landed. Used by the alarm handler and by the zero-delay fast path.
+  private runBotMoveNow(): boolean {
+    if (this.botSeat === null) return false;
+    if (this.engineState === null || this.engineState.phase !== "in-round") return false;
+    const active = activeActorSeat(this.engineState);
+    if (active !== this.botSeat) return false;
+    const action = bot.choose(this.engineState, { difficulty: this.botDifficulty });
+    const result = step(this.engineState, action);
+    if (!result.ok) {
+      this.sendErrorToHuman("BOT_ILLEGAL_ACTION", `bot rejected: ${result.reason}`);
+      return false;
+    }
+    this.engineState = result.state;
+    this.broadcast(result.events);
+    return true;
   }
 
   // ─── broadcasting ──────────────────────────────────────────────────────
@@ -579,6 +685,8 @@ export class Room extends DurableObject<Env> {
       if (this.rematchSeats[i]) rematchRequested.push(i);
     }
     const disconnect = this.disconnect;
+    const thinkingSeats: SeatIndex[] =
+      this.botSeat !== null && this.alarms.has("bot-think") ? [this.botSeat] : [];
     for (const ws of this.ctx.getWebSockets()) {
       const seat = this.seatForWebSocket(ws);
       if (seat === undefined) continue;
@@ -589,6 +697,7 @@ export class Room extends DurableObject<Env> {
         you: seat,
         rematchRequested,
         disconnect,
+        thinkingSeats,
       };
       this.send(ws, msg);
     }
@@ -645,6 +754,17 @@ export class Room extends DurableObject<Env> {
 
   testBotDifficulty(): BotDifficulty {
     return this.botDifficulty;
+  }
+
+  // Test seam: override the bot pacing bounds without rebooting the DO.
+  // Production code reads them from env once in the constructor; tests
+  // toggle them per-case to exercise the alarm path.
+  testSetThinkBounds(bounds: ThinkBounds): void {
+    this.thinkBounds = bounds;
+  }
+
+  testThinkBounds(): ThinkBounds {
+    return this.thinkBounds;
   }
 }
 

@@ -57,6 +57,8 @@ export interface RoomMembership {
   you: SeatIndex | null;
   rematchRequested: SeatIndex[];
   disconnect: DisconnectState | null;
+  /** Bot seats currently in their pre-move "thinking" delay. Empty otherwise. */
+  thinkingSeats: SeatIndex[];
 }
 
 export type RoomCreationState =
