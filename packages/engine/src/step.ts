@@ -53,6 +53,7 @@ export type Event =
       defender: number;
     }
   | { type: "TALON_DRAWN"; by: number; cards: Card[] }
+  | { type: "PLAYER_OUT"; seat: number }
   | { type: "GAME_OVER"; durak: number | null };
 
 export type StepResult =
@@ -90,7 +91,7 @@ function startGame(state: State): StepResult {
     throw new Error("START_GAME requires phase 'pre-deal'");
   }
   const dealt = state.playerCount * HAND_TARGET;
-  if (dealt + 1 > 36) {
+  if (dealt > 36) {
     throw new RangeError("playerCount too large for a 36-card deck");
   }
   const rng = rngFromState(state.rng);
@@ -100,9 +101,28 @@ function startGame(state: State): StepResult {
     hands.push(shuffled.slice(p * HAND_TARGET, (p + 1) * HAND_TARGET));
   }
   const remaining = shuffled.slice(dealt);
-  const trumpCard = remaining[remaining.length - 1] as Card;
-  const talon = remaining.slice(0, -1);
-  const attacker = pickAttacker(hands, trumpCard.suit);
+  let trumpCard: Card | null;
+  let trumpSuit: Suit;
+  let talon: Card[];
+  let trumpForEvent: Card;
+  if (remaining.length > 0) {
+    trumpCard = remaining[remaining.length - 1] as Card;
+    trumpSuit = trumpCard.suit;
+    talon = remaining.slice(0, -1);
+    trumpForEvent = trumpCard;
+  } else {
+    // 6-player deal: deck is exactly exhausted (6 * 6 = 36). The last-
+    // dealt card serves as the trump indicator — its suit fixes the
+    // trump suit but the card itself stays in the last seat's hand, so
+    // `trumpCard` is null. The GAME_STARTED event still surfaces the
+    // indicator card so consumers can render it face-up.
+    const lastCard = shuffled[shuffled.length - 1] as Card;
+    trumpSuit = lastCard.suit;
+    trumpCard = null;
+    talon = [];
+    trumpForEvent = lastCard;
+  }
+  const attacker = pickAttacker(hands, trumpSuit);
   const defender = (attacker + 1) % state.playerCount;
   const next: InRoundState = {
     phase: "in-round",
@@ -110,7 +130,7 @@ function startGame(state: State): StepResult {
     rng: rng.state,
     hands,
     talon,
-    trumpSuit: trumpCard.suit,
+    trumpSuit,
     trumpCard,
     table: [],
     attacker,
@@ -120,7 +140,7 @@ function startGame(state: State): StepResult {
   return {
     ok: true,
     state: next,
-    events: [{ type: "GAME_STARTED", trump: trumpCard, attacker }],
+    events: [{ type: "GAME_STARTED", trump: trumpForEvent, attacker }],
   };
 }
 
@@ -149,11 +169,11 @@ function attack(state: State, action: { type: "ATTACK"; by: number; card: Card }
     return { ok: false, reason: "DEFENDER_OVERWHELMED" };
   }
   const next = withPlayedAttack(state, action.by, handIdx, action.card);
-  return {
-    ok: true,
-    state: next,
-    events: [{ type: "CARD_PLAYED", by: action.by, role: "ATTACK", card: action.card }],
-  };
+  const events: Event[] = [
+    { type: "CARD_PLAYED", by: action.by, role: "ATTACK", card: action.card },
+    ...newlyOutEvents(state, next),
+  ];
+  return { ok: true, state: next, events };
 }
 
 function throwIn(state: State, action: { type: "THROW_IN"; by: number; card: Card }): StepResult {
@@ -175,11 +195,11 @@ function throwIn(state: State, action: { type: "THROW_IN"; by: number; card: Car
     return { ok: false, reason: "DEFENDER_OVERWHELMED" };
   }
   const next = withPlayedAttack(state, action.by, handIdx, action.card);
-  return {
-    ok: true,
-    state: next,
-    events: [{ type: "CARD_PLAYED", by: action.by, role: "THROW_IN", card: action.card }],
-  };
+  const events: Event[] = [
+    { type: "CARD_PLAYED", by: action.by, role: "THROW_IN", card: action.card },
+    ...newlyOutEvents(state, next),
+  ];
+  return { ok: true, state: next, events };
 }
 
 function defend(
@@ -205,19 +225,17 @@ function defend(
     return { ok: false, reason: "DOES_NOT_BEAT" };
   }
   const next = withPlayedDefense(state, action.by, handIdx, action.target, action.card);
-  return {
-    ok: true,
-    state: next,
-    events: [
-      {
-        type: "CARD_PLAYED",
-        by: action.by,
-        role: "DEFEND",
-        card: action.card,
-        target: action.target,
-      },
-    ],
-  };
+  const events: Event[] = [
+    {
+      type: "CARD_PLAYED",
+      by: action.by,
+      role: "DEFEND",
+      card: action.card,
+      target: action.target,
+    },
+    ...newlyOutEvents(state, next),
+  ];
+  return { ok: true, state: next, events };
 }
 
 function takePile(state: State, action: { type: "TAKE_PILE"; by: number }): StepResult {
@@ -227,24 +245,16 @@ function takePile(state: State, action: { type: "TAKE_PILE"; by: number }): Step
   const taken = collectTableCards(state.table);
   const prevAttacker = state.attacker;
   const prevDefender = state.defender;
-  const newAttacker = (prevDefender + 1) % state.playerCount;
-  const newDefender = (newAttacker + 1) % state.playerCount;
+  const eliminatedBefore = eliminatedSeatsOf(state);
   const afterTake: InRoundState = {
     ...state,
     hands: state.hands.map((h, i) => (i === prevDefender ? [...h, ...taken] : h)),
     table: [],
-    attacker: newAttacker,
-    defender: newDefender,
   };
-  return finalizeRoundEnd(afterTake, prevAttacker, prevDefender, [
-    {
-      type: "PILE_TAKEN",
-      by: prevDefender,
-      cards: taken,
-      attacker: newAttacker,
-      defender: newDefender,
-    },
-  ]);
+  return finalizeRoundEnd(afterTake, prevAttacker, prevDefender, eliminatedBefore, {
+    type: "TAKE_PILE",
+    cards: taken,
+  });
 }
 
 function endRound(state: State, action: { type: "END_ROUND"; by: number }): StepResult {
@@ -255,18 +265,16 @@ function endRound(state: State, action: { type: "END_ROUND"; by: number }): Step
   const discarded = collectTableCards(state.table);
   const prevAttacker = state.attacker;
   const prevDefender = state.defender;
-  const newAttacker = prevDefender;
-  const newDefender = (newAttacker + 1) % state.playerCount;
+  const eliminatedBefore = eliminatedSeatsOf(state);
   const afterEnd: InRoundState = {
     ...state,
     table: [],
     discard: [...state.discard, ...discarded],
-    attacker: newAttacker,
-    defender: newDefender,
   };
-  return finalizeRoundEnd(afterEnd, prevAttacker, prevDefender, [
-    { type: "ROUND_ENDED", discarded, attacker: newAttacker, defender: newDefender },
-  ]);
+  return finalizeRoundEnd(afterEnd, prevAttacker, prevDefender, eliminatedBefore, {
+    type: "END_ROUND",
+    discarded,
+  });
 }
 
 function timeout(state: State, action: { type: "TIMEOUT"; by: number }): StepResult {
@@ -281,15 +289,45 @@ function timeout(state: State, action: { type: "TIMEOUT"; by: number }): StepRes
   return { ok: false, reason: "TIMEOUT_NOT_ACTIVE_SEAT" };
 }
 
+type FinalizeKind = { type: "TAKE_PILE"; cards: Card[] } | { type: "END_ROUND"; discarded: Card[] };
+
 function finalizeRoundEnd(
-  rotated: InRoundState,
+  cleared: InRoundState,
   prevAttacker: number,
   prevDefender: number,
-  baseEvents: Event[],
+  eliminatedBefore: ReadonlySet<number>,
+  kind: FinalizeKind,
 ): StepResult {
-  const { state: replenished, drawnEvents } = replenish(rotated, prevAttacker, prevDefender);
-  const events: Event[] = [...baseEvents, ...drawnEvents];
+  const { state: replenished, drawnEvents } = replenish(cleared, prevAttacker, prevDefender);
+  const eliminatedNow = eliminatedSeatsOf(replenished);
+  const newlyOut: number[] = [];
+  for (let seat = 0; seat < replenished.playerCount; seat++) {
+    if (eliminatedNow.has(seat) && !eliminatedBefore.has(seat)) {
+      newlyOut.push(seat);
+    }
+  }
+  const playerOutEvents: Event[] = newlyOut.map((seat) => ({ type: "PLAYER_OUT", seat }));
+
   const over = detectGameOver(replenished);
+  const rotation = rotateRoles(replenished.playerCount, prevDefender, eliminatedNow, kind.type);
+
+  const baseEvent: Event =
+    kind.type === "TAKE_PILE"
+      ? {
+          type: "PILE_TAKEN",
+          by: prevDefender,
+          cards: kind.cards,
+          attacker: rotation.attacker,
+          defender: rotation.defender,
+        }
+      : {
+          type: "ROUND_ENDED",
+          discarded: kind.discarded,
+          attacker: rotation.attacker,
+          defender: rotation.defender,
+        };
+
+  const events: Event[] = [baseEvent, ...drawnEvents, ...playerOutEvents];
   if (over) {
     const final: GameOverState = {
       phase: "game-over",
@@ -304,7 +342,78 @@ function finalizeRoundEnd(
     events.push({ type: "GAME_OVER", durak: over.durak });
     return { ok: true, state: final, events };
   }
-  return { ok: true, state: replenished, events };
+  const next: InRoundState = {
+    ...replenished,
+    attacker: rotation.attacker,
+    defender: rotation.defender,
+  };
+  return { ok: true, state: next, events };
+}
+
+function rotateRoles(
+  playerCount: number,
+  prevDefender: number,
+  eliminated: ReadonlySet<number>,
+  kind: "TAKE_PILE" | "END_ROUND",
+): { attacker: number; defender: number } {
+  // END_ROUND: prev defender becomes new attacker (Podkidnoy: a successful
+  // defender attacks left). TAKE_PILE: prev defender is skipped, the next
+  // active seat after them attacks.
+  const includeStart = kind === "END_ROUND";
+  const activeAttacker = firstActiveSeatFrom(playerCount, prevDefender, eliminated, includeStart);
+  if (activeAttacker < 0) {
+    // No active seats remain (every seat eliminated). Falls back to naive
+    // rotation; values are emitted on the terminal event but the state
+    // transitions to game-over so they are not used for further play.
+    const naiveAttacker = kind === "TAKE_PILE" ? (prevDefender + 1) % playerCount : prevDefender;
+    return { attacker: naiveAttacker, defender: (naiveAttacker + 1) % playerCount };
+  }
+  const activeDefender = firstActiveSeatFrom(playerCount, activeAttacker, eliminated, false);
+  if (activeDefender < 0 || activeDefender === activeAttacker) {
+    // Exactly one active seat (the durak); game-over fires this transition.
+    return { attacker: activeAttacker, defender: (activeAttacker + 1) % playerCount };
+  }
+  return { attacker: activeAttacker, defender: activeDefender };
+}
+
+function firstActiveSeatFrom(
+  playerCount: number,
+  start: number,
+  eliminated: ReadonlySet<number>,
+  includeStart: boolean,
+): number {
+  const offset = includeStart ? 0 : 1;
+  for (let i = offset; i < playerCount; i++) {
+    const seat = (start + i) % playerCount;
+    if (!eliminated.has(seat)) return seat;
+  }
+  return -1;
+}
+
+function newlyOutEvents(
+  pre: { hands: readonly (readonly Card[])[]; talon: readonly Card[]; trumpCard: Card | null },
+  post: { hands: readonly (readonly Card[])[]; talon: readonly Card[]; trumpCard: Card | null },
+): Event[] {
+  const before = eliminatedSeatsOf(pre);
+  const after = eliminatedSeatsOf(post);
+  const out: Event[] = [];
+  for (const seat of after) {
+    if (!before.has(seat)) out.push({ type: "PLAYER_OUT", seat });
+  }
+  return out;
+}
+
+function eliminatedSeatsOf(s: {
+  hands: readonly (readonly Card[])[];
+  talon: readonly Card[];
+  trumpCard: Card | null;
+}): Set<number> {
+  if (s.talon.length > 0 || s.trumpCard !== null) return new Set();
+  const out = new Set<number>();
+  for (let i = 0; i < s.hands.length; i++) {
+    if ((s.hands[i] as readonly Card[]).length === 0) out.add(i);
+  }
+  return out;
 }
 
 function replenish(

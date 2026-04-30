@@ -115,8 +115,25 @@ describe("step START_GAME", () => {
     expect(() => step(state, { type: "START_GAME" })).toThrow();
   });
 
-  it("rejects player counts that exceed deck capacity", () => {
-    expect(() => deal(1, 6)).toThrow(RangeError);
+  it("rejects player counts that exceed deck capacity (7+)", () => {
+    expect(() => deal(1, 7)).toThrow(RangeError);
+  });
+
+  it("supports 6 players by using the last-dealt card as the trump indicator", () => {
+    const init = initialState({ seed: 42, playerCount: 6 });
+    const { state, events } = expectOk(step(init, { type: "START_GAME" }));
+    expect(state.hands).toHaveLength(6);
+    for (const hand of state.hands) {
+      expect(hand).toHaveLength(6);
+    }
+    expect(state.talon).toHaveLength(0);
+    expect(state.trumpCard).toBeNull();
+    const allCards = state.hands.flat();
+    expect(allCards).toHaveLength(36);
+    expect(new Set(allCards.map(cardKey)).size).toBe(36);
+    const started = events[0] as Extract<Event, { type: "GAME_STARTED" }>;
+    expect(started.type).toBe("GAME_STARTED");
+    expect(started.trump.suit).toBe(state.trumpSuit);
   });
 
   it("produces a JSON-serializable state", () => {
@@ -1408,5 +1425,289 @@ describe("step golden full-game trace", () => {
     expect(JSON.stringify(b)).toBe(JSON.stringify(a));
     expect(a.finalPhase).toBe("game-over");
     expect(a.events.at(-1)?.type).toBe("GAME_OVER");
+  });
+});
+
+// ─── N-player FFA (3-6 seats) ──────────────────────────────────────────────
+
+function pickLegalActionN(s: InRoundState, choice: number, trumpSuit: Suit): Action | null {
+  const attackerHand = s.hands[s.attacker] as Card[];
+  const defenderHand = s.hands[s.defender] as Card[];
+  const undefendedCount = s.table.reduce((n, p) => (p.defense ? n : n + 1), 0);
+
+  const tryDefend = (): Action | null => {
+    const undefendedIdx = s.table.findIndex((p) => !p.defense);
+    if (undefendedIdx < 0) return null;
+    const target = s.table[undefendedIdx] as TablePair;
+    const defenders = defenderHand.filter((c) => beats(c, target.attack, trumpSuit));
+    if (defenders.length === 0) return null;
+    const card = defenders[choice % defenders.length] as Card;
+    return { type: "DEFEND", by: s.defender, card, target: undefendedIdx };
+  };
+
+  const tryAnyThrowIn = (): Action | null => {
+    if (s.table.length === 0) return null;
+    if (s.table.length >= 6) return null;
+    if (undefendedCount + 1 > defenderHand.length) return null;
+    const ranks = new Set<number>();
+    for (const p of s.table) {
+      ranks.add(p.attack.rank);
+      if (p.defense) ranks.add(p.defense.rank);
+    }
+    for (let off = 0; off < s.playerCount; off++) {
+      const seat = (s.attacker + off) % s.playerCount;
+      if (seat === s.defender) continue;
+      const hand = s.hands[seat] as Card[];
+      const candidates = hand.filter((c) => ranks.has(c.rank));
+      if (candidates.length > 0) {
+        const card = candidates[choice % candidates.length] as Card;
+        return { type: "THROW_IN", by: seat, card };
+      }
+    }
+    return null;
+  };
+
+  if (s.table.length > 0 && undefendedCount > 0 && choice % 11 === 0) {
+    return { type: "TAKE_PILE", by: s.defender };
+  }
+
+  if (s.table.length > 0 && undefendedCount === 0 && choice % 7 === 0) {
+    return { type: "END_ROUND", by: s.attacker };
+  }
+
+  if (choice % 3 === 0) {
+    const action = tryDefend();
+    if (action) return action;
+  }
+
+  if (s.table.length === 0) {
+    if (attackerHand.length === 0 || defenderHand.length === 0) return null;
+    const card = attackerHand[choice % attackerHand.length] as Card;
+    return { type: "ATTACK", by: s.attacker, card };
+  }
+
+  const throwIn = tryAnyThrowIn();
+  if (throwIn) return throwIn;
+
+  const defend = tryDefend();
+  if (defend) return defend;
+
+  if (undefendedCount > 0) return { type: "TAKE_PILE", by: s.defender };
+  if (s.table.length > 0) return { type: "END_ROUND", by: s.attacker };
+  return null;
+}
+
+function totalCardsN(s: InRoundState | GameOverState): number {
+  let defenseCount = 0;
+  const tableLength = s.phase === "in-round" ? s.table.length : 0;
+  if (s.phase === "in-round") {
+    for (const p of s.table) if (p.defense) defenseCount++;
+  }
+  const talonLength = s.phase === "in-round" ? s.talon.length : 0;
+  return (
+    s.hands.flat().length +
+    tableLength +
+    defenseCount +
+    talonLength +
+    (s.trumpCard ? 1 : 0) +
+    s.discard.length
+  );
+}
+
+describe("step N-player FFA property", () => {
+  for (const playerCount of [3, 4, 5, 6] as const) {
+    it(`completes with one durak (or draw) at N=${playerCount} (property)`, () => {
+      fc.assert(
+        fc.property(fc.integer({ min: 1, max: 5000 }), (seed) => {
+          let s: State = deal(seed, playerCount);
+          if (s.phase !== "in-round") throw new Error("expected in-round after deal");
+          const initialTotal = playerCount === 6 ? 36 : 36;
+          let steps = 0;
+          const STEP_CAP = 8000;
+          while (s.phase === "in-round" && steps < STEP_CAP) {
+            const action = pickLegalActionN(s, seed * 31 + steps, s.trumpSuit);
+            if (!action) throw new Error("no legal action available before game-over");
+            const r = step(s, action);
+            if (!r.ok) throw new Error(`unexpected rejection at N=${playerCount}: ${r.reason}`);
+            s = r.state;
+            if (s.phase === "in-round") {
+              expect(totalCardsN(s)).toBe(initialTotal);
+            }
+            steps++;
+          }
+          expect(s.phase).toBe("game-over");
+          if (s.phase !== "game-over") return;
+          expect(totalCardsN(s)).toBe(initialTotal);
+          const withCards = s.hands.filter((h) => h.length > 0).length;
+          if (s.durak === null) {
+            expect(withCards).toBe(0);
+          } else {
+            expect(withCards).toBe(1);
+            expect(s.hands[s.durak]?.length).toBeGreaterThan(0);
+          }
+        }),
+        { numRuns: 50 },
+      );
+    });
+  }
+});
+
+describe("step N-player FFA golden traces", () => {
+  for (const playerCount of [2, 4, 6] as const) {
+    it(`produces a byte-identical event trace from a fixed seed at N=${playerCount}`, () => {
+      const runOnce = () => {
+        let s: State = deal(11, playerCount);
+        const allEvents: Event[] = [];
+        let steps = 0;
+        while (s.phase === "in-round" && steps < 8000) {
+          const action = pickLegalActionN(s, 11 * 31 + steps, s.trumpSuit);
+          if (!action) throw new Error("no legal action");
+          const r = step(s, action);
+          if (!r.ok) throw new Error(`rejection: ${r.reason}`);
+          for (const e of r.events) allEvents.push(e);
+          s = r.state;
+          steps++;
+        }
+        return { steps, finalPhase: s.phase, events: allEvents };
+      };
+      const a = runOnce();
+      const b = runOnce();
+      expect(JSON.stringify(b)).toBe(JSON.stringify(a));
+      expect(a.finalPhase).toBe("game-over");
+      expect(a.events.at(-1)?.type).toBe("GAME_OVER");
+    });
+  }
+});
+
+describe("step THROW_IN N-player rights", () => {
+  const trump = card("hearts", 11);
+
+  it("at N=4, every non-defender (seats 0, 2, 3) may throw in", () => {
+    const tableState = (): InRoundState =>
+      mkInRound({
+        trump,
+        hands: [
+          [card("clubs", 8), card("spades", 7)],
+          [card("diamonds", 14), card("hearts", 14)],
+          [card("diamonds", 8), card("spades", 9)],
+          [card("hearts", 8), card("spades", 10)],
+        ],
+        table: [{ attack: card("spades", 8), defense: card("spades", 9) }],
+        attacker: 0,
+        defender: 1,
+      });
+    // Seat 0 (original attacker) throws in.
+    expectOk(step(tableState(), { type: "THROW_IN", by: 0, card: card("clubs", 8) }));
+    // Seat 2 (non-attacker, non-defender) throws in.
+    expectOk(step(tableState(), { type: "THROW_IN", by: 2, card: card("diamonds", 8) }));
+    // Seat 3 (non-attacker, non-defender) throws in.
+    expectOk(step(tableState(), { type: "THROW_IN", by: 3, card: card("hearts", 8) }));
+    // Defender seat 1 still rejected.
+    expect(step(tableState(), { type: "THROW_IN", by: 1, card: card("hearts", 14) })).toEqual({
+      ok: false,
+      reason: "DEFENDER_CANNOT_ATTACK",
+    });
+  });
+});
+
+describe("step elimination at N=4", () => {
+  const trump = card("hearts", 11);
+
+  it("DEFEND emits PLAYER_OUT for the defender when they play their last card with empty talon", () => {
+    const state = mkInRound({
+      trump,
+      trumpCard: null,
+      talon: [],
+      hands: [
+        [card("clubs", 7), card("spades", 7)],
+        [card("clubs", 9)],
+        [card("spades", 9)],
+        [card("hearts", 6), card("hearts", 7)],
+      ],
+      table: [{ attack: card("clubs", 8) }],
+      attacker: 0,
+      defender: 1,
+    });
+    const r = step(state, { type: "DEFEND", by: 1, card: card("clubs", 9), target: 0 });
+    if (!r.ok) throw new Error(`unexpected rejection: ${r.reason}`);
+    const playerOut = r.events.filter((e) => e.type === "PLAYER_OUT");
+    expect(playerOut).toEqual([{ type: "PLAYER_OUT", seat: 1 }]);
+  });
+
+  it("subsequent rotation at N=4 skips an already-eliminated seat", () => {
+    // Pre-state: seat 1 is eliminated (no cards, talon exhausted). On
+    // END_ROUND, prevDefender is seat 0 and standard rotation would set
+    // newDefender to seat 1; the new code should advance past seat 1 to
+    // seat 2.
+    const state = mkInRound({
+      trump,
+      trumpCard: null,
+      talon: [],
+      hands: [
+        [card("clubs", 6)],
+        [],
+        [card("spades", 9), card("spades", 10)],
+        [card("hearts", 6), card("hearts", 7)],
+      ],
+      table: [{ attack: card("clubs", 8), defense: card("clubs", 9) }],
+      attacker: 3,
+      defender: 0,
+    });
+    const r = step(state, { type: "END_ROUND", by: 3 });
+    if (!r.ok) throw new Error(`unexpected rejection: ${r.reason}`);
+    if (r.state.phase !== "in-round") throw new Error("expected in-round");
+    // prevDefender=0 → standard rotation makes seat 0 the new attacker
+    // and seat 1 the new defender. seat 1 is eliminated, so defender
+    // advances to seat 2.
+    expect(r.state.attacker).toBe(0);
+    expect(r.state.defender).toBe(2);
+    // Seat 1 was already out before the action; no fresh PLAYER_OUT fires.
+    expect(r.events.filter((e) => e.type === "PLAYER_OUT")).toEqual([]);
+  });
+
+  it("TAKE_PILE rotation at N=4 skips an already-eliminated seat", () => {
+    // Defender seat 1 takes pile. Seat 2 is eliminated. Standard rotation
+    // would land seat 2 as the new attacker (defender + 1); it must skip
+    // to seat 3 instead.
+    const state = mkInRound({
+      trump,
+      trumpCard: null,
+      talon: [],
+      hands: [
+        [card("clubs", 6), card("clubs", 7)],
+        [card("diamonds", 9)],
+        [],
+        [card("hearts", 6), card("hearts", 7)],
+      ],
+      table: [{ attack: card("spades", 8) }],
+      attacker: 0,
+      defender: 1,
+    });
+    const r = step(state, { type: "TAKE_PILE", by: 1 });
+    if (!r.ok) throw new Error(`unexpected rejection: ${r.reason}`);
+    if (r.state.phase !== "in-round") throw new Error("expected in-round");
+    expect(r.state.attacker).toBe(3);
+    expect(r.state.defender).toBe(0);
+  });
+
+  it("emits PLAYER_OUT during END_ROUND when talon runs dry mid-replenishment", () => {
+    // Talon has 2 cards. Replenish order is [attacker=0, then seat 2,
+    // seat 3, then defender=1 last]. Seat 0 needs 5; seat 2 needs 6;
+    // talon depletes before seat 2 fills. Seat 3 has no cards in hand
+    // and gets nothing. Result: seat 3 is newly eliminated (and talon
+    // is now empty, trump card already null).
+    const state = mkInRound({
+      trump,
+      trumpCard: null,
+      talon: [card("clubs", 12), card("clubs", 13)],
+      hands: [[card("spades", 6)], [card("diamonds", 6)], [card("hearts", 6)], []],
+      table: [{ attack: card("clubs", 8), defense: card("clubs", 9) }],
+      attacker: 0,
+      defender: 1,
+    });
+    const r = step(state, { type: "END_ROUND", by: 0 });
+    if (!r.ok) throw new Error(`unexpected rejection: ${r.reason}`);
+    const playerOut = r.events.filter((e) => e.type === "PLAYER_OUT");
+    expect(playerOut).toEqual([{ type: "PLAYER_OUT", seat: 3 }]);
   });
 });

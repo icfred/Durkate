@@ -43,7 +43,12 @@ State and step (DUR-6):
   it becomes `null` once drawn during replenishment. Use `trumpSuit` for
   `beats` checks.
 - `InitOpts { seed, playerCount? }`; `initialState(opts) -> PreDealState`.
-  Default `playerCount` is 2.
+  Default `playerCount` is 2. Supported range is `2..6` inclusive
+  (Podkidnoy FFA, see ADR-0010). At `N=6` the deck is exactly
+  exhausted: the last-dealt card defines the trump suit and stays in
+  the last seat's hand, so `trumpCard` is `null` from the start. At
+  every other `N`, `trumpCard` is the visible card kept under the
+  talon.
 - `step(state, action) -> StepResult`. `StepResult` is a discriminated
   union: `{ ok: true, state, events } | { ok: false, reason }`.
   Player-side illegal actions return a typed `RejectReason`; system-level
@@ -114,6 +119,21 @@ Talon replenishment, timeouts, and game-over (DUR-9):
 - New events: `TALON_DRAWN { by, cards }` (one per replenishing seat,
   in draw order) and `GAME_OVER { durak }` (always last in the events
   list of the transition that ends the game).
+
+N-player FFA rules (DUR-51, see ADR-0010):
+
+- Supported player counts: `2..6`. Throw-in: any non-defender. Rotation
+  on `END_ROUND`: prev defender becomes attacker (defender role +1).
+  On `TAKE_PILE`: prev defender skipped (defender role +2). Both
+  rotations skip eliminated seats.
+- Eliminate-as-they-empty: when a seat's hand goes to zero AND the
+  talon and trump card are exhausted, the engine emits a single
+  `PLAYER_OUT { seat }` event from the action that crosses the
+  threshold (any of `ATTACK`, `DEFEND`, `THROW_IN`, `END_ROUND`,
+  `TAKE_PILE`). Eliminated seats stay at zero cards and are skipped on
+  every subsequent rotation.
+- `GAME_OVER { durak }` still fires last when only one seat (or zero,
+  for a draw) holds cards.
 
 Bot (DUR-10, DUR-48):
 
@@ -207,3 +227,4 @@ Forthcoming (later tickets):
 
 - ADR-0002: hybrid engine architecture
 - ADR-0003: determinism strategy
+- ADR-0010: N-player FFA rules
