@@ -273,8 +273,8 @@ runs on the Pixi `Ticker`.
   -> `{ cancel }`. Numeric interpolation called once per frame. `now` is
   the time source - defaults to `performance.now`, swapped in tests for
   deterministic clocks. `speed` is an optional `() => number` factor;
-  TODO once DUR-42 lands, wire `appStore.devtools.animSpeed` here so a
-  global slider scales every tween.
+  call sites pass `() => appStore.getState().devtools.animSpeed` to let
+  the dev panel slider scale tween durations globally.
 - **Easings** in `easings.ts`: `linear`, `easeOutQuad`, `easeInQuad`,
   `easeInOutCubic`, `easeOutBack`. Pure `(t) -> number` over `[0, 1]`,
   always returning `0` at `t=0` and `1` at `t=1` (back-overshoot
@@ -291,6 +291,41 @@ runs on the Pixi `Ticker`.
   underlying `TweenHandle`.
 - **Sandbox.** `?sandbox=anims` mounts a grid auditioning every
   primitive. Cells loop forever; the screen's `dispose()` cancels them.
+
+## Dev tools
+
+`Ctrl+Shift+D` toggles a hidden Pixi overlay anchored to the top-right of
+the canvas. It is invisible by default and never shipped behind a UI
+affordance. The panel state lives on `appStore.devtools` and persists
+across reloads via `localStorage` under `durak.devtools`.
+
+The panel renders:
+
+- **Connection status** — `connection.status`, attempt count, last error.
+- **Phase** — current `appStore.phase`.
+- **Snapshot JSON** — pretty-printed `appStore.snapshot`. Read-only.
+  Arrow keys scroll while the panel is open.
+- **Events ring** — last 16 entries from `appStore.events`.
+
+Toggles, all clickable inside the panel:
+
+- **Autoplay** — when on, every snapshot in which the local seat is the
+  active actor is fed through `bot.choose` and the resulting `Action` is
+  submitted via `appStore.submitAction`. Same snapshot never fires twice.
+  Used as the test harness for bot-difficulty work: a bot vs bot game
+  runs to `GAME_OVER` with no input.
+- **Animation speed** — slider `[0, 2]`, default `1.0x`. Stored as
+  `devtools.animSpeed`. The animation engine is expected to read this
+  value and scale tween durations accordingly. The contract is one-way:
+  the dev panel writes, the renderer reads.
+- **Mute** — mirrors `audio.muted`.
+- **Disconnect ws** — calls `connection.forceDisconnect()`, useful for
+  testing disconnect-forfeit behaviour.
+
+`Escape` closes the panel; `Ctrl+Shift+D` always toggles regardless of
+focus.
+
+## Deployment
 
 Hosted on [Firebase Hosting](https://firebase.google.com/docs/hosting)
 in the `durak-icfred` Firebase project. See
