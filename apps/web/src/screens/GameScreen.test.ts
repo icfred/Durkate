@@ -2,6 +2,7 @@ import type { Action, Card, Event } from "@durak/engine";
 import type { Snapshot } from "@durak/protocol";
 import type { Container, Text } from "pixi.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as anim from "../anim/index.js";
 import * as audio from "../audio/index.js";
 import { appStore } from "../store.js";
 import { GameScreen } from "./GameScreen.js";
@@ -12,7 +13,22 @@ vi.mock("../audio/index.js", () => ({
   attachFocusNavSfx: vi.fn().mockReturnValue(() => {}),
 }));
 
+vi.mock("../anim/index.js", async () => {
+  const actual = await vi.importActual<typeof import("../anim/index.js")>("../anim/index.js");
+  return {
+    ...actual,
+    moveTo: vi.fn(actual.moveTo),
+    fadeTo: vi.fn(actual.fadeTo),
+    scaleTo: vi.fn(actual.scaleTo),
+    sequence: vi.fn(actual.sequence),
+    parallel: vi.fn(actual.parallel),
+  };
+});
+
 const playSfxMock = vi.mocked(audio.playSfx);
+const moveToMock = vi.mocked(anim.moveTo);
+const fadeToMock = vi.mocked(anim.fadeTo);
+const parallelMock = vi.mocked(anim.parallel);
 
 function findByLabel(container: Container, label: string): Container | undefined {
   return container.children.find((c) => (c as Container).label === label) as Container | undefined;
@@ -653,6 +669,179 @@ describe("GameScreen SFX wiring", () => {
     expect(playSfxMock).toHaveBeenCalledWith("playCard");
 
     appStore.getState().setMuted(false);
+    screen.dispose();
+  });
+});
+
+describe("GameScreen animations", () => {
+  beforeEach(() => {
+    moveToMock.mockClear();
+    fadeToMock.mockClear();
+    parallelMock.mockClear();
+    appStore.getState().setAnimSpeed(1);
+  });
+
+  afterEach(() => {
+    moveToMock.mockClear();
+    fadeToMock.mockClear();
+    parallelMock.mockClear();
+    appStore.getState().setAnimSpeed(1);
+  });
+
+  function makeAnimScreen(initial: Snapshot | null) {
+    const snapshotListeners: ((s: Snapshot | null) => void)[] = [];
+    const eventListeners: ((events: Event[]) => void)[] = [];
+    const screen = new GameScreen({
+      snapshot: initial,
+      submitAction: vi.fn(),
+      subscribe: (cb) => {
+        snapshotListeners.push(cb);
+        return () => {
+          const idx = snapshotListeners.indexOf(cb);
+          if (idx >= 0) snapshotListeners.splice(idx, 1);
+        };
+      },
+      subscribeEvents: (cb) => {
+        eventListeners.push(cb);
+        return () => {
+          const idx = eventListeners.indexOf(cb);
+          if (idx >= 0) eventListeners.splice(idx, 1);
+        };
+      },
+    });
+    screen.layout(800, 600);
+    const pushSnapshot = (s: Snapshot | null) => {
+      for (const l of snapshotListeners) l(s);
+    };
+    const emitEvents = (events: Event[]) => {
+      for (const l of eventListeners) l(events);
+    };
+    return { screen, pushSnapshot, emitEvents };
+  }
+
+  it("animSpeed=0 skips all animations", () => {
+    appStore.getState().setAnimSpeed(0);
+    const { screen, pushSnapshot, emitEvents } = makeAnimScreen(null);
+    pushSnapshot(loadFixture("fresh"));
+    moveToMock.mockClear();
+    fadeToMock.mockClear();
+
+    emitEvents([
+      { type: "GAME_STARTED", trump: { suit: "hearts", rank: 6 }, attacker: 0 },
+      {
+        type: "CARD_PLAYED",
+        by: 0,
+        role: "ATTACK",
+        card: { suit: "spades", rank: 7 },
+      },
+    ]);
+
+    expect(moveToMock).not.toHaveBeenCalled();
+    expect(fadeToMock).not.toHaveBeenCalled();
+
+    screen.dispose();
+  });
+
+  it("triggers anim engine calls in order for deal → attack → defend → end-round", () => {
+    const fresh = loadFixture("fresh");
+    const attackCard: Card = { suit: "spades", rank: 7 };
+    const defenseCard: Card = { suit: "spades", rank: 13 };
+
+    const afterAttack: Snapshot = {
+      ...fresh,
+      handCounts: [5, 6],
+      table: [{ attack: attackCard }],
+      seat: 1,
+      you: {
+        seat: 1,
+        hand: [
+          { suit: "clubs", rank: 6 },
+          { suit: "diamonds", rank: 7 },
+          { suit: "spades", rank: 13 },
+          { suit: "hearts", rank: 9 },
+          { suit: "clubs", rank: 10 },
+          { suit: "hearts", rank: 14 },
+        ],
+      },
+    };
+    const afterDefend: Snapshot = {
+      ...afterAttack,
+      handCounts: [5, 5],
+      table: [{ attack: attackCard, defense: defenseCard }],
+      you: { ...afterAttack.you, hand: afterAttack.you.hand.slice(0, 5) },
+    };
+    const afterRoundEnd: Snapshot = {
+      ...afterDefend,
+      handCounts: [6, 6],
+      table: [],
+      attacker: 1,
+      defender: 0,
+      discard: [attackCard, defenseCard],
+    };
+
+    const { screen, pushSnapshot, emitEvents } = makeAnimScreen(null);
+
+    moveToMock.mockClear();
+    fadeToMock.mockClear();
+    parallelMock.mockClear();
+
+    pushSnapshot(fresh);
+    emitEvents([{ type: "GAME_STARTED", trump: { suit: "hearts", rank: 6 }, attacker: 0 }]);
+    expect(moveToMock.mock.calls.length).toBe(12);
+    expect(parallelMock).toHaveBeenCalledTimes(1);
+
+    moveToMock.mockClear();
+    fadeToMock.mockClear();
+    parallelMock.mockClear();
+
+    pushSnapshot(afterAttack);
+    emitEvents([{ type: "CARD_PLAYED", by: 0, role: "ATTACK", card: attackCard }]);
+    expect(moveToMock).toHaveBeenCalledTimes(1);
+    expect(fadeToMock).toHaveBeenCalledTimes(1);
+    expect(parallelMock).toHaveBeenCalledTimes(1);
+
+    moveToMock.mockClear();
+    fadeToMock.mockClear();
+    parallelMock.mockClear();
+
+    pushSnapshot(afterDefend);
+    emitEvents([{ type: "CARD_PLAYED", by: 1, role: "DEFEND", card: defenseCard, target: 0 }]);
+    expect(moveToMock).toHaveBeenCalledTimes(1);
+    expect(fadeToMock).toHaveBeenCalledTimes(1);
+    expect(parallelMock).toHaveBeenCalledTimes(1);
+
+    moveToMock.mockClear();
+    fadeToMock.mockClear();
+    parallelMock.mockClear();
+
+    pushSnapshot(afterRoundEnd);
+    emitEvents([
+      { type: "ROUND_ENDED", discarded: [attackCard, defenseCard], attacker: 1, defender: 0 },
+    ]);
+    // Two ghost cards (attack + defense) each get a moveTo and a fadeTo, all wrapped in parallel.
+    expect(moveToMock).toHaveBeenCalledTimes(2);
+    expect(fadeToMock).toHaveBeenCalledTimes(2);
+    expect(parallelMock.mock.calls.length).toBeGreaterThan(0);
+
+    screen.dispose();
+  });
+
+  it("cancels in-flight animations when a new snapshot arrives", () => {
+    const fresh = loadFixture("fresh");
+    const { screen, pushSnapshot, emitEvents } = makeAnimScreen(null);
+    pushSnapshot(fresh);
+    moveToMock.mockClear();
+    fadeToMock.mockClear();
+
+    emitEvents([{ type: "GAME_STARTED", trump: { suit: "hearts", rank: 6 }, attacker: 0 }]);
+    expect(moveToMock.mock.calls.length).toBeGreaterThan(0);
+
+    pushSnapshot({ ...fresh, talonCount: fresh.talonCount - 1 });
+    moveToMock.mockClear();
+
+    emitEvents([{ type: "TALON_DRAWN", by: 0, cards: [{ suit: "spades", rank: 7 }] }]);
+    expect(moveToMock).toHaveBeenCalled();
+
     screen.dispose();
   });
 });

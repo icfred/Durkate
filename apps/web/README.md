@@ -63,11 +63,16 @@ knows whose turn it is, what's legal, and which keys do what.
   calls `clearError()`. The previous behavior was a silent
   `console.error`, which is why illegal client-side actions felt like
   the game was frozen.
-- **New-card flash**. When a snapshot arrives with new attack/defense
-  cards on the table (vs. the previously-rendered table), the new cards
-  scale up from 0.85x to 1x and fade in over ~180ms via the shared
-  `Ticker`. No tween library; the flash list lives on the screen
-  instance.
+- **Card movement animations**. `GameScreen` subscribes to
+  `appStore.events` and animates every card transition through the shared
+  anim engine: attacks/defends slide from the player's hand to their
+  table slot with `easeOutBack` and a brief fade-in; pile-takes and
+  round-ends fly ghost copies of the leaving table cards to the taking
+  hand or discard stack and fade out; talon draws and the initial deal
+  fan cards out of the talon stack into seats with a per-card duration
+  ramp. A snapshot update cancels any in-flight animation so the static
+  layout always wins. All durations scale by `devtools.animSpeed`;
+  `animSpeed === 0` skips animations entirely.
 
 ## Sandbox
 
