@@ -5,11 +5,21 @@ export type {
   RequestRematch,
   SubmitAction,
 } from "./client";
-export type { BotDifficulty, CreateRoomRequest, CreateRoomResponse } from "./http";
+export type {
+  BotDifficulty,
+  CreateRoomRequest,
+  CreateRoomResponse,
+  LegacyCreateRoomRequest,
+  NormalizedCreateRoomRequest,
+  NPlayerCreateRoomRequest,
+} from "./http";
 export {
   botDifficultySchema,
   createRoomRequestSchema,
   createRoomResponseSchema,
+  legacyCreateRoomRequestSchema,
+  normalizeCreateRoomRequest,
+  nPlayerCreateRoomRequestSchema,
   parseCreateRoomRequest,
   parseCreateRoomResponse,
 } from "./http";

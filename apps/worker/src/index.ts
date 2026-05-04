@@ -1,4 +1,8 @@
-import { type CreateRoomRequest, createRoomRequestSchema } from "@durak/protocol";
+import {
+  type CreateRoomRequest,
+  createRoomRequestSchema,
+  normalizeCreateRoomRequest,
+} from "@durak/protocol";
 import { ZodError } from "zod";
 import { TokenBucket } from "./rate-limit.js";
 import { Room, randomBase64Url } from "./room.js";
@@ -124,12 +128,18 @@ const worker: ExportedHandler<Env> = {
         });
       }
 
+      const normalized = normalizeCreateRoomRequest(parsed);
       const roomId = randomBase64Url(ROOM_ID_BYTES);
       const stub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
-      const initBody: { mode: typeof parsed.mode; difficulty?: typeof parsed.difficulty } = {
-        mode: parsed.mode,
+      const initBody: {
+        playerCount: number;
+        botCount: number;
+        difficulty?: typeof normalized.difficulty;
+      } = {
+        playerCount: normalized.playerCount,
+        botCount: normalized.botCount,
       };
-      if (parsed.difficulty !== undefined) initBody.difficulty = parsed.difficulty;
+      if (normalized.difficulty !== undefined) initBody.difficulty = normalized.difficulty;
       const initRes = await stub.fetch("https://room/init", {
         method: "POST",
         body: JSON.stringify(initBody),
