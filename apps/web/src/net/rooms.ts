@@ -5,9 +5,11 @@ import {
 } from "@durak/protocol";
 
 export interface CreateRoomOptions {
+  playerCount: 2 | 3 | 4 | 5 | 6;
+  botCount: number;
+  /** Bot difficulty. Ignored when `botCount === 0`. */
+  difficulty?: BotDifficulty | undefined;
   serverUrl: string;
-  /** Bot difficulty for `mode: "bot"` rooms. Ignored otherwise. */
-  difficulty?: BotDifficulty;
   /** Test seam: replaces global fetch. */
   fetchImpl?: typeof fetch;
 }
@@ -22,14 +24,16 @@ export class CreateRoomError extends Error {
   }
 }
 
-export async function createRoom(
-  mode: "human" | "bot",
-  options: CreateRoomOptions,
-): Promise<CreateRoomResponse> {
+export async function createRoom(options: CreateRoomOptions): Promise<CreateRoomResponse> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const url = new URL("/rooms", normalizeBase(options.serverUrl)).toString();
-  const body: { mode: "human" | "bot"; difficulty?: BotDifficulty } = { mode };
-  if (mode === "bot" && options.difficulty !== undefined) body.difficulty = options.difficulty;
+  const body: { playerCount: number; botCount: number; difficulty?: BotDifficulty } = {
+    playerCount: options.playerCount,
+    botCount: options.botCount,
+  };
+  if (options.botCount > 0 && options.difficulty !== undefined) {
+    body.difficulty = options.difficulty;
+  }
   let response: Response;
   try {
     response = await fetchImpl(url, {
@@ -73,9 +77,6 @@ export function httpFromWsUrl(wsUrl: string): string {
 }
 
 function normalizeBase(serverUrl: string): string {
-  // The web client may be configured with a websocket-style URL
-  // (`VITE_WS_URL`) that points at the gateway path. For HTTP fetches
-  // we want only the origin.
   if (serverUrl.startsWith("ws:") || serverUrl.startsWith("wss:")) {
     return httpFromWsUrl(serverUrl);
   }

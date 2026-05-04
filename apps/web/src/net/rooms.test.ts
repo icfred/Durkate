@@ -10,22 +10,27 @@ function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
 }
 
 describe("createRoom", () => {
-  it("POSTs to /rooms with the requested mode and parses the response", async () => {
+  it("POSTs to /rooms with the requested player and bot counts", async () => {
     const calls: { url: string; init: RequestInit | undefined }[] = [];
     const fetchImpl = (async (url: RequestInfo | URL, init?: RequestInit) => {
       calls.push({ url: String(url), init });
-      return jsonResponse({ roomId: "abc", hostToken: "h", joinToken: "j" }, { status: 201 });
+      return jsonResponse({ roomId: "abc", hostToken: "h", joinTokens: ["j"] }, { status: 201 });
     }) as typeof fetch;
 
-    const result = await createRoom("human", { serverUrl: "http://server.test", fetchImpl });
+    const result = await createRoom({
+      serverUrl: "http://server.test",
+      playerCount: 2,
+      botCount: 0,
+      fetchImpl,
+    });
 
-    expect(result).toEqual({ roomId: "abc", hostToken: "h", joinToken: "j", joinTokens: ["j"] });
+    expect(result).toMatchObject({ roomId: "abc", hostToken: "h", joinTokens: ["j"] });
     expect(calls).toHaveLength(1);
     const call = calls[0];
     if (!call) throw new Error("expected call");
     expect(call.url).toBe("http://server.test/rooms");
     expect(call.init?.method).toBe("POST");
-    expect(call.init?.body).toBe('{"mode":"human"}');
+    expect(call.init?.body).toBe('{"playerCount":2,"botCount":0}');
   });
 
   it("converts ws:// server URL to http:// for the fetch", async () => {
@@ -34,13 +39,21 @@ describe("createRoom", () => {
       seen.push(String(url));
       return jsonResponse({ roomId: "x", hostToken: "y" }, { status: 201 });
     }) as typeof fetch;
-    await createRoom("bot", { serverUrl: "ws://server.test/ws", fetchImpl });
+    await createRoom({
+      serverUrl: "ws://server.test/ws",
+      playerCount: 2,
+      botCount: 1,
+      difficulty: "medium",
+      fetchImpl,
+    });
     expect(seen[0]).toBe("http://server.test/rooms");
   });
 
   it("throws CreateRoomError with status on a non-2xx response", async () => {
     const fetchImpl = (async () => new Response("rate limited", { status: 429 })) as typeof fetch;
-    await expect(createRoom("bot", { serverUrl: "http://s", fetchImpl })).rejects.toMatchObject({
+    await expect(
+      createRoom({ serverUrl: "http://s", playerCount: 2, botCount: 1, fetchImpl }),
+    ).rejects.toMatchObject({
       name: "CreateRoomError",
       status: 429,
     });
@@ -52,36 +65,65 @@ describe("createRoom", () => {
         status: 201,
         headers: { "Content-Type": "application/json" },
       })) as typeof fetch;
-    await expect(createRoom("bot", { serverUrl: "http://s", fetchImpl })).rejects.toBeInstanceOf(
-      CreateRoomError,
-    );
+    await expect(
+      createRoom({ serverUrl: "http://s", playerCount: 2, botCount: 1, fetchImpl }),
+    ).rejects.toBeInstanceOf(CreateRoomError);
   });
 
   it("throws CreateRoomError when the response shape fails the schema", async () => {
     const fetchImpl = (async () => jsonResponse({ roomId: "" }, { status: 201 })) as typeof fetch;
-    await expect(createRoom("bot", { serverUrl: "http://s", fetchImpl })).rejects.toBeInstanceOf(
-      CreateRoomError,
-    );
+    await expect(
+      createRoom({ serverUrl: "http://s", playerCount: 2, botCount: 1, fetchImpl }),
+    ).rejects.toBeInstanceOf(CreateRoomError);
   });
 
-  it("includes difficulty for bot rooms when provided", async () => {
+  it("includes difficulty when bots are present", async () => {
     const calls: { body: string }[] = [];
     const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
       calls.push({ body: String(init?.body) });
       return jsonResponse({ roomId: "x", hostToken: "y" }, { status: 201 });
     }) as typeof fetch;
-    await createRoom("bot", { serverUrl: "http://s", fetchImpl, difficulty: "hard" });
-    expect(calls[0]?.body).toBe('{"mode":"bot","difficulty":"hard"}');
+    await createRoom({
+      serverUrl: "http://s",
+      playerCount: 2,
+      botCount: 1,
+      difficulty: "hard",
+      fetchImpl,
+    });
+    expect(calls[0]?.body).toBe('{"playerCount":2,"botCount":1,"difficulty":"hard"}');
   });
 
-  it("omits difficulty for human rooms even when provided", async () => {
+  it("omits difficulty when there are no bots", async () => {
     const calls: { body: string }[] = [];
     const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
       calls.push({ body: String(init?.body) });
-      return jsonResponse({ roomId: "x", hostToken: "y", joinToken: "j" }, { status: 201 });
+      return jsonResponse({ roomId: "x", hostToken: "y", joinTokens: ["j"] }, { status: 201 });
     }) as typeof fetch;
-    await createRoom("human", { serverUrl: "http://s", fetchImpl, difficulty: "hard" });
-    expect(calls[0]?.body).toBe('{"mode":"human"}');
+    await createRoom({
+      serverUrl: "http://s",
+      playerCount: 2,
+      botCount: 0,
+      difficulty: "hard",
+      fetchImpl,
+    });
+    expect(calls[0]?.body).toBe('{"playerCount":2,"botCount":0}');
+  });
+
+  it("forwards FFA shape to the worker", async () => {
+    const calls: { body: string }[] = [];
+    const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ body: String(init?.body) });
+      return jsonResponse({ roomId: "x", hostToken: "h", joinTokens: ["a", "b"] }, { status: 201 });
+    }) as typeof fetch;
+    const response = await createRoom({
+      serverUrl: "http://s",
+      playerCount: 4,
+      botCount: 1,
+      difficulty: "medium",
+      fetchImpl,
+    });
+    expect(calls[0]?.body).toBe('{"playerCount":4,"botCount":1,"difficulty":"medium"}');
+    expect(response.joinTokens).toEqual(["a", "b"]);
   });
 });
 

@@ -11,7 +11,7 @@ import { createStore } from "zustand/vanilla";
 
 export type Phase = "menu" | "lobby" | "game" | "gameover";
 
-export type Mode = "bot" | "friend";
+export type Mode = "bot" | "friend" | "ffa";
 
 export const EVENT_BUFFER_SIZE = 32;
 
@@ -56,9 +56,14 @@ export interface RoomMembership {
   seats: RoomSeat[];
   you: SeatIndex | null;
   rematchRequested: SeatIndex[];
+  /** Earliest pending disconnect, or null. Mirrors `disconnects[0]`. */
   disconnect: DisconnectState | null;
+  /** All currently disconnected seats (multi-disconnect for N>2). */
+  disconnects: DisconnectState[];
   /** Bot seats currently in their pre-move "thinking" delay. Empty otherwise. */
   thinkingSeats: SeatIndex[];
+  /** Seats eliminated this game (hand emptied + talon exhausted, or forfeited). */
+  eliminated: SeatIndex[];
 }
 
 export type RoomCreationState =
@@ -67,15 +72,47 @@ export type RoomCreationState =
   | { status: "ready" }
   | { status: "error"; error: string };
 
+export interface RoomCreationConfig {
+  mode: Mode;
+  difficulty?: BotDifficulty | undefined;
+  playerCount?: number;
+  botCount?: number;
+}
+
+export interface RoomCreatedPayload {
+  roomId: string;
+  hostToken: string;
+  /** Tokens for each remaining human seat. Empty for solo-vs-bots. */
+  joinTokens?: string[];
+  /** Legacy single-token field (kept until the last call site stops using it). */
+  shareToken?: string | null;
+}
+
+export interface JoinerEntryPayload {
+  roomCode: string;
+  token: string;
+  playerCount?: number;
+  botCount?: number;
+}
+
 export interface AppState {
   phase: Phase;
   mode: Mode | undefined;
-  /** Bot difficulty selected by the host for `mode: "bot"` rooms. */
+  /** Bot difficulty selected by the host for `mode: "bot"` / `mode: "ffa"` rooms. */
   botDifficulty: BotDifficulty | undefined;
+  /** Total seats in the room (humans + bots). */
+  playerCount: number | undefined;
+  /** Bot seats in the room. */
+  botCount: number | undefined;
   roomCode: string | undefined;
   /** Seat-bound token used when opening the ws to this room. */
   currentToken: string | null;
-  /** Token to embed in the share URL for "play vs friend" hosts. */
+  /** Tokens the host can hand out for remaining human seats. */
+  joinTokens: string[];
+  /**
+   * Legacy single-share alias - still surfaced so older lobby paths work.
+   * Equals `joinTokens[0] ?? null`.
+   */
   shareToken: string | null;
   roomCreation: RoomCreationState;
   snapshot: Snapshot | null;
@@ -93,10 +130,10 @@ export interface AppState {
   showLobby(args: { mode: Mode; roomCode: string; token?: string | null }): void;
   showGame(args?: { mode?: Mode; roomCode?: string }): void;
   showGameOver(data: GameOverData): void;
-  beginRoomCreation(args: { mode: Mode; difficulty?: BotDifficulty }): void;
-  roomCreated(args: { roomId: string; hostToken: string; shareToken?: string | null }): void;
+  beginRoomCreation(config: RoomCreationConfig): void;
+  roomCreated(args: RoomCreatedPayload): void;
   roomCreationFailed(error: string): void;
-  enterLobbyAsJoiner(args: { roomCode: string; token: string }): void;
+  enterLobbyAsJoiner(args: JoinerEntryPayload): void;
   setSnapshot(snapshot: Snapshot | null): void;
   appendEvents(events: Event[]): void;
   setConnectionStatus(status: ConnectionStatus, info: { attempts: number; error?: string }): void;
@@ -200,8 +237,11 @@ export const appStore = createStore<AppState>((set, get) => {
     phase: "menu",
     mode: undefined,
     botDifficulty: undefined,
+    playerCount: undefined,
+    botCount: undefined,
     roomCode: undefined,
     currentToken: null,
+    joinTokens: [],
     shareToken: null,
     roomCreation: INITIAL_ROOM_CREATION,
     snapshot: null,
@@ -219,8 +259,11 @@ export const appStore = createStore<AppState>((set, get) => {
         phase: "menu",
         mode: undefined,
         botDifficulty: undefined,
+        playerCount: undefined,
+        botCount: undefined,
         roomCode: undefined,
         currentToken: null,
+        joinTokens: [],
         shareToken: null,
         roomCreation: INITIAL_ROOM_CREATION,
         snapshot: null,
@@ -244,33 +287,42 @@ export const appStore = createStore<AppState>((set, get) => {
         roomCode: args?.roomCode ?? state.roomCode,
       })),
     showGameOver: (data) => set({ phase: "gameover", gameover: data }),
-    beginRoomCreation: ({ mode, difficulty }) =>
+    beginRoomCreation: ({ mode, difficulty, playerCount, botCount }) =>
       set({
         phase: "lobby",
         mode,
-        botDifficulty: mode === "bot" ? difficulty : undefined,
+        botDifficulty: mode === "bot" || mode === "ffa" ? difficulty : undefined,
+        playerCount,
+        botCount,
         roomCode: undefined,
         currentToken: null,
+        joinTokens: [],
         shareToken: null,
         roomCreation: { status: "creating" },
         gameover: undefined,
         room: null,
       }),
-    roomCreated: ({ roomId, hostToken, shareToken }) =>
+    roomCreated: ({ roomId, hostToken, joinTokens, shareToken }) => {
+      const tokens = joinTokens ?? (shareToken ? [shareToken] : []);
       set({
         roomCode: roomId,
         currentToken: hostToken,
-        shareToken: shareToken ?? null,
+        joinTokens: tokens,
+        shareToken: tokens[0] ?? null,
         roomCreation: { status: "ready" },
-      }),
+      });
+    },
     roomCreationFailed: (error) => set({ roomCreation: { status: "error", error } }),
-    enterLobbyAsJoiner: ({ roomCode, token }) =>
+    enterLobbyAsJoiner: ({ roomCode, token, playerCount, botCount }) =>
       set({
         phase: "lobby",
         mode: "friend",
         botDifficulty: undefined,
+        playerCount,
+        botCount,
         roomCode,
         currentToken: token,
+        joinTokens: [],
         shareToken: null,
         roomCreation: { status: "ready" },
         gameover: undefined,
@@ -352,20 +404,59 @@ export const appStore = createStore<AppState>((set, get) => {
 });
 
 const HASH_ROOM = /(?:^|[#&])room=([A-Za-z0-9_-]+)/;
-const HASH_TOKEN = /(?:^|[#&])t=([A-Za-z0-9_-]+)/;
+const HASH_TOKEN = /(?:^|[#&])t=([A-Za-z0-9_,-]+)/;
+const HASH_PC = /(?:^|[#&])pc=(\d+)/;
+const HASH_BC = /(?:^|[#&])bc=(\d+)/;
 
 export function parseHashRoom(hash: string): string | null {
   const match = HASH_ROOM.exec(hash);
   return match?.[1] ?? null;
 }
 
-export function parseHashJoin(hash: string): { roomCode: string; token: string } | null {
+export interface HashJoinPayload {
+  roomCode: string;
+  /** First token, retained for back-compat with single-token share URLs. */
+  token: string;
+  /** Full token list - one per remaining human seat for multi-share URLs. */
+  tokens: string[];
+  playerCount?: number;
+  botCount?: number;
+}
+
+export function parseHashJoin(hash: string): HashJoinPayload | null {
   const room = parseHashRoom(hash);
   const tokenMatch = HASH_TOKEN.exec(hash);
   if (room === null || !tokenMatch?.[1]) return null;
-  return { roomCode: room, token: tokenMatch[1] };
+  const tokens = tokenMatch[1]
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  if (tokens.length === 0) return null;
+  const pcMatch = HASH_PC.exec(hash);
+  const bcMatch = HASH_BC.exec(hash);
+  const out: HashJoinPayload = {
+    roomCode: room,
+    token: tokens[0] as string,
+    tokens,
+  };
+  if (pcMatch?.[1]) out.playerCount = Number.parseInt(pcMatch[1], 10);
+  if (bcMatch?.[1]) out.botCount = Number.parseInt(bcMatch[1], 10);
+  return out;
 }
 
-export function buildShareUrl(origin: string, roomCode: string, joinToken: string): string {
-  return `${origin}/#room=${encodeURIComponent(roomCode)}&t=${encodeURIComponent(joinToken)}`;
+export interface ShareUrlOptions {
+  playerCount?: number;
+  botCount?: number;
+}
+
+export function buildShareUrl(
+  origin: string,
+  roomCode: string,
+  joinToken: string,
+  options?: ShareUrlOptions,
+): string {
+  const params = [`room=${encodeURIComponent(roomCode)}`, `t=${encodeURIComponent(joinToken)}`];
+  if (options?.playerCount !== undefined) params.push(`pc=${options.playerCount}`);
+  if (options?.botCount !== undefined) params.push(`bc=${options.botCount}`);
+  return `${origin}/#${params.join("&")}`;
 }

@@ -33,7 +33,9 @@ function makeRoom(occupants: (string | null)[], you: number | null = 0): RoomMem
     you,
     rematchRequested: [],
     disconnect: null,
+    disconnects: [],
     thinkingSeats: [],
+    eliminated: [],
   };
 }
 
@@ -172,6 +174,54 @@ describe("LobbyScreen creation overlay", () => {
     if (!retryButton) throw new Error("retry button not found");
     (retryButton as unknown as { activate(): void }).activate();
     expect(onRetry).toHaveBeenCalledOnce();
+    screen.dispose();
+  });
+});
+
+describe("LobbyScreen N-aware FFA", () => {
+  it("shows X / Y joined when the room expects multiple humans", () => {
+    const screen = new LobbyScreen({
+      mode: "ffa",
+      roomCode: "ABCD",
+      playerCount: 4,
+      botCount: 1,
+      shareUrls: ["https://x/#1", "https://x/#2"],
+      initialRoom: makeRoom(["host", null, null]),
+      onJoin: vi.fn(),
+    });
+    expect(collectText(screen)).toContain("1 / 3 JOINED");
+    screen.dispose();
+  });
+
+  it("renders one COPY LINK button per join token", () => {
+    const screen = new LobbyScreen({
+      mode: "ffa",
+      roomCode: "ABCD",
+      playerCount: 4,
+      botCount: 1,
+      shareUrls: ["https://x/#1", "https://x/#2"],
+      initialRoom: makeRoom(["host", null, null]),
+      onJoin: vi.fn(),
+    });
+    const labels = collectText(screen);
+    expect(labels).toContain("COPY LINK 1");
+    expect(labels).toContain("COPY LINK 2");
+    screen.dispose();
+  });
+
+  it("solo-vs-bots FFA hides the share section entirely", () => {
+    const screen = new LobbyScreen({
+      mode: "ffa",
+      roomCode: "ABCD",
+      playerCount: 4,
+      botCount: 3,
+      shareUrls: [],
+      initialRoom: null,
+      onJoin: vi.fn(),
+    });
+    const labels = collectText(screen);
+    expect(labels).not.toContain("SHARE");
+    expect(labels).not.toContain("COPY LINK");
     screen.dispose();
   });
 });

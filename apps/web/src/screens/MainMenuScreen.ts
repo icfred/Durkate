@@ -10,18 +10,29 @@ import { attachBackNav } from "./backNav.js";
 import type { Screen } from "./types.js";
 
 const PANEL_W = 480;
-// Two heights so the difficulty view (4 buttons + back) doesn't overflow the
-// root view's height. layout() centers using the current value.
-const PANEL_H_ROOT = 360;
+const PANEL_H_ROOT = 420;
 const PANEL_H_BOT_DIFFICULTY = 460;
+const PANEL_H_FFA_CONFIG = 520;
 const FADE_IN_MS = 220;
+
+export type FfaPlayerCount = 2 | 3 | 4 | 5 | 6;
+
+export interface FfaConfig {
+  playerCount: FfaPlayerCount;
+  botCount: number;
+  difficulty: BotDifficulty;
+}
 
 export interface MainMenuScreenOptions {
   onPlayBot(difficulty: BotDifficulty): void;
   onPlayFriend(): void;
+  onPlayFfa(config: FfaConfig): void;
 }
 
-type View = "root" | "bot-difficulty";
+type View = "root" | "bot-difficulty" | "ffa-config";
+
+const FFA_PLAYER_COUNTS: readonly FfaPlayerCount[] = [2, 3, 4, 5, 6];
+const FFA_DIFFICULTIES: readonly BotDifficulty[] = ["easy", "medium", "hard"];
 
 export class MainMenuScreen extends Container implements Screen {
   private readonly options: MainMenuScreenOptions;
@@ -37,6 +48,12 @@ export class MainMenuScreen extends Container implements Screen {
   private viewH = 0;
   private transitioning: TweenHandle | null = null;
   private readonly detachBackNav: () => void;
+  private ffaPlayerCount: FfaPlayerCount = 4;
+  private ffaBotCount = 3;
+  private ffaDifficulty: BotDifficulty = "medium";
+  private ffaPlayersButton: Button | null = null;
+  private ffaBotsButton: Button | null = null;
+  private ffaDifficultyButton: Button | null = null;
 
   constructor(options: MainMenuScreenOptions) {
     super();
@@ -75,15 +92,11 @@ export class MainMenuScreen extends Container implements Screen {
     this.focus = new FocusManager();
     this.detachFocusNavSfx = attachFocusNavSfx(this.focus);
 
-    // Backspace / Escape navigates back to root from a sub-view. Suppressed
-    // on the root view (the screen-router's outer back-nav owns "from menu
-    // to nowhere" if/when that becomes a thing).
     this.detachBackNav = attachBackNav({
       onBack: () => this.transitionTo("root"),
       shouldHandle: () => this.view !== "root",
     });
 
-    // Initial render — synchronous, no transition.
     this.buildRootButtons();
     this.refreshFocus();
   }
@@ -115,18 +128,16 @@ export class MainMenuScreen extends Container implements Screen {
 
   private transitionTo(target: View): void {
     if (this.view === target) return;
-    // Cancel any in-flight transition; new view takes over immediately.
     this.transitioning?.cancel();
 
-    // Tear down old buttons synchronously. Logical view + DOM update happen
-    // in one tick so tests and any synchronous reader see the new state right
-    // away. The animation is a visual layer on top — the new buttons start at
-    // alpha 0 and fade in.
     for (const b of this.buttons) {
       this.panel.removeChild(b);
       b.destroy();
     }
     this.buttons = [];
+    this.ffaPlayersButton = null;
+    this.ffaBotsButton = null;
+    this.ffaDifficultyButton = null;
 
     this.detachFocusNavSfx();
     this.focus.detach();
@@ -138,9 +149,12 @@ export class MainMenuScreen extends Container implements Screen {
     if (target === "root") {
       this.setPanelHeight(PANEL_H_ROOT);
       this.buildRootButtons();
-    } else {
+    } else if (target === "bot-difficulty") {
       this.setPanelHeight(PANEL_H_BOT_DIFFICULTY);
       this.buildBotDifficultyButtons();
+    } else {
+      this.setPanelHeight(PANEL_H_FFA_CONFIG);
+      this.buildFfaConfigButtons();
     }
     for (const b of this.buttons) b.alpha = 0;
     this.refreshFocus();
@@ -181,6 +195,18 @@ export class MainMenuScreen extends Container implements Screen {
     playFriend.y = stackY + buttonH + spacing.md;
     this.panel.addChild(playFriend);
     this.buttons.push(playFriend);
+
+    const playFfa = new Button({
+      label: "PLAY FFA",
+      width: buttonW,
+      height: buttonH,
+      onActivate: withClickSound(() => this.transitionTo("ffa-config")),
+    });
+    attachButtonHover(playFfa);
+    playFfa.x = Math.round((PANEL_W - buttonW) / 2);
+    playFfa.y = stackY + (buttonH + spacing.md) * 2;
+    this.panel.addChild(playFfa);
+    this.buttons.push(playFfa);
   }
 
   private buildBotDifficultyButtons(): void {
@@ -220,25 +246,138 @@ export class MainMenuScreen extends Container implements Screen {
     this.buttons.push(back);
   }
 
+  private buildFfaConfigButtons(): void {
+    const buttonW = 320;
+    const buttonH = 48;
+    const stackY = this.title.y + this.title.height + spacing.xl + spacing.lg;
+
+    this.ffaPlayersButton = new Button({
+      label: this.ffaPlayersLabel(),
+      width: buttonW,
+      height: buttonH,
+      onActivate: withClickSound(() => this.cycleFfaPlayerCount()),
+    });
+    attachButtonHover(this.ffaPlayersButton);
+    this.ffaPlayersButton.x = Math.round((PANEL_W - buttonW) / 2);
+    this.ffaPlayersButton.y = stackY;
+    this.panel.addChild(this.ffaPlayersButton);
+    this.buttons.push(this.ffaPlayersButton);
+
+    this.ffaBotsButton = new Button({
+      label: this.ffaBotsLabel(),
+      width: buttonW,
+      height: buttonH,
+      onActivate: withClickSound(() => this.cycleFfaBotCount()),
+    });
+    attachButtonHover(this.ffaBotsButton);
+    this.ffaBotsButton.x = Math.round((PANEL_W - buttonW) / 2);
+    this.ffaBotsButton.y = stackY + (buttonH + spacing.sm);
+    this.panel.addChild(this.ffaBotsButton);
+    this.buttons.push(this.ffaBotsButton);
+
+    this.ffaDifficultyButton = new Button({
+      label: this.ffaDifficultyLabel(),
+      width: buttonW,
+      height: buttonH,
+      onActivate: withClickSound(() => this.cycleFfaDifficulty()),
+    });
+    attachButtonHover(this.ffaDifficultyButton);
+    this.ffaDifficultyButton.x = Math.round((PANEL_W - buttonW) / 2);
+    this.ffaDifficultyButton.y = stackY + (buttonH + spacing.sm) * 2;
+    this.panel.addChild(this.ffaDifficultyButton);
+    this.buttons.push(this.ffaDifficultyButton);
+
+    const start = new Button({
+      label: "START",
+      width: buttonW,
+      height: buttonH,
+      onActivate: withClickSound(() =>
+        this.options.onPlayFfa({
+          playerCount: this.ffaPlayerCount,
+          botCount: this.ffaBotCount,
+          difficulty: this.ffaDifficulty,
+        }),
+      ),
+    });
+    attachButtonHover(start);
+    start.x = Math.round((PANEL_W - buttonW) / 2);
+    start.y = stackY + (buttonH + spacing.sm) * 3 + spacing.md;
+    this.panel.addChild(start);
+    this.buttons.push(start);
+
+    const back = new Button({
+      label: "BACK",
+      width: buttonW,
+      height: buttonH,
+      onActivate: withClickSound(() => this.transitionTo("root")),
+    });
+    attachButtonHover(back);
+    back.x = Math.round((PANEL_W - buttonW) / 2);
+    back.y = start.y + buttonH + spacing.sm;
+    this.panel.addChild(back);
+    this.buttons.push(back);
+  }
+
+  private cycleFfaPlayerCount(): void {
+    const idx = FFA_PLAYER_COUNTS.indexOf(this.ffaPlayerCount);
+    const next = FFA_PLAYER_COUNTS[(idx + 1) % FFA_PLAYER_COUNTS.length] as FfaPlayerCount;
+    this.ffaPlayerCount = next;
+    if (this.ffaBotCount > next - 1) this.ffaBotCount = next - 1;
+    this.refreshFfaLabels();
+  }
+
+  private cycleFfaBotCount(): void {
+    const cap = this.ffaPlayerCount - 1;
+    this.ffaBotCount = (this.ffaBotCount + 1) % (cap + 1);
+    this.refreshFfaLabels();
+  }
+
+  private cycleFfaDifficulty(): void {
+    const idx = FFA_DIFFICULTIES.indexOf(this.ffaDifficulty);
+    this.ffaDifficulty = FFA_DIFFICULTIES[(idx + 1) % FFA_DIFFICULTIES.length] as BotDifficulty;
+    this.refreshFfaLabels();
+  }
+
+  private refreshFfaLabels(): void {
+    this.ffaPlayersButton?.setLabel(this.ffaPlayersLabel());
+    this.ffaBotsButton?.setLabel(this.ffaBotsLabel());
+    this.ffaDifficultyButton?.setLabel(this.ffaDifficultyLabel());
+  }
+
+  private ffaPlayersLabel(): string {
+    return `PLAYERS: ${this.ffaPlayerCount}`;
+  }
+
+  private ffaBotsLabel(): string {
+    return `BOTS: ${this.ffaBotCount}`;
+  }
+
+  private ffaDifficultyLabel(): string {
+    return `DIFFICULTY: ${this.ffaDifficulty.toUpperCase()}`;
+  }
+
   private refreshFocus(): void {
     for (const button of this.buttons) this.focus.register(button);
     this.focus.attach();
   }
 
-  // Test seam: which view is currently rendered.
   testView(): View {
     return this.view;
   }
 
-  // Test seam: trigger a view transition without animation timing concerns.
   testTransitionTo(target: View): void {
     this.transitionTo(target);
   }
+
+  testFfaConfig(): FfaConfig {
+    return {
+      playerCount: this.ffaPlayerCount,
+      botCount: this.ffaBotCount,
+      difficulty: this.ffaDifficulty,
+    };
+  }
 }
 
-// Local helper: run anims in parallel, fire onComplete once when all finish
-// (or immediately if there are none). Mirrors the parallel() compose primitive
-// but lets us avoid wrapping every animation list in an extra closure.
 function parallelOnce(
   anims: ReadonlyArray<(done: () => void) => TweenHandle>,
   onComplete: () => void,

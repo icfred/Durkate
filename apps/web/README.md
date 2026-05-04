@@ -40,6 +40,48 @@ server state over websocket and to local Zustand stores for UI state.
   opponent" state until reconnect; `gameover` is sticky and never
   reverts.
 
+## FFA mode (3-6 player free-for-all)
+
+The MVP started as 1v1, then opened up to 3-6 player FFA once the engine
+(ADR-0010) and worker (DUR-52) supported it. The web side renders all of it:
+
+- **Main menu**: three entry points - PLAY VS BOT (1v1 vs medium bot), PLAY VS
+  FRIEND (1v1 friend share), PLAY FFA (configurator). The FFA configurator is a
+  third sub-view next to BOT-DIFFICULTY; rows cycle on Enter through PLAYERS
+  (2..6), BOTS (0..playerCount-1, re-clamped if you cycle players down), and
+  DIFFICULTY (easy/medium/hard - hidden from the wire when `botCount === 0`).
+  Backspace returns to root via the shared `attachBackNav` helper.
+- **Lobby**: shows `X / Y JOINED` (Y = `playerCount - botCount`) and renders
+  one COPY LINK button per join token in `appStore.joinTokens` - the host hands
+  out a different URL per remaining seat. Solo-vs-bots rooms hide the share
+  section entirely. Each share URL is `#room=<id>&t=<token>&pc=<N>&bc=<M>` so
+  the joiner's lobby renders the right "X / Y joined" before the first
+  `RoomState`.
+- **GameScreen radial layout** (per N seats):
+  - N=2: opponent at top, self at bottom (current).
+  - N=3: opponents at top-right and top-left.
+  - N=4: opponents at right, top, left.
+  - N=5: opponents at bottom-right, top-right, top-left, bottom-left.
+  - N=6: five opponents evenly spaced around the upper half.
+  Each opponent slot renders a face-down card stack with `× N` count badge,
+  seat name (defaults to `Player {n+1}`), turn highlight, `thinking…` pulse
+  when the seat appears in `appStore.room.thinkingSeats`, per-seat disconnect
+  hint, and an "OUT" overlay when the seat is in `appStore.room.eliminated`.
+- **Spectator mode**: when `snapshot.you.hand.length === 0` while the round is
+  still running, the bottom hand row is replaced with the
+  `YOU'RE OUT — SPECTATING` banner and `T` / `E` / card-pick are gated
+  client-side. The mute toggle still works. On `GAME_OVER` the rematch flow is
+  unchanged.
+- **Share URL parsing**: `parseHashJoin` supports both single-token URLs
+  (`#room=ABCD&t=tok`) and multi-token URLs (`#room=ABCD&t=tok1,tok2,tok3`).
+  Optional `&pc=N&bc=M` carries the room shape so the joiner can render the
+  right "X / Y joined" before the first `RoomState`. The joiner consumes the
+  first token; if the worker rejects it the user sees the standard error
+  toast.
+- **Sandbox**: `?sandbox=game&fixture=ffa-3` (and `ffa-4`, `ffa-5`, `ffa-6`)
+  renders the GameScreen against a hand-rolled mid-round snapshot to eyeball
+  every layout slot.
+
 ## HUD
 
 `GameScreen` overlays the table with a turn-state HUD so the player always
@@ -87,7 +129,8 @@ knows whose turn it is, what's legal, and which keys do what.
 - `?sandbox=game` boots straight into `GameScreen` against a hand-rolled
   fixture `Snapshot`, bypassing the lobby. Pick a fixture with
   `?sandbox=game&fixture=<name>`; valid names are `fresh`, `midround`,
-  `takepile`, `gameover`. Defaults to `fresh`.
+  `takepile`, `trumpdrawn`, `gameover`, `ffa-3`, `ffa-4`, `ffa-5`, `ffa-6`.
+  Defaults to `fresh`.
 - `?sandbox=gameover&fixture=won|lost|draw` boots straight into
   `GameOverScreen` with a fixture from `src/fixtures/gameOverFixtures.ts`.
   Lets a reviewer eyeball each outcome without playing a full round.

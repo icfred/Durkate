@@ -63,12 +63,15 @@ export function createConnectionController(
       store.getState().setError(msg.code, msg.message);
     },
     onRoomState: (msg) => {
+      const disconnects = msg.disconnects ?? (msg.disconnect ? [msg.disconnect] : []);
       store.getState().setRoomMembership({
         seats: msg.seats,
         you: msg.you,
         rematchRequested: msg.rematchRequested,
-        disconnect: msg.disconnect ?? null,
+        disconnect: disconnects[0] ?? null,
+        disconnects,
         thinkingSeats: msg.thinkingSeats ?? [],
+        eliminated: msg.eliminated ?? [],
       });
     },
     onStatus: (status, info) => {

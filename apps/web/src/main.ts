@@ -18,7 +18,7 @@ import { ScreenRouter } from "./screenRouter.js";
 import { GameOverScreen } from "./screens/GameOverScreen.js";
 import { GameScreen } from "./screens/GameScreen.js";
 import { LobbyScreen } from "./screens/LobbyScreen.js";
-import { MainMenuScreen } from "./screens/MainMenuScreen.js";
+import { type FfaConfig, MainMenuScreen } from "./screens/MainMenuScreen.js";
 import { type FixtureName, isFixtureName, loadFixture } from "./screens/sandboxFixtures.js";
 import type { Screen } from "./screens/types.js";
 import {
@@ -84,8 +84,20 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
   const wsUrl = resolveWsUrl();
   const httpUrl = resolveHttpServerUrl(wsUrl);
 
-  const startCreate = (mode: Mode, difficulty?: BotDifficulty) => {
-    void runRoomCreation(mode, httpUrl, difficulty);
+  const startBot = (difficulty: BotDifficulty) => {
+    void runRoomCreation({ mode: "bot", playerCount: 2, botCount: 1, difficulty }, httpUrl);
+  };
+  const startFriend = () => {
+    void runRoomCreation({ mode: "friend", playerCount: 2, botCount: 0 }, httpUrl);
+  };
+  const startFfa = (config: FfaConfig) => {
+    const payload: RoomCreationStart = {
+      mode: "ffa",
+      playerCount: config.playerCount,
+      botCount: config.botCount,
+    };
+    if (config.botCount > 0) payload.difficulty = config.difficulty;
+    void runRoomCreation(payload, httpUrl);
   };
 
   const router = new ScreenRouter({
@@ -94,20 +106,37 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
       switch (state.phase) {
         case "menu":
           return new MainMenuScreen({
-            onPlayBot: (difficulty) => startCreate("bot", difficulty),
-            onPlayFriend: () => startCreate("friend"),
+            onPlayBot: startBot,
+            onPlayFriend: startFriend,
+            onPlayFfa: startFfa,
           });
         case "lobby": {
           const mode = state.mode ?? "friend";
           const roomCode = state.roomCode ?? "";
-          const shareUrl =
-            mode === "friend" && state.shareToken
-              ? buildShareUrl(window.location.origin, roomCode, state.shareToken)
-              : `${window.location.origin}/#room=${encodeURIComponent(roomCode)}`;
+          const playerCount = state.playerCount ?? 2;
+          const botCount = state.botCount ?? (mode === "bot" ? 1 : 0);
+          const humansExpected = playerCount - botCount;
+          const tokens = state.joinTokens;
+          const shareTokens =
+            mode === "bot" || humansExpected <= 1
+              ? []
+              : tokens.length > 0
+                ? tokens
+                : state.shareToken
+                  ? [state.shareToken]
+                  : [];
+          const shareUrls = shareTokens.map((token) =>
+            buildShareUrl(window.location.origin, roomCode, token, {
+              playerCount,
+              botCount,
+            }),
+          );
           return new LobbyScreen({
             mode,
             roomCode,
-            shareUrl,
+            playerCount,
+            botCount,
+            shareUrls,
             initialRoom: state.room,
             initialCreation: state.roomCreation,
             subscribe: (listener) =>
@@ -118,7 +147,7 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
               appStore.subscribe((next, prev) => {
                 if (next.roomCreation !== prev.roomCreation) listener(next.roomCreation);
               }),
-            onRetry: () => startCreate(mode, state.botDifficulty),
+            onRetry: () => retryRoomCreation(state, httpUrl),
             onJoin: (next) => {
               appStore.getState().showLobby({ mode, roomCode: next });
             },
@@ -204,31 +233,63 @@ function applyBootRouting(): void {
   }
   const join = parseHashJoin(window.location.hash);
   if (join) {
-    appStore.getState().enterLobbyAsJoiner(join);
+    const payload: { roomCode: string; token: string; playerCount?: number; botCount?: number } = {
+      roomCode: join.roomCode,
+      token: join.token,
+    };
+    if (join.playerCount !== undefined) payload.playerCount = join.playerCount;
+    if (join.botCount !== undefined) payload.botCount = join.botCount;
+    appStore.getState().enterLobbyAsJoiner(payload);
   }
 }
 
-async function runRoomCreation(
-  mode: Mode,
-  httpUrl: string,
-  difficulty?: BotDifficulty,
-): Promise<void> {
-  appStore.getState().beginRoomCreation(difficulty === undefined ? { mode } : { mode, difficulty });
-  const apiMode = mode === "bot" ? "bot" : "human";
-  const createOptions =
-    difficulty === undefined ? { serverUrl: httpUrl } : { serverUrl: httpUrl, difficulty };
+interface RoomCreationStart {
+  mode: Mode;
+  playerCount: 2 | 3 | 4 | 5 | 6;
+  botCount: number;
+  difficulty?: BotDifficulty;
+}
+
+async function runRoomCreation(start: RoomCreationStart, httpUrl: string): Promise<void> {
+  const beginPayload: {
+    mode: Mode;
+    playerCount: number;
+    botCount: number;
+    difficulty?: BotDifficulty;
+  } = {
+    mode: start.mode,
+    playerCount: start.playerCount,
+    botCount: start.botCount,
+  };
+  if (start.difficulty !== undefined) beginPayload.difficulty = start.difficulty;
+  appStore.getState().beginRoomCreation(beginPayload);
+  const createOptions: Parameters<typeof createRoom>[0] = {
+    serverUrl: httpUrl,
+    playerCount: start.playerCount,
+    botCount: start.botCount,
+  };
+  if (start.difficulty !== undefined) createOptions.difficulty = start.difficulty;
   try {
-    const response = await createRoom(apiMode, createOptions);
+    const response = await createRoom(createOptions);
     appStore.getState().roomCreated({
       roomId: response.roomId,
       hostToken: response.hostToken,
-      shareToken: response.joinToken ?? null,
+      joinTokens: response.joinTokens,
     });
   } catch (err) {
     const message =
       err instanceof CreateRoomError ? err.message : `unexpected error: ${String(err)}`;
     appStore.getState().roomCreationFailed(message);
   }
+}
+
+function retryRoomCreation(state: AppState, httpUrl: string): void {
+  const mode = state.mode ?? "friend";
+  const playerCount = (state.playerCount ?? 2) as 2 | 3 | 4 | 5 | 6;
+  const botCount = state.botCount ?? (mode === "bot" ? 1 : 0);
+  const start: RoomCreationStart = { mode, playerCount, botCount };
+  if (state.botDifficulty !== undefined) start.difficulty = state.botDifficulty;
+  void runRoomCreation(start, httpUrl);
 }
 
 function resolveWsUrl(): string {

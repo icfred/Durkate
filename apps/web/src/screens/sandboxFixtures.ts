@@ -1,6 +1,15 @@
 import type { Snapshot } from "@durak/protocol";
 
-export type FixtureName = "fresh" | "midround" | "takepile" | "trumpdrawn" | "gameover";
+export type FixtureName =
+  | "fresh"
+  | "midround"
+  | "takepile"
+  | "trumpdrawn"
+  | "gameover"
+  | "ffa-3"
+  | "ffa-4"
+  | "ffa-5"
+  | "ffa-6";
 
 export const FIXTURE_NAMES: readonly FixtureName[] = [
   "fresh",
@@ -8,6 +17,10 @@ export const FIXTURE_NAMES: readonly FixtureName[] = [
   "takepile",
   "trumpdrawn",
   "gameover",
+  "ffa-3",
+  "ffa-4",
+  "ffa-5",
+  "ffa-6",
 ];
 
 const trump = { suit: "hearts", rank: 6 } as const;
@@ -145,12 +158,50 @@ const gameover: Snapshot = {
   },
 };
 
+function ffaFixture(playerCount: 3 | 4 | 5 | 6): Snapshot {
+  const handCounts = Array.from({ length: playerCount }, (_, i) => (i === 2 ? 4 : 6));
+  return {
+    phase: "in-round",
+    playerCount,
+    handCounts,
+    talonCount: Math.max(0, 36 - playerCount * 6),
+    trump,
+    trumpSuit,
+    table: [
+      {
+        attack: { suit: "spades", rank: 8 },
+        defense: { suit: "spades", rank: 12 },
+      },
+      { attack: { suit: "clubs", rank: 8 } },
+    ],
+    attacker: 0,
+    defender: 1,
+    discard: [],
+    seat: 0,
+    you: {
+      seat: 0,
+      hand: [
+        { suit: "spades", rank: 7 },
+        { suit: "clubs", rank: 9 },
+        { suit: "diamonds", rank: 10 },
+        { suit: "hearts", rank: 11 },
+        { suit: "spades", rank: 13 },
+        { suit: "clubs", rank: 14 },
+      ],
+    },
+  };
+}
+
 const FIXTURES: Record<FixtureName, Snapshot> = {
   fresh,
   midround,
   takepile,
   trumpdrawn,
   gameover,
+  "ffa-3": ffaFixture(3),
+  "ffa-4": ffaFixture(4),
+  "ffa-5": ffaFixture(5),
+  "ffa-6": ffaFixture(6),
 };
 
 export function loadFixture(name: FixtureName): Snapshot {

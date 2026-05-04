@@ -31,7 +31,13 @@ const fadeToMock = vi.mocked(anim.fadeTo);
 const parallelMock = vi.mocked(anim.parallel);
 
 function findByLabel(container: Container, label: string): Container | undefined {
-  return container.children.find((c) => (c as Container).label === label) as Container | undefined;
+  for (const child of container.children) {
+    const c = child as Container;
+    if (c.label === label) return c;
+    const inner = findByLabel(c, label);
+    if (inner) return inner;
+  }
+  return undefined;
 }
 
 const press = (key: string): KeyboardEvent =>
@@ -42,7 +48,7 @@ describe("GameScreen", () => {
     const screen = new GameScreen({ snapshot: null, submitAction: vi.fn() });
     screen.layout(800, 600);
 
-    expect(findByLabel(screen, "opponent-hand")?.visible).toBe(false);
+    expect(findByLabel(screen, "opponent-layer")?.visible).toBe(false);
     expect(findByLabel(screen, "table")?.visible).toBe(false);
     expect(findByLabel(screen, "talon")?.visible).toBe(false);
     expect(findByLabel(screen, "discard")?.visible).toBe(false);
@@ -365,7 +371,9 @@ describe("GameScreen", () => {
         you: 0,
         rematchRequested: [],
         disconnect: { seat: 1, forfeitAt: 1_000_000 + 12_000 },
+        disconnects: [{ seat: 1, forfeitAt: 1_000_000 + 12_000 }],
         thinkingSeats: [],
+        eliminated: [],
       });
     }
     expect(banner?.visible).toBe(true);
@@ -377,7 +385,9 @@ describe("GameScreen", () => {
         you: 0,
         rematchRequested: [],
         disconnect: null,
+        disconnects: [],
         thinkingSeats: [],
+        eliminated: [],
       });
     }
     expect(banner?.visible).toBe(false);
@@ -402,7 +412,7 @@ describe("GameScreen", () => {
     });
     screen.layout(800, 600);
 
-    const label = findByLabel(screen, "thinking-label");
+    const label = findByLabel(screen, "thinking-1");
     expect(label?.visible).toBe(false);
 
     for (const listener of listeners) {
@@ -411,7 +421,9 @@ describe("GameScreen", () => {
         you: 0,
         rematchRequested: [],
         disconnect: null,
+        disconnects: [],
         thinkingSeats: [1],
+        eliminated: [],
       });
     }
     expect(label?.visible).toBe(true);
@@ -422,7 +434,9 @@ describe("GameScreen", () => {
         you: 0,
         rematchRequested: [],
         disconnect: null,
+        disconnects: [],
         thinkingSeats: [],
+        eliminated: [],
       });
     }
     expect(label?.visible).toBe(false);
@@ -479,6 +493,80 @@ describe("GameScreen", () => {
 
     expect(findByLabel(screen, "my-hand")?.children.length).toBe(fresh.you.hand.length);
 
+    screen.dispose();
+  });
+});
+
+describe("GameScreen N-player layout", () => {
+  function countOpponentSlots(screen: GameScreen): number {
+    const layer = findByLabel(screen, "opponent-layer");
+    return layer?.children.length ?? 0;
+  }
+
+  for (const fixture of ["ffa-3", "ffa-4", "ffa-5", "ffa-6"] as const) {
+    it(`renders the right number of opponent slots for ${fixture}`, () => {
+      const snapshot = loadFixture(fixture);
+      const screen = new GameScreen({ snapshot, submitAction: vi.fn() });
+      screen.layout(1024, 720);
+      expect(countOpponentSlots(screen)).toBe(snapshot.playerCount - 1);
+      screen.dispose();
+    });
+  }
+
+  it("renders the eliminated overlay when the room marks a seat out", () => {
+    type RoomListener = (room: import("../store.js").RoomMembership | null) => void;
+    const listeners: RoomListener[] = [];
+    const snapshot = loadFixture("ffa-4");
+    const screen = new GameScreen({
+      snapshot,
+      submitAction: vi.fn(),
+      subscribeRoom: (listener) => {
+        listeners.push(listener);
+        return () => {
+          const idx = listeners.indexOf(listener);
+          if (idx >= 0) listeners.splice(idx, 1);
+        };
+      },
+    });
+    screen.layout(1024, 720);
+
+    for (const listener of listeners) {
+      listener({
+        seats: [{ name: "you" }, { name: "B1" }, { name: "B2" }, { name: "B3" }],
+        you: 0,
+        rematchRequested: [],
+        disconnect: null,
+        disconnects: [],
+        thinkingSeats: [],
+        eliminated: [2],
+      });
+    }
+    expect(findByLabel(screen, "eliminated-2")?.visible).toBe(true);
+    expect(findByLabel(screen, "eliminated-1")?.visible).toBe(false);
+    screen.dispose();
+  });
+});
+
+describe("GameScreen spectator mode", () => {
+  it("renders the spectator banner when the user's hand is empty mid-round", () => {
+    const snapshot = loadFixture("ffa-4");
+    const spectated = { ...snapshot, you: { ...snapshot.you, hand: [] } };
+    const screen = new GameScreen({ snapshot: spectated, submitAction: vi.fn() });
+    screen.layout(1024, 720);
+    expect(findByLabel(screen, "spectator-banner")?.visible).toBe(true);
+    expect(findByLabel(screen, "my-hand")?.visible).toBe(false);
+    screen.dispose();
+  });
+
+  it("gates submitAction while spectating", () => {
+    const snapshot = loadFixture("ffa-4");
+    const spectated = { ...snapshot, you: { ...snapshot.you, hand: [] } };
+    const submitAction = vi.fn();
+    const screen = new GameScreen({ snapshot: spectated, submitAction });
+    screen.layout(1024, 720);
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "T" }));
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "E" }));
+    expect(submitAction).not.toHaveBeenCalled();
     screen.dispose();
   });
 });

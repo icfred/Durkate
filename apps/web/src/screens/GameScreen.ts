@@ -18,6 +18,8 @@ const CARD_W = 60;
 const CARD_H = 88;
 const HAND_GAP = 6;
 const SECTION_PADDING = spacing.lg;
+const OPPONENT_STACK_OFFSET_X = 4;
+const OPPONENT_STACK_OFFSET_Y = 3;
 
 const ERROR_TOAST_MS = 3000;
 const TURN_PULSE_PERIOD_MS = 1200;
@@ -151,20 +153,251 @@ class CardView extends Container implements Focusable {
   }
 }
 
+class OpponentSlot extends Container {
+  readonly seat: SeatIndex;
+  readonly cardStack: Container;
+  readonly nameText: Text;
+  private readonly countText: Text;
+  private readonly turnPulse: Graphics;
+  private readonly thinkingText: Text;
+  private readonly disconnectText: Text;
+  private readonly eliminatedOverlay: Graphics;
+  private readonly eliminatedLabel: Text;
+  private turnPulseAlpha = 0;
+
+  constructor(seat: SeatIndex) {
+    super();
+    this.seat = seat;
+    this.label = `opponent-slot-${seat}`;
+
+    this.turnPulse = new Graphics();
+    this.turnPulse.alpha = 0;
+    this.addChild(this.turnPulse);
+
+    this.cardStack = new Container();
+    this.addChild(this.cardStack);
+
+    this.nameText = new Text({
+      text: `Player ${seat + 1}`,
+      style: {
+        fontFamily: typography.family,
+        fontSize: typography.size.xs,
+        fontWeight: typography.weight.bold,
+        fill: color.text,
+        letterSpacing: typography.letterSpacing.wide,
+      },
+    });
+    this.addChild(this.nameText);
+
+    this.countText = new Text({
+      text: "× 0",
+      style: {
+        fontFamily: typography.family,
+        fontSize: typography.size.xs,
+        fill: color.textMuted,
+        letterSpacing: typography.letterSpacing.wide,
+      },
+    });
+    this.addChild(this.countText);
+
+    this.thinkingText = new Text({
+      text: "thinking…",
+      style: {
+        fontFamily: typography.family,
+        fontSize: typography.size.xs,
+        fontWeight: typography.weight.bold,
+        fill: color.textMuted,
+        letterSpacing: typography.letterSpacing.wide,
+      },
+    });
+    this.thinkingText.label = `thinking-${seat}`;
+    this.thinkingText.visible = false;
+    this.addChild(this.thinkingText);
+
+    this.disconnectText = new Text({
+      text: "",
+      style: {
+        fontFamily: typography.family,
+        fontSize: typography.size.xs,
+        fontWeight: typography.weight.bold,
+        fill: color.danger,
+        letterSpacing: typography.letterSpacing.wide,
+      },
+    });
+    this.disconnectText.label = `disconnect-${seat}`;
+    this.disconnectText.visible = false;
+    this.addChild(this.disconnectText);
+
+    this.eliminatedOverlay = new Graphics();
+    this.eliminatedOverlay.visible = false;
+    this.addChild(this.eliminatedOverlay);
+
+    this.eliminatedLabel = new Text({
+      text: "OUT",
+      style: {
+        fontFamily: typography.family,
+        fontSize: typography.size.sm,
+        fontWeight: typography.weight.bold,
+        fill: color.textMuted,
+        letterSpacing: typography.letterSpacing.stamp,
+      },
+    });
+    this.eliminatedLabel.label = `eliminated-${seat}`;
+    this.eliminatedLabel.visible = false;
+    this.addChild(this.eliminatedLabel);
+  }
+
+  setName(name: string): void {
+    if (this.nameText.text !== name) this.nameText.text = name;
+  }
+
+  setHandCount(count: number): void {
+    this.cardStack.removeChildren();
+    const visibleCount = Math.min(count, 6);
+    for (let i = 0; i < visibleCount; i += 1) {
+      const card = new CardView(null, true);
+      card.x = i * OPPONENT_STACK_OFFSET_X;
+      card.y = i * OPPONENT_STACK_OFFSET_Y;
+      this.cardStack.addChild(card);
+    }
+    this.countText.text = `× ${count}`;
+  }
+
+  setTurnActive(active: boolean): void {
+    this.turnPulseAlpha = active ? 1 : 0;
+    this.turnPulse.alpha = active ? 0.45 : 0;
+  }
+
+  setThinking(active: boolean): void {
+    this.thinkingText.visible = active;
+  }
+
+  setDisconnect(state: DisconnectState | null, now: number): void {
+    if (!state) {
+      this.disconnectText.visible = false;
+      return;
+    }
+    const remaining = Math.max(0, Math.ceil((state.forfeitAt - now) / 1000));
+    this.disconnectText.text = `DISC ${remaining}s`;
+    this.disconnectText.visible = true;
+  }
+
+  setEliminated(eliminated: boolean): void {
+    this.eliminatedOverlay.visible = eliminated;
+    this.eliminatedLabel.visible = eliminated;
+  }
+
+  layoutChildren(): void {
+    const stackW = CARD_W + 5 * OPPONENT_STACK_OFFSET_X;
+    const stackH = CARD_H + 5 * OPPONENT_STACK_OFFSET_Y;
+
+    this.cardStack.x = Math.round(-stackW / 2);
+    this.cardStack.y = Math.round(-stackH / 2);
+
+    this.nameText.x = Math.round(-this.nameText.width / 2);
+    this.nameText.y = Math.round(stackH / 2) + spacing.xs;
+
+    this.countText.x = Math.round(-this.countText.width / 2);
+    this.countText.y = this.nameText.y + this.nameText.height + 2;
+
+    this.thinkingText.x = Math.round(-this.thinkingText.width / 2);
+    this.thinkingText.y = this.countText.y + this.countText.height + 2;
+
+    this.disconnectText.x = Math.round(-this.disconnectText.width / 2);
+    this.disconnectText.y = Math.round(-stackH / 2) - this.disconnectText.height - 2;
+
+    const padX = spacing.sm;
+    const padY = spacing.xs;
+    this.turnPulse
+      .clear()
+      .roundRect(
+        Math.round(-stackW / 2) - padX,
+        Math.round(-stackH / 2) - padY,
+        stackW + padX * 2,
+        stackH + padY * 2,
+        6,
+      )
+      .fill({ color: color.accent });
+
+    this.eliminatedOverlay
+      .clear()
+      .roundRect(
+        Math.round(-stackW / 2) - padX,
+        Math.round(-stackH / 2) - padY,
+        stackW + padX * 2,
+        stackH + padY * 2,
+        6,
+      )
+      .fill({ color: color.bg, alpha: 0.65 });
+    this.eliminatedLabel.x = Math.round(-this.eliminatedLabel.width / 2);
+    this.eliminatedLabel.y = Math.round(-this.eliminatedLabel.height / 2);
+  }
+
+  applyTurnPulse(alpha: number): void {
+    if (this.turnPulseAlpha > 0) {
+      this.turnPulse.alpha = alpha;
+    }
+  }
+
+  applyThinkingPulse(alpha: number): void {
+    if (this.thinkingText.visible) this.thinkingText.alpha = alpha;
+  }
+
+  /** World-space center of the card stack. */
+  stackWorldCenter(): { x: number; y: number } {
+    return { x: this.x, y: this.y };
+  }
+}
+
+interface SlotPosition {
+  xFrac: number;
+  yFrac: number;
+}
+
+function radialOpponentPositions(playerCount: number): SlotPosition[] {
+  switch (playerCount) {
+    case 2:
+      return [{ xFrac: 0.5, yFrac: 0.18 }];
+    case 3:
+      return [
+        { xFrac: 0.7, yFrac: 0.22 },
+        { xFrac: 0.3, yFrac: 0.22 },
+      ];
+    case 4:
+      return [
+        { xFrac: 0.85, yFrac: 0.5 },
+        { xFrac: 0.5, yFrac: 0.18 },
+        { xFrac: 0.15, yFrac: 0.5 },
+      ];
+    case 5:
+      return [
+        { xFrac: 0.85, yFrac: 0.6 },
+        { xFrac: 0.75, yFrac: 0.22 },
+        { xFrac: 0.25, yFrac: 0.22 },
+        { xFrac: 0.15, yFrac: 0.6 },
+      ];
+    case 6:
+      return [
+        { xFrac: 0.88, yFrac: 0.62 },
+        { xFrac: 0.78, yFrac: 0.25 },
+        { xFrac: 0.5, yFrac: 0.16 },
+        { xFrac: 0.22, yFrac: 0.25 },
+        { xFrac: 0.12, yFrac: 0.62 },
+      ];
+    default:
+      return [];
+  }
+}
+
 export interface GameScreenOptions {
   snapshot: Snapshot | null;
   submitAction: (action: Action) => void;
   subscribe?: (listener: (snapshot: Snapshot | null) => void) => () => void;
   subscribeEvents?: (listener: (events: Event[]) => void) => () => void;
-  /** Test seam: subscribe to lastError changes. Defaults to appStore. */
   subscribeError?: (listener: (error: ServerError | null) => void) => () => void;
-  /** Initial room membership (carries the disconnect banner state). */
   initialRoom?: RoomMembership | null;
-  /** Test seam: subscribe to room-membership changes. Defaults to appStore. */
   subscribeRoom?: (listener: (room: RoomMembership | null) => void) => () => void;
-  /** Test seam: replaces Ticker.shared. */
   ticker?: Ticker;
-  /** Test seam: replaces Date.now() for the disconnect countdown. */
   now?: () => number;
 }
 
@@ -179,12 +412,14 @@ export class GameScreen extends Container implements Screen {
   private readonly disconnectBanner: Container;
   private readonly disconnectBannerBg: Graphics;
   private readonly disconnectBannerText: Text;
-  private readonly thinkingLabel: Text;
-  private readonly opponentRow: Container;
+  private readonly opponentLayer: Container;
   private readonly tableRow: Container;
   private readonly leftStack: Container;
   private readonly rightStack: Container;
   private readonly myHandRow: Container;
+  private readonly spectatorBanner: Container;
+  private readonly spectatorBannerBg: Graphics;
+  private readonly spectatorBannerText: Text;
   private readonly animLayer: Container;
   private readonly submitAction: (action: Action) => void;
   private readonly extraKeysHandler: (event: KeyboardEvent) => void;
@@ -194,7 +429,7 @@ export class GameScreen extends Container implements Screen {
   private readonly detachFocusNavSfx: () => void;
   private readonly subscribeRoomUnsub: (() => void) | null;
   private readonly now: () => number;
-  private disconnect: DisconnectState | null = null;
+  private room: RoomMembership | null = null;
   private readonly ticker: Ticker;
   private readonly tickCallback: () => void;
   private readonly activeAnims: TweenHandle[] = [];
@@ -206,8 +441,8 @@ export class GameScreen extends Container implements Screen {
   private turnPulseElapsed = 0;
   private turnPulseActive = false;
   private thinkingPulseElapsed = 0;
-  private thinkingSeats: SeatIndex[] = [];
   private errorVisibleMs = 0;
+  private opponentSlots = new Map<SeatIndex, OpponentSlot>();
 
   constructor(options: GameScreenOptions) {
     super();
@@ -289,40 +524,44 @@ export class GameScreen extends Container implements Screen {
     this.disconnectBanner.addChild(this.disconnectBannerText);
     this.addChild(this.disconnectBanner);
 
-    this.thinkingLabel = new Text({
-      text: "thinking…",
-      style: {
-        fontFamily: typography.family,
-        fontSize: typography.size.xs,
-        fontWeight: typography.weight.bold,
-        fill: color.textMuted,
-        letterSpacing: typography.letterSpacing.wide,
-      },
-    });
-    this.thinkingLabel.label = "thinking-label";
-    this.thinkingLabel.visible = false;
-    this.addChild(this.thinkingLabel);
-
-    this.opponentRow = new Container();
+    this.opponentLayer = new Container();
     this.tableRow = new Container();
     this.leftStack = new Container();
     this.rightStack = new Container();
     this.myHandRow = new Container();
     this.animLayer = new Container();
 
-    this.opponentRow.label = "opponent-hand";
+    this.opponentLayer.label = "opponent-layer";
     this.tableRow.label = "table";
     this.leftStack.label = "talon";
     this.rightStack.label = "discard";
     this.myHandRow.label = "my-hand";
     this.animLayer.label = "anim-layer";
 
-    this.addChild(this.opponentRow);
+    this.addChild(this.opponentLayer);
     this.addChild(this.tableRow);
     this.addChild(this.leftStack);
     this.addChild(this.rightStack);
     this.addChild(this.myHandRow);
     this.addChild(this.animLayer);
+
+    this.spectatorBanner = new Container();
+    this.spectatorBanner.label = "spectator-banner";
+    this.spectatorBanner.visible = false;
+    this.spectatorBannerBg = new Graphics();
+    this.spectatorBannerText = new Text({
+      text: "YOU'RE OUT — SPECTATING",
+      style: {
+        fontFamily: typography.family,
+        fontSize: typography.size.md,
+        fontWeight: typography.weight.bold,
+        fill: color.textMuted,
+        letterSpacing: typography.letterSpacing.stamp,
+      },
+    });
+    this.spectatorBanner.addChild(this.spectatorBannerBg);
+    this.spectatorBanner.addChild(this.spectatorBannerText);
+    this.addChild(this.spectatorBanner);
 
     this.extraKeysHandler = (event) => this.handleKeyDown(event);
     window.addEventListener("keydown", this.extraKeysHandler);
@@ -346,9 +585,7 @@ export class GameScreen extends Container implements Screen {
         appStore.subscribe((next, prev) => {
           if (next.room !== prev.room) listener(next.room);
         }));
-    const initialRoom = options.initialRoom ?? appStore.getState().room;
-    this.disconnect = initialRoom?.disconnect ?? null;
-    this.thinkingSeats = initialRoom?.thinkingSeats ?? [];
+    this.room = options.initialRoom ?? appStore.getState().room;
     this.subscribeRoomUnsub = subscribeRoom((room) => this.handleRoom(room));
 
     this.now = options.now ?? (() => Date.now());
@@ -361,7 +598,6 @@ export class GameScreen extends Container implements Screen {
     this.detachFocusNavSfx = attachFocusNavSfx(this.focus);
     this.render();
     this.renderDisconnectBanner();
-    this.renderThinkingLabel();
   }
 
   layout(viewWidth: number, viewHeight: number): void {
@@ -388,7 +624,6 @@ export class GameScreen extends Container implements Screen {
     this.prevSnapshot = this.snapshot;
     this.snapshot = snapshot;
     this.render();
-    this.renderThinkingLabel();
     this.layoutSections();
   }
 
@@ -458,37 +693,19 @@ export class GameScreen extends Container implements Screen {
   }
 
   private handleRoom(room: RoomMembership | null): void {
-    this.disconnect = room?.disconnect ?? null;
-    this.thinkingSeats = room?.thinkingSeats ?? [];
+    this.room = room;
+    this.refreshOpponentSlotState();
     this.renderDisconnectBanner();
-    this.renderThinkingLabel();
     this.layoutSections();
   }
 
-  private renderThinkingLabel(): void {
-    const opponentSeat = this.snapshot
-      ? nextSeat(this.snapshot.seat, this.snapshot.playerCount)
-      : null;
-    const active = opponentSeat !== null && this.thinkingSeats.includes(opponentSeat);
-    if (!active) {
-      this.thinkingLabel.visible = false;
-      this.thinkingPulseElapsed = 0;
-      return;
-    }
-    this.thinkingLabel.visible = true;
-    // Reset pulse phase on entry so the appearing label always starts in
-    // the same state — keeps the indicator's debut feeling deliberate
-    // rather than fading in mid-cycle.
-    this.thinkingPulseElapsed = 0;
-    this.thinkingLabel.alpha = 1;
-  }
-
   private renderDisconnectBanner(): void {
-    if (!this.disconnect) {
+    const earliest = this.room?.disconnects?.[0] ?? this.room?.disconnect ?? null;
+    if (!earliest) {
       this.disconnectBanner.visible = false;
       return;
     }
-    const remaining = Math.max(0, Math.ceil((this.disconnect.forfeitAt - this.now()) / 1000));
+    const remaining = Math.max(0, Math.ceil((earliest.forfeitAt - this.now()) / 1000));
     this.disconnectBannerText.text = `Opponent disconnected — forfeit in ${remaining}s`;
     const padX = spacing.md;
     const padY = spacing.sm;
@@ -539,15 +756,21 @@ export class GameScreen extends Container implements Screen {
       this.turnLabel.alpha = 0.7 + 0.3 * (0.5 + 0.5 * Math.cos(phase));
     }
 
-    if (this.thinkingLabel.visible) {
-      const speed = this.animSpeed();
-      if (speed > 0) {
-        this.thinkingPulseElapsed =
-          (this.thinkingPulseElapsed + deltaMs * speed) % THINKING_PULSE_PERIOD_MS;
-        const phase = (this.thinkingPulseElapsed / THINKING_PULSE_PERIOD_MS) * Math.PI * 2;
-        this.thinkingLabel.alpha = 0.4 + 0.6 * (0.5 + 0.5 * Math.cos(phase));
-      } else {
-        this.thinkingLabel.alpha = 1;
+    const speed = this.animSpeed();
+    if (speed > 0) {
+      this.thinkingPulseElapsed =
+        (this.thinkingPulseElapsed + deltaMs * speed) % THINKING_PULSE_PERIOD_MS;
+      const phase = (this.thinkingPulseElapsed / THINKING_PULSE_PERIOD_MS) * Math.PI * 2;
+      const thinkingAlpha = 0.4 + 0.6 * (0.5 + 0.5 * Math.cos(phase));
+      const turnPulseAlpha = 0.25 + 0.3 * (0.5 + 0.5 * Math.cos(phase));
+      for (const slot of this.opponentSlots.values()) {
+        slot.applyThinkingPulse(thinkingAlpha);
+        slot.applyTurnPulse(turnPulseAlpha);
+      }
+    } else {
+      for (const slot of this.opponentSlots.values()) {
+        slot.applyThinkingPulse(1);
+        slot.applyTurnPulse(0.45);
       }
     }
 
@@ -560,13 +783,12 @@ export class GameScreen extends Container implements Screen {
       }
     }
 
-    if (this.disconnect !== null) {
+    if ((this.room?.disconnects?.length ?? 0) > 0 || this.room?.disconnect) {
       this.renderDisconnectBanner();
     }
   }
 
   private render(): void {
-    this.opponentRow.removeChildren();
     this.tableRow.removeChildren();
     this.leftStack.removeChildren();
     this.rightStack.removeChildren();
@@ -575,12 +797,14 @@ export class GameScreen extends Container implements Screen {
 
     const snapshot = this.snapshot;
     if (!snapshot) {
+      this.disposeOpponentSlots();
       this.waiting.visible = true;
-      this.opponentRow.visible = false;
+      this.opponentLayer.visible = false;
       this.tableRow.visible = false;
       this.leftStack.visible = false;
       this.rightStack.visible = false;
       this.myHandRow.visible = false;
+      this.spectatorBanner.visible = false;
       this.turnLabel.visible = false;
       this.keyHint.visible = false;
       this.turnPulseActive = false;
@@ -588,30 +812,115 @@ export class GameScreen extends Container implements Screen {
     }
 
     this.waiting.visible = false;
-    this.opponentRow.visible = true;
+    this.opponentLayer.visible = true;
     this.tableRow.visible = true;
     this.leftStack.visible = true;
     this.rightStack.visible = true;
-    this.myHandRow.visible = true;
     this.turnLabel.visible = true;
     this.keyHint.visible = true;
 
-    this.renderOpponentHand(snapshot);
+    this.renderOpponentSlots(snapshot);
     this.renderTable(snapshot);
     this.renderTalonAndTrump(snapshot);
     this.renderDiscard(snapshot);
-    this.renderMyHand(snapshot);
+    this.renderSelfRow(snapshot);
     this.renderTurnLabel(snapshot);
     this.renderKeyHint(snapshot);
   }
 
-  private renderOpponentHand(snapshot: Snapshot): void {
-    const opponent = nextSeat(snapshot.seat, snapshot.playerCount);
-    const count = snapshot.handCounts[opponent] ?? 0;
-    for (let i = 0; i < count; i += 1) {
-      const card = new CardView(null, true);
-      card.x = i * (CARD_W + HAND_GAP);
-      this.opponentRow.addChild(card);
+  private isSpectating(snapshot: Snapshot): boolean {
+    return snapshot.you.hand.length === 0 && snapshot.phase === "in-round";
+  }
+
+  private renderSelfRow(snapshot: Snapshot): void {
+    if (this.isSpectating(snapshot)) {
+      this.myHandRow.visible = false;
+      this.spectatorBanner.visible = true;
+      this.layoutSpectatorBanner();
+      return;
+    }
+    this.spectatorBanner.visible = false;
+    this.myHandRow.visible = true;
+    this.renderMyHand(snapshot);
+  }
+
+  private layoutSpectatorBanner(): void {
+    const padX = spacing.lg;
+    const padY = spacing.md;
+    const w = Math.round(this.spectatorBannerText.width + padX * 2);
+    const h = Math.round(this.spectatorBannerText.height + padY * 2);
+    this.spectatorBannerBg
+      .clear()
+      .roundRect(0, 0, w, h, 6)
+      .fill({ color: color.bgRaised })
+      .stroke({ color: color.borderFocus, width: 2, alignment: 0 });
+    this.spectatorBannerText.x = padX;
+    this.spectatorBannerText.y = padY;
+  }
+
+  private disposeOpponentSlots(): void {
+    for (const slot of this.opponentSlots.values()) {
+      this.opponentLayer.removeChild(slot);
+      slot.destroy({ children: true });
+    }
+    this.opponentSlots.clear();
+  }
+
+  private renderOpponentSlots(snapshot: Snapshot): void {
+    const positions = radialOpponentPositions(snapshot.playerCount);
+    const seats: SeatIndex[] = [];
+    for (let i = 1; i < snapshot.playerCount; i += 1) {
+      seats.push(((snapshot.you.seat + i) % snapshot.playerCount) as SeatIndex);
+    }
+
+    const wanted = new Set<SeatIndex>(seats);
+    for (const [seat, slot] of this.opponentSlots) {
+      if (!wanted.has(seat)) {
+        this.opponentLayer.removeChild(slot);
+        slot.destroy({ children: true });
+        this.opponentSlots.delete(seat);
+      }
+    }
+
+    seats.forEach((seat, idx) => {
+      let slot = this.opponentSlots.get(seat);
+      if (!slot) {
+        slot = new OpponentSlot(seat);
+        this.opponentSlots.set(seat, slot);
+        this.opponentLayer.addChild(slot);
+      }
+      const seatName = this.room?.seats[seat]?.name?.trim();
+      slot.setName(seatName && seatName.length > 0 ? seatName : `Player ${seat + 1}`);
+      const count = snapshot.handCounts[seat] ?? 0;
+      slot.setHandCount(count);
+      const isFirst = idx === 0;
+      slot.cardStack.label = isFirst ? "opponent-hand" : `opponent-hand-${seat}`;
+      slot.layoutChildren();
+      const pos = positions[idx];
+      if (pos) {
+        slot.x = Math.round(this.viewWidth * pos.xFrac);
+        slot.y = Math.round(this.viewHeight * pos.yFrac);
+      }
+      const isActor = seat === snapshot.attacker || seat === snapshot.defender;
+      slot.setTurnActive(isActor);
+    });
+    this.refreshOpponentSlotState();
+  }
+
+  private refreshOpponentSlotState(): void {
+    const room = this.room;
+    const eliminated = new Set<SeatIndex>(room?.eliminated ?? []);
+    const thinking = new Set<SeatIndex>(room?.thinkingSeats ?? []);
+    const disconnects = new Map<SeatIndex, DisconnectState>();
+    for (const d of room?.disconnects ?? []) disconnects.set(d.seat, d);
+    if (disconnects.size === 0 && room?.disconnect) {
+      disconnects.set(room.disconnect.seat, room.disconnect);
+    }
+    const now = this.now();
+    for (const [seat, slot] of this.opponentSlots) {
+      slot.setEliminated(eliminated.has(seat));
+      slot.setThinking(thinking.has(seat));
+      slot.setDisconnect(disconnects.get(seat) ?? null, now);
     }
   }
 
@@ -753,10 +1062,6 @@ export class GameScreen extends Container implements Screen {
 
     if (!this.snapshot) return;
 
-    const opW = this.opponentRow.width;
-    this.opponentRow.x = Math.round((this.viewWidth - opW) / 2);
-    this.opponentRow.y = SECTION_PADDING;
-
     this.turnLabel.x = Math.round((this.viewWidth - this.turnLabel.width) / 2);
     this.turnLabel.y = Math.round(
       this.viewHeight / 2 - CARD_H / 2 - this.turnLabel.height - spacing.sm,
@@ -776,8 +1081,18 @@ export class GameScreen extends Container implements Screen {
     this.myHandRow.x = Math.round((this.viewWidth - handW) / 2);
     this.myHandRow.y = this.viewHeight - SECTION_PADDING - CARD_H;
 
+    if (this.spectatorBanner.visible) {
+      const bw = this.spectatorBanner.width;
+      const bh = this.spectatorBanner.height;
+      this.spectatorBanner.x = Math.round((this.viewWidth - bw) / 2);
+      this.spectatorBanner.y = this.viewHeight - SECTION_PADDING - bh;
+    }
+
     this.keyHint.x = Math.round((this.viewWidth - this.keyHint.width) / 2);
-    this.keyHint.y = this.myHandRow.y - this.keyHint.height - spacing.sm;
+    this.keyHint.y =
+      (this.spectatorBanner.visible ? this.spectatorBanner.y : this.myHandRow.y) -
+      this.keyHint.height -
+      spacing.sm;
 
     if (this.errorBanner.visible) {
       const bw = this.errorBanner.width;
@@ -788,12 +1103,7 @@ export class GameScreen extends Container implements Screen {
     if (this.disconnectBanner.visible) {
       const dw = this.disconnectBanner.width;
       this.disconnectBanner.x = Math.round((this.viewWidth - dw) / 2);
-      this.disconnectBanner.y = this.opponentRow.y + this.opponentRow.height + spacing.md;
-    }
-
-    if (this.thinkingLabel.visible) {
-      this.thinkingLabel.x = Math.round((this.viewWidth - this.thinkingLabel.width) / 2);
-      this.thinkingLabel.y = this.opponentRow.y + this.opponentRow.height + spacing.sm;
+      this.disconnectBanner.y = SECTION_PADDING;
     }
   }
 
@@ -862,33 +1172,48 @@ export class GameScreen extends Container implements Screen {
 
     const sourceWorld = this.talonWorldPos();
     const isYou = event.by === snapshot.you.seat;
-    const row = isYou ? this.myHandRow : this.opponentRow;
-    const sourceX = sourceWorld.x - row.x;
-    const sourceY = sourceWorld.y - row.y;
-
-    const targets: { view: Container; finalX: number; finalY: number }[] = [];
+    const targets: {
+      view: Container;
+      finalX: number;
+      finalY: number;
+      rowX: number;
+      rowY: number;
+    }[] = [];
 
     if (isYou) {
+      const rowX = this.myHandRow.x;
+      const rowY = this.myHandRow.y;
       for (const card of drawn) {
         const v = this.findHandCardView(card);
         if (!v) continue;
-        targets.push({ view: v, finalX: v.x, finalY: v.y });
+        targets.push({ view: v, finalX: v.x, finalY: v.y, rowX, rowY });
       }
     } else {
-      const childCount = row.children.length;
+      const slot = this.opponentSlots.get(event.by);
+      if (!slot) return;
+      const stack = slot.cardStack;
+      const childCount = stack.children.length;
       const startIdx = Math.max(0, childCount - drawn.length);
+      const stackOriginX = slot.x + stack.x;
+      const stackOriginY = slot.y + stack.y;
       for (let i = startIdx; i < childCount; i += 1) {
-        const v = row.children[i] as Container | undefined;
+        const v = stack.children[i] as Container | undefined;
         if (!v) continue;
-        targets.push({ view: v, finalX: v.x, finalY: v.y });
+        targets.push({
+          view: v,
+          finalX: v.x,
+          finalY: v.y,
+          rowX: stackOriginX,
+          rowY: stackOriginY,
+        });
       }
     }
 
     if (targets.length === 0) return;
 
     for (const t of targets) {
-      t.view.x = sourceX;
-      t.view.y = sourceY;
+      t.view.x = sourceWorld.x - t.rowX;
+      t.view.y = sourceWorld.y - t.rowY;
     }
 
     const animsList: Anim[] = targets.map(
@@ -913,22 +1238,41 @@ export class GameScreen extends Container implements Screen {
     if (!snapshot) return;
 
     const sourceWorld = this.talonWorldPos();
-    const targets: { view: Container; row: Container; finalX: number; finalY: number }[] = [];
+    const targets: {
+      view: Container;
+      rowX: number;
+      rowY: number;
+      finalX: number;
+      finalY: number;
+    }[] = [];
 
+    const myRowX = this.myHandRow.x;
+    const myRowY = this.myHandRow.y;
     for (const child of this.myHandRow.children) {
       const v = child as Container;
-      targets.push({ view: v, row: this.myHandRow, finalX: v.x, finalY: v.y });
+      targets.push({ view: v, rowX: myRowX, rowY: myRowY, finalX: v.x, finalY: v.y });
     }
-    for (const child of this.opponentRow.children) {
-      const v = child as Container;
-      targets.push({ view: v, row: this.opponentRow, finalX: v.x, finalY: v.y });
+    for (const slot of this.opponentSlots.values()) {
+      const stack = slot.cardStack;
+      const stackOriginX = slot.x + stack.x;
+      const stackOriginY = slot.y + stack.y;
+      for (const child of stack.children) {
+        const v = child as Container;
+        targets.push({
+          view: v,
+          rowX: stackOriginX,
+          rowY: stackOriginY,
+          finalX: v.x,
+          finalY: v.y,
+        });
+      }
     }
 
     if (targets.length === 0) return;
 
     for (const t of targets) {
-      t.view.x = sourceWorld.x - t.row.x;
-      t.view.y = sourceWorld.y - t.row.y;
+      t.view.x = sourceWorld.x - t.rowX;
+      t.view.y = sourceWorld.y - t.rowY;
     }
 
     const animsList: Anim[] = targets.map(
@@ -1011,11 +1355,17 @@ export class GameScreen extends Container implements Screen {
   }
 
   private handRowWorldCenter(seat: SeatIndex): { x: number; y: number } {
-    const isYou = this.snapshot ? seat === this.snapshot.you.seat : true;
-    const row = isYou ? this.myHandRow : this.opponentRow;
+    if (this.snapshot && seat === this.snapshot.you.seat) {
+      return {
+        x: this.myHandRow.x + Math.round(this.myHandRow.width / 2 - CARD_W / 2),
+        y: this.myHandRow.y,
+      };
+    }
+    const slot = this.opponentSlots.get(seat);
+    if (slot) return slot.stackWorldCenter();
     return {
-      x: row.x + Math.round(row.width / 2 - CARD_W / 2),
-      y: row.y,
+      x: this.myHandRow.x + Math.round(this.myHandRow.width / 2 - CARD_W / 2),
+      y: this.myHandRow.y,
     };
   }
 
@@ -1041,6 +1391,7 @@ export class GameScreen extends Container implements Screen {
 
   private handleKeyDown(event: KeyboardEvent): void {
     if (!this.snapshot) return;
+    if (this.isSpectating(this.snapshot)) return;
     const key = event.key.toLowerCase();
     if (key === "t") {
       event.preventDefault();
@@ -1056,14 +1407,11 @@ export class GameScreen extends Container implements Screen {
   private tryPlayCard(card: Card): void {
     const snapshot = this.snapshot;
     if (!snapshot) return;
+    if (this.isSpectating(snapshot)) return;
     const action = legalPlay(snapshot, card);
     if (!action) return;
     this.submitAction(action);
   }
-}
-
-function nextSeat(seat: SeatIndex, playerCount: number): SeatIndex {
-  return (seat + 1) % playerCount;
 }
 
 function ranksOnTable(table: TablePair[]): Set<number> {
@@ -1138,9 +1486,6 @@ function legalPlay(snapshot: Snapshot, card: Card): Action | null {
     if (table.length === 0) {
       return { type: "ATTACK", by: seat, card };
     }
-    // Throw-in: attacker may add a card whose rank already appears on the
-    // table. Server enforces full rule set (max throw-ins, defender hand
-    // size cap); this is a UX gate.
     const ranks = ranksOnTable(table);
     if (ranks.has(card.rank)) {
       return { type: "THROW_IN", by: seat, card };

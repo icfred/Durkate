@@ -15,7 +15,8 @@ import { attachBackNav } from "./backNav.js";
 import type { Screen } from "./types.js";
 
 const PANEL_W = 540;
-const PANEL_H = 480;
+const PANEL_H_BASE = 520;
+const PANEL_H_PER_EXTRA_SHARE = 70;
 const FIELD_W = 240;
 const FIELD_H = 48;
 const COPY_BUTTON_W = 140;
@@ -25,8 +26,6 @@ const BACK_BUTTON_H = 36;
 const RETRY_BUTTON_W = 160;
 const RETRY_BUTTON_H = 40;
 const ROOM_CODE_MAX = 8;
-// Truncate the share URL display so a full join token doesn't overflow the
-// panel. The full URL is still copied verbatim by COPY LINK.
 const SHARE_URL_MAX_CHARS = 56;
 
 export type LobbyStatus = "waiting" | "starting";
@@ -34,32 +33,44 @@ export type LobbyStatus = "waiting" | "starting";
 export interface LobbyScreenOptions {
   mode: Mode;
   roomCode: string;
-  shareUrl: string;
+  /** Total seats in the room (humans + bots). Defaults to 2 for back-compat. */
+  playerCount?: number;
+  /** Bot seats. Defaults to 0 for friend, 1 for bot. */
+  botCount?: number;
+  /** One share URL per join token. Empty when no shares are needed. */
+  shareUrls?: string[];
+  /** Legacy single-share URL fallback when `shareUrls` is omitted. */
+  shareUrl?: string;
   initialRoom: RoomMembership | null;
   subscribe?: (listener: (room: RoomMembership | null) => void) => () => void;
-  /** Initial room-creation state. Defaults to `{ status: "ready" }`. */
   initialCreation?: RoomCreationState;
-  /** Subscribes the screen to room-creation state transitions. */
   subscribeCreation?: (listener: (state: RoomCreationState) => void) => () => void;
-  /** Invoked when the user retries after a failed room creation. */
   onRetry?: () => void;
-  /** Invoked when the user navigates back (Backspace, Escape). */
   onBack?: () => void;
   onJoin(code: string): void;
   copyToClipboard?(text: string): Promise<void> | void;
 }
 
-function deriveStatus(mode: Mode, room: RoomMembership | null): LobbyStatus {
-  if (mode === "bot") return "starting";
-  const seats = room?.seats ?? [];
-  const filled = seats.filter((s) => s.name !== null).length;
-  return filled >= 2 ? "starting" : "waiting";
+function humansExpected(mode: Mode, playerCount: number, botCount: number): number {
+  if (mode === "bot") return 1;
+  return Math.max(1, playerCount - botCount);
 }
 
-function headlineFor(mode: Mode, status: LobbyStatus): string {
+function humansJoined(room: RoomMembership | null): number {
+  const seats = room?.seats ?? [];
+  return seats.filter((s) => s.name !== null).length;
+}
+
+function deriveStatus(mode: Mode, expected: number, room: RoomMembership | null): LobbyStatus {
+  if (mode === "bot") return "starting";
+  return humansJoined(room) >= expected ? "starting" : "waiting";
+}
+
+function headlineFor(mode: Mode, status: LobbyStatus, expected: number): string {
   if (status === "starting") {
     return mode === "bot" ? "STARTING VS BOT" : "STARTING";
   }
+  if (expected > 2) return "WAITING FOR PLAYERS";
   return "WAITING FOR OPPONENT";
 }
 
@@ -68,8 +79,12 @@ export class LobbyScreen extends Container implements Screen {
   private readonly panel: Panel;
   private readonly mode: Mode;
   private readonly roomCode: string;
-  private readonly shareUrl: string;
+  private readonly playerCount: number;
+  private readonly botCount: number;
+  private readonly humansExpected: number;
+  private readonly shareUrls: string[];
   private readonly status: Text;
+  private readonly joinedLabel: Text | null;
   private readonly copyToClipboard: (text: string) => Promise<void> | void;
   private readonly readyContent: Container;
   private readonly creationOverlay: Container;
@@ -89,18 +104,26 @@ export class LobbyScreen extends Container implements Screen {
   private readonly unsubscribeCreation: (() => void) | null;
   private readonly detachFocusNavSfx: () => void;
   private readonly detachBackNav: (() => void) | null;
+  private readonly panelH: number;
 
   constructor(options: LobbyScreenOptions) {
     super();
     this.mode = options.mode;
     this.roomCode = options.roomCode;
-    this.shareUrl = options.shareUrl;
+    this.playerCount = options.playerCount ?? 2;
+    this.botCount = options.botCount ?? (options.mode === "bot" ? 1 : 0);
+    this.humansExpected = humansExpected(this.mode, this.playerCount, this.botCount);
+    this.shareUrls =
+      options.shareUrls ?? (options.shareUrl && this.mode !== "bot" ? [options.shareUrl] : []);
     this.onJoin = options.onJoin;
     this.copyToClipboard = options.copyToClipboard ?? defaultCopyToClipboard;
-    this.currentStatus = deriveStatus(options.mode, options.initialRoom);
+    this.currentStatus = deriveStatus(this.mode, this.humansExpected, options.initialRoom);
     this.creation = options.initialCreation ?? { status: "ready" };
 
-    this.panel = new Panel({ width: PANEL_W, height: PANEL_H });
+    const extraShares = Math.max(0, this.shareUrls.length - 1);
+    this.panelH = PANEL_H_BASE + extraShares * PANEL_H_PER_EXTRA_SHARE;
+
+    this.panel = new Panel({ width: PANEL_W, height: this.panelH });
     this.addChild(this.panel);
 
     const heading = new Text({
@@ -121,7 +144,7 @@ export class LobbyScreen extends Container implements Screen {
     this.panel.addChild(this.readyContent);
 
     this.status = new Text({
-      text: headlineFor(this.mode, this.currentStatus),
+      text: headlineFor(this.mode, this.currentStatus, this.humansExpected),
       style: {
         fontFamily: typography.family,
         fontSize: typography.size.md,
@@ -134,6 +157,28 @@ export class LobbyScreen extends Container implements Screen {
     this.layoutStatus();
     this.readyContent.addChild(this.status);
 
+    if (this.mode !== "bot" && this.humansExpected > 1) {
+      this.joinedLabel = new Text({
+        text: this.joinedLabelText(options.initialRoom),
+        style: {
+          fontFamily: typography.family,
+          fontSize: typography.size.sm,
+          fill: color.textMuted,
+          letterSpacing: typography.letterSpacing.wide,
+        },
+      });
+      this.joinedLabel.y = this.status.y + this.status.height + spacing.xs;
+      this.layoutJoinedLabel();
+      this.readyContent.addChild(this.joinedLabel);
+    } else {
+      this.joinedLabel = null;
+    }
+
+    const codeBaseY =
+      (this.joinedLabel
+        ? this.joinedLabel.y + this.joinedLabel.height
+        : this.status.y + this.status.height) + spacing.lg;
+
     const roomLabel = new Text({
       text: "ROOM",
       style: {
@@ -144,7 +189,7 @@ export class LobbyScreen extends Container implements Screen {
       },
     });
     roomLabel.x = Math.round((PANEL_W - roomLabel.width) / 2);
-    roomLabel.y = this.status.y + this.status.height + spacing.lg;
+    roomLabel.y = codeBaseY;
     this.readyContent.addChild(roomLabel);
 
     const roomCodeText = new Text({
@@ -163,45 +208,52 @@ export class LobbyScreen extends Container implements Screen {
 
     let nextY = roomCodeText.y + roomCodeText.height + spacing.md;
 
+    if (this.shareUrls.length > 0) {
+      this.shareUrls.forEach((url, idx) => {
+        const isMulti = this.shareUrls.length > 1;
+        const shareLabel = new Text({
+          text: isMulti ? `SHARE ${idx + 1}` : "SHARE",
+          style: {
+            fontFamily: typography.family,
+            fontSize: typography.size.xs,
+            fill: color.textMuted,
+            letterSpacing: typography.letterSpacing.wide,
+          },
+        });
+        shareLabel.x = Math.round((PANEL_W - shareLabel.width) / 2);
+        shareLabel.y = nextY;
+        this.readyContent.addChild(shareLabel);
+
+        const shareUrlText = new Text({
+          text: truncateForDisplay(url, SHARE_URL_MAX_CHARS),
+          style: {
+            fontFamily: typography.family,
+            fontSize: typography.size.sm,
+            fill: color.text,
+            letterSpacing: typography.letterSpacing.tight,
+          },
+        });
+        shareUrlText.x = Math.round((PANEL_W - shareUrlText.width) / 2);
+        shareUrlText.y = shareLabel.y + shareLabel.height + spacing.xs;
+        this.readyContent.addChild(shareUrlText);
+
+        const copyButton = new Button({
+          label: isMulti ? `COPY LINK ${idx + 1}` : "COPY LINK",
+          width: COPY_BUTTON_W + (isMulti ? 24 : 0),
+          height: COPY_BUTTON_H,
+          onActivate: withClickSound(() => this.handleCopy(url)),
+        });
+        attachButtonHover(copyButton);
+        copyButton.x = Math.round((PANEL_W - copyButton.width) / 2);
+        copyButton.y = shareUrlText.y + shareUrlText.height + spacing.sm;
+        this.readyContent.addChild(copyButton);
+        this.focus.register(copyButton);
+
+        nextY = copyButton.y + copyButton.height + spacing.md;
+      });
+    }
+
     if (this.mode === "friend") {
-      const shareLabel = new Text({
-        text: "SHARE",
-        style: {
-          fontFamily: typography.family,
-          fontSize: typography.size.xs,
-          fill: color.textMuted,
-          letterSpacing: typography.letterSpacing.wide,
-        },
-      });
-      shareLabel.x = Math.round((PANEL_W - shareLabel.width) / 2);
-      shareLabel.y = nextY;
-      this.readyContent.addChild(shareLabel);
-
-      const shareUrlText = new Text({
-        text: truncateForDisplay(this.shareUrl, SHARE_URL_MAX_CHARS),
-        style: {
-          fontFamily: typography.family,
-          fontSize: typography.size.sm,
-          fill: color.text,
-          letterSpacing: typography.letterSpacing.tight,
-        },
-      });
-      shareUrlText.x = Math.round((PANEL_W - shareUrlText.width) / 2);
-      shareUrlText.y = shareLabel.y + shareLabel.height + spacing.xs;
-      this.readyContent.addChild(shareUrlText);
-
-      const copyButton = new Button({
-        label: "COPY LINK",
-        width: COPY_BUTTON_W,
-        height: COPY_BUTTON_H,
-        onActivate: withClickSound(() => this.handleCopy()),
-      });
-      attachButtonHover(copyButton);
-      copyButton.x = Math.round((PANEL_W - COPY_BUTTON_W) / 2);
-      copyButton.y = shareUrlText.y + shareUrlText.height + spacing.sm;
-      this.readyContent.addChild(copyButton);
-      this.focus.register(copyButton);
-
       const joinLabel = new Text({
         text: "JOIN ANOTHER ROOM",
         style: {
@@ -212,7 +264,7 @@ export class LobbyScreen extends Container implements Screen {
         },
       });
       joinLabel.x = Math.round((PANEL_W - joinLabel.width) / 2);
-      joinLabel.y = copyButton.y + copyButton.height + spacing.lg;
+      joinLabel.y = nextY + spacing.lg;
       this.readyContent.addChild(joinLabel);
 
       this.fieldLocalX = Math.round((PANEL_W - FIELD_W) / 2);
@@ -330,7 +382,7 @@ export class LobbyScreen extends Container implements Screen {
 
   layout(viewWidth: number, viewHeight: number): void {
     this.panel.x = Math.round((viewWidth - PANEL_W) / 2);
-    this.panel.y = Math.round((viewHeight - PANEL_H) / 2);
+    this.panel.y = Math.round((viewHeight - this.panelH) / 2);
     this.remountOverlay();
   }
 
@@ -346,16 +398,32 @@ export class LobbyScreen extends Container implements Screen {
   }
 
   private update(room: RoomMembership | null): void {
-    const next = deriveStatus(this.mode, room);
-    if (next === this.currentStatus) return;
-    this.currentStatus = next;
-    this.status.text = headlineFor(this.mode, this.currentStatus);
-    this.layoutStatus();
+    const next = deriveStatus(this.mode, this.humansExpected, room);
+    let dirty = false;
+    if (next !== this.currentStatus) {
+      this.currentStatus = next;
+      this.status.text = headlineFor(this.mode, this.currentStatus, this.humansExpected);
+      dirty = true;
+    }
+    if (this.joinedLabel) {
+      const text = this.joinedLabelText(room);
+      if (this.joinedLabel.text !== text) {
+        this.joinedLabel.text = text;
+        dirty = true;
+      }
+    }
+    if (dirty) {
+      this.layoutStatus();
+      this.layoutJoinedLabel();
+    }
+  }
+
+  private joinedLabelText(room: RoomMembership | null): string {
+    return `${humansJoined(room)} / ${this.humansExpected} JOINED`;
   }
 
   private updateCreation(state: RoomCreationState): void {
     if (state.status === this.creation.status) {
-      // For "error" the message can change; cheap to reapply.
       if (state.status !== "error") return;
     }
     this.creation = state;
@@ -386,7 +454,7 @@ export class LobbyScreen extends Container implements Screen {
   private layoutCreationOverlay(): void {
     const text = this.creationText;
     text.x = Math.round((PANEL_W - text.width) / 2);
-    text.y = Math.round(PANEL_H * 0.4);
+    text.y = Math.round(this.panelH * 0.4);
     if (this.retryButton) {
       this.retryButton.x = Math.round((PANEL_W - RETRY_BUTTON_W) / 2);
       this.retryButton.y = text.y + text.height + spacing.lg;
@@ -397,9 +465,14 @@ export class LobbyScreen extends Container implements Screen {
     this.status.x = Math.round((PANEL_W - this.status.width) / 2);
   }
 
-  private handleCopy(): void {
+  private layoutJoinedLabel(): void {
+    if (!this.joinedLabel) return;
+    this.joinedLabel.x = Math.round((PANEL_W - this.joinedLabel.width) / 2);
+  }
+
+  private handleCopy(url: string): void {
     try {
-      const result = this.copyToClipboard(this.shareUrl);
+      const result = this.copyToClipboard(url);
       if (result && typeof (result as Promise<void>).then === "function") {
         (result as Promise<void>).catch((err) => {
           console.warn("[lobby] copy failed", err);
@@ -465,7 +538,6 @@ function defaultCopyToClipboard(text: string): Promise<void> | void {
 
 function truncateForDisplay(text: string, max: number): string {
   if (text.length <= max) return text;
-  // Keep the prefix (so the user sees the host) and trim the long token middle.
   const head = Math.max(0, max - 1);
   return `${text.slice(0, head)}…`;
 }

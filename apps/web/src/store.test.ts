@@ -240,13 +240,36 @@ describe("parseHashJoin", () => {
   });
 
   it("extracts both fields when both are present", () => {
-    expect(parseHashJoin("#room=ABC&t=xyz")).toEqual({ roomCode: "ABC", token: "xyz" });
+    expect(parseHashJoin("#room=ABC&t=xyz")).toEqual({
+      roomCode: "ABC",
+      token: "xyz",
+      tokens: ["xyz"],
+    });
   });
 
   it("works with base64url room and token", () => {
     expect(parseHashJoin("#room=A_b-9&t=tok_-1")).toEqual({
       roomCode: "A_b-9",
       token: "tok_-1",
+      tokens: ["tok_-1"],
+    });
+  });
+
+  it("splits a comma-separated token list and surfaces the first as `token`", () => {
+    expect(parseHashJoin("#room=ABC&t=tok1,tok2,tok3")).toEqual({
+      roomCode: "ABC",
+      token: "tok1",
+      tokens: ["tok1", "tok2", "tok3"],
+    });
+  });
+
+  it("captures playerCount and botCount when the share URL carries them", () => {
+    expect(parseHashJoin("#room=ABC&t=xyz&pc=4&bc=1")).toEqual({
+      roomCode: "ABC",
+      token: "xyz",
+      tokens: ["xyz"],
+      playerCount: 4,
+      botCount: 1,
     });
   });
 });

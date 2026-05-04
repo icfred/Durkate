@@ -168,7 +168,9 @@ describe("createConnectionController", () => {
       you: 1,
       rematchRequested: [],
       disconnect: null,
+      disconnects: [],
       thinkingSeats: [],
+      eliminated: [],
     });
     conns[0]?.handlers.onSnapshot({ type: "Snapshot", snapshot: makeSnapshot(1) });
     expect(appStore.getState().phase).toBe("game");
@@ -269,7 +271,9 @@ describe("createConnectionController", () => {
       you: 0,
       rematchRequested: [],
       disconnect: null,
+      disconnects: [],
       thinkingSeats: [],
+      eliminated: [],
     });
     stop();
   });
