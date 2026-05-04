@@ -3,6 +3,7 @@ import {
   type Action,
   type BotDifficulty,
   bot,
+  type Card,
   type Event,
   type GameOverState,
   type InRoundState,
@@ -27,8 +28,7 @@ import { computeThinkDelay, readThinkBoundsFromEnv, type ThinkBounds } from "./b
 import { TokenBucket } from "./rate-limit.js";
 import { redactFor } from "./redact.js";
 
-export type SeatIndex = 0 | 1;
-export type RoomMode = "human" | "bot";
+export type SeatIndex = number;
 
 interface Seat {
   readonly name: string;
@@ -36,23 +36,33 @@ interface Seat {
 }
 
 interface PersistedRoom {
-  mode: RoomMode;
-  seats: (Seat | null)[];
-  engine: State | null;
-  botSeat: SeatIndex | null;
+  // New shape (DUR-52). When loading an older shape that still carries
+  // `mode` + `botSeat`, we translate at boot.
+  playerCount?: number;
+  seats?: (Seat | null)[];
+  engine?: State | null;
+  botSeats?: SeatIndex[];
   botDifficulty?: BotDifficulty;
   rematchSeats?: boolean[];
-  disconnect?: DisconnectState | null;
+  disconnects?: DisconnectState[];
   deadlines?: PersistedDeadlines;
+  // Legacy fields kept for back-compat parsing only.
+  mode?: "human" | "bot";
+  botSeat?: SeatIndex | null;
+  disconnect?: DisconnectState | null;
 }
 
 interface WsAttachment {
   seat: SeatIndex;
 }
 
-const SEAT_COUNT = 2;
+interface InitRequestBody {
+  playerCount: number;
+  botCount: number;
+  difficulty?: BotDifficulty;
+}
+
 const TOKEN_BYTES = 32;
-const BOT_SEAT_INDEX: SeatIndex = 1;
 const DEFAULT_BOT_DIFFICULTY: BotDifficulty = "medium";
 const DEFAULT_BOT_ITERATION_CAP = 200;
 const DEFAULT_RATE_LIMIT = { capacity: 20, refillIntervalMs: 5_000 };
@@ -62,6 +72,10 @@ const DEFAULT_DISCONNECT_FORFEIT_MS = 30_000;
 const ABANDONED_MS = 5 * 60 * 1000;
 const IDLE_MS = 5 * 60 * 1000;
 const STALE_MS = 10 * 60 * 1000;
+// All-bots autoplay: when no humans remain in the active set, the bot-think
+// delay is halved so the round wraps up quickly for any spectators still
+// attached.
+const ALL_BOTS_SPEEDUP_FACTOR = 0.5;
 
 interface Env {
   TURN_TIMEOUT_MS?: string;
@@ -72,13 +86,13 @@ interface Env {
 }
 
 export class Room extends DurableObject<Env> {
-  private mode: RoomMode = "human";
-  private seats: (Seat | null)[] = new Array<Seat | null>(SEAT_COUNT).fill(null);
+  private playerCount = 2;
+  private seats: (Seat | null)[] = [null, null];
   private engineState: State | null = null;
-  private botSeat: SeatIndex | null = null;
+  private botSeats: SeatIndex[] = [];
   private botDifficulty: BotDifficulty = DEFAULT_BOT_DIFFICULTY;
-  private rematchSeats: boolean[] = new Array<boolean>(SEAT_COUNT).fill(false);
-  private disconnect: DisconnectState | null = null;
+  private rematchSeats: boolean[] = [false, false];
+  private disconnects: DisconnectState[] = [];
   private readonly turnTimeoutMs: number;
   private readonly disconnectForfeitMs: number;
   private readonly botIterationCap: number;
@@ -108,16 +122,33 @@ export class Room extends DurableObject<Env> {
     void this.ctx.blockConcurrencyWhile(async () => {
       const persisted = await this.ctx.storage.get<PersistedRoom>(STORAGE_KEY);
       if (persisted) {
-        this.mode = persisted.mode;
-        this.seats = persisted.seats;
-        this.engineState = persisted.engine;
-        this.botSeat = persisted.botSeat;
-        this.botDifficulty = persisted.botDifficulty ?? DEFAULT_BOT_DIFFICULTY;
-        if (persisted.rematchSeats) this.rematchSeats = persisted.rematchSeats.slice();
-        this.disconnect = persisted.disconnect ?? null;
-        this.alarms.load(persisted.deadlines);
+        this.loadPersisted(persisted);
       }
     });
+  }
+
+  private loadPersisted(persisted: PersistedRoom): void {
+    if (typeof persisted.playerCount === "number") {
+      this.playerCount = persisted.playerCount;
+      this.seats = persisted.seats ?? new Array<Seat | null>(this.playerCount).fill(null);
+      this.engineState = persisted.engine ?? null;
+      this.botSeats = persisted.botSeats ?? [];
+      this.botDifficulty = persisted.botDifficulty ?? DEFAULT_BOT_DIFFICULTY;
+      this.rematchSeats =
+        persisted.rematchSeats ?? new Array<boolean>(this.playerCount).fill(false);
+      this.disconnects = persisted.disconnects ?? [];
+    } else {
+      // Legacy shape: pre-DUR-52 rooms with `mode` + `botSeat`. Translate.
+      this.playerCount = 2;
+      this.seats = persisted.seats ?? [null, null];
+      this.engineState = persisted.engine ?? null;
+      this.botSeats =
+        persisted.botSeat !== null && persisted.botSeat !== undefined ? [persisted.botSeat] : [];
+      this.botDifficulty = persisted.botDifficulty ?? DEFAULT_BOT_DIFFICULTY;
+      this.rematchSeats = persisted.rematchSeats ?? [false, false];
+      this.disconnects = persisted.disconnect ? [persisted.disconnect] : [];
+    }
+    this.alarms.load(persisted.deadlines);
   }
 
   override async fetch(request: Request): Promise<Response> {
@@ -135,20 +166,47 @@ export class Room extends DurableObject<Env> {
     if (this.seats.some((s) => s !== null)) {
       return new Response("room already initialized", { status: 409 });
     }
-    const body = (await request.json()) as { mode?: unknown; difficulty?: unknown };
-    const mode: RoomMode = body.mode === "bot" ? "bot" : "human";
-    this.mode = mode;
-    if (mode === "bot") {
-      this.botSeat = BOT_SEAT_INDEX;
-      this.botDifficulty = parseDifficulty(body.difficulty);
-      this.seats[BOT_SEAT_INDEX] = { name: "Bot", token: randomBase64Url(TOKEN_BYTES) };
+    const body = (await request.json()) as Partial<InitRequestBody>;
+    const playerCount = Number(body.playerCount);
+    const botCount = Number(body.botCount);
+    if (
+      !Number.isInteger(playerCount) ||
+      playerCount < 2 ||
+      playerCount > 6 ||
+      !Number.isInteger(botCount) ||
+      botCount < 0 ||
+      botCount >= playerCount
+    ) {
+      return new Response("invalid init body", { status: 400 });
     }
+    this.playerCount = playerCount;
+    this.seats = new Array<Seat | null>(playerCount).fill(null);
+    this.rematchSeats = new Array<boolean>(playerCount).fill(false);
+    this.botDifficulty = parseDifficulty(body.difficulty);
+    // Bots fill seats from the back so seat 0 stays human (the host).
+    this.botSeats = [];
+    for (let i = 0; i < botCount; i++) {
+      const seatIndex = (playerCount - 1 - i) as SeatIndex;
+      this.botSeats.push(seatIndex);
+      this.seats[seatIndex] = {
+        name: `Bot ${botCount - i}`,
+        token: randomBase64Url(TOKEN_BYTES),
+      };
+    }
+    this.botSeats.sort((a, b) => a - b);
     const host = this.addPlayer("Host");
-    const response: CreateRoomResponse = { roomId: this.ctx.id.toString(), hostToken: host.token };
-    if (mode === "human") {
-      const guest = this.addPlayer("Guest");
-      response.joinToken = guest.token;
+    const joinTokens: string[] = [];
+    const remainingHumans = playerCount - botCount - 1;
+    for (let i = 0; i < remainingHumans; i++) {
+      const guest = this.addPlayer(`Guest ${i + 1}`);
+      joinTokens.push(guest.token);
     }
+    const response: CreateRoomResponse = {
+      roomId: this.ctx.id.toString(),
+      hostToken: host.token,
+      joinTokens,
+    };
+    if (joinTokens.length === 1) response.joinToken = joinTokens[0];
     // Schedule abandoned-on-create eviction. The first ws attach cancels it.
     this.alarms.schedule("abandoned", Date.now() + ABANDONED_MS);
     await this.persist();
@@ -167,7 +225,7 @@ export class Room extends DurableObject<Env> {
     if (seat === undefined) {
       return new Response("invalid token", { status: 403 });
     }
-    if (seat === this.botSeat) {
+    if (this.botSeats.includes(seat)) {
       return new Response("seat reserved for bot", { status: 403 });
     }
     if (this.clientForSeat(seat) !== undefined) {
@@ -182,13 +240,17 @@ export class Room extends DurableObject<Env> {
     // re-scheduled on close if appropriate.
     this.alarms.cancel("abandoned");
     this.alarms.cancel("idle");
-    if (this.disconnect !== null && this.disconnect.seat === seat) {
-      this.disconnect = null;
-      this.alarms.cancel("forfeit");
+    const wasDisconnected = this.removeDisconnect(seat);
+    if (wasDisconnected) {
+      this.refreshForfeitAlarm();
       await this.persist();
     }
     this.broadcastRoomState();
-    if (this.engineState === null && this.bothSeatsFilled() && this.attachedSeatCount() === 2) {
+    if (
+      this.engineState === null &&
+      this.allSeatsFilled() &&
+      this.attachedSeatCount() === this.playerCount
+    ) {
       this.startGame(newSeed());
     } else if (this.engineState !== null && this.engineState.phase === "in-round") {
       // Mid-game reconnect: replay the current state to the rejoining seat
@@ -255,25 +317,23 @@ export class Room extends DurableObject<Env> {
     _reason: string,
     _wasClean: boolean,
   ): Promise<void> {
-    // Hibernation API delivers close events across wake-ups. The peer that
-    // is still attached should see the vacant seat reflect, so refresh the
+    // Hibernation API delivers close events across wake-ups. The remaining
+    // attached peers should see the vacant seat reflect, so refresh the
     // room state.
     const seat = this.seatForWebSocket(ws);
     if (
       seat !== undefined &&
-      seat !== this.botSeat &&
+      !this.botSeats.includes(seat) &&
       this.engineState !== null &&
       this.engineState.phase === "in-round" &&
-      this.disconnect === null
+      !this.isDisconnected(seat) &&
+      !this.isEngineEliminated(seat)
     ) {
       const forfeitAt = Date.now() + this.disconnectForfeitMs;
-      this.disconnect = { seat, forfeitAt };
-      this.alarms.schedule("forfeit", forfeitAt);
+      this.disconnects.push({ seat, forfeitAt });
+      this.refreshForfeitAlarm();
       await this.persist();
     }
-    // No human clients left + game not finished → pause the turn clock and
-    // schedule idle eviction. Reconnect (handleWsUpgrade) clears `idle` and
-    // re-arms the turn timer via the existing scheduleTurnTimer path.
     if (this.ctx.getWebSockets().length === 0 && this.engineState?.phase !== "game-over") {
       this.cancelTurnTimer();
       if (!this.alarms.has("idle")) {
@@ -292,8 +352,12 @@ export class Room extends DurableObject<Env> {
     return this.engineState;
   }
 
-  testMode(): RoomMode {
-    return this.mode;
+  testPlayerCount(): number {
+    return this.playerCount;
+  }
+
+  testBotSeats(): SeatIndex[] {
+    return this.botSeats.slice();
   }
 
   testRematchSeats(): boolean[] {
@@ -314,14 +378,51 @@ export class Room extends DurableObject<Env> {
     return fired;
   }
 
+  // Test seam: legacy single-disconnect accessor. Returns the earliest
+  // pending disconnect (or null) so existing single-disconnect tests work.
   testDisconnect(): DisconnectState | null {
-    return this.disconnect;
+    return this.earliestDisconnect();
+  }
+
+  testDisconnects(): DisconnectState[] {
+    return this.disconnects.map((d) => ({ ...d }));
   }
 
   // Test seam: read the current deadline map so tests can assert which
   // GC / forfeit / turn deadlines are armed.
   testDeadlines(): PersistedDeadlines {
     return this.alarms.toPersisted();
+  }
+
+  // Test seam: re-arm the bot driver from outside so tests can probe the
+  // post-elimination scheduling cadence (all-bots autoplay 2x).
+  testArmBotTurn(): void {
+    this.alarms.cancel("bot-think");
+    this.armBotTurnIfNeeded();
+  }
+
+  // Test seam: read the all-bots-active flag the way the room sees it.
+  testAllBotsActive(): boolean {
+    return this.allBotsActive();
+  }
+
+  // Test seam: synthesize a hand-empty for the given seat so tests can
+  // exercise spectator semantics without grinding to game-over by hand.
+  testEliminateSeat(seat: SeatIndex): void {
+    if (this.engineState === null || this.engineState.phase !== "in-round") return;
+    const hand = this.engineState.hands[seat] ?? [];
+    if (hand.length === 0) return;
+    const next: InRoundState = {
+      ...this.engineState,
+      hands: this.engineState.hands.map((h, i) => (i === seat ? [] : h)),
+      discard: [...this.engineState.discard, ...hand],
+      // Drain talon and trumpCard so engine recognizes the seat as
+      // eliminated immediately (its eliminatedSeatsOf check requires
+      // talon === [] and trumpCard === null).
+      talon: [],
+      trumpCard: null,
+    };
+    this.engineState = next;
   }
 
   private async dispatchFired(fired: DeadlineKind[]): Promise<boolean> {
@@ -347,16 +448,17 @@ export class Room extends DurableObject<Env> {
   // Hard delete: clear DO storage and in-memory state. After this returns
   // the DO can be hibernated and re-instantiated; loading from empty
   // storage produces a fresh, uninitialized room (which `handleInit` will
-  // refuse since `seats.some(s => s !== null)` is false but `mode` defaults
-  // to "human" — actually a re-init is fine: any lingering ws-upgrade
-  // attempt with an old token returns 403).
+  // refuse since `seats.some(s => s !== null)` is false but a re-init is
+  // fine: any lingering ws-upgrade attempt with an old token returns 403).
   private async evict(reason: "abandoned" | "idle" | "stale"): Promise<void> {
-    console.info(`[room] evicted (${reason}) roomId=${this.ctx.id.toString()} mode=${this.mode}`);
+    console.info(
+      `[room] evicted (${reason}) roomId=${this.ctx.id.toString()} playerCount=${this.playerCount} botSeats=${this.botSeats.join(",")}`,
+    );
     this.engineState = null;
-    this.seats = new Array<Seat | null>(SEAT_COUNT).fill(null);
-    this.botSeat = null;
-    this.rematchSeats = new Array<boolean>(SEAT_COUNT).fill(false);
-    this.disconnect = null;
+    this.seats = new Array<Seat | null>(this.playerCount).fill(null);
+    this.botSeats = [];
+    this.rematchSeats = new Array<boolean>(this.playerCount).fill(false);
+    this.disconnects = [];
     // Clear all alarm bookkeeping before deleteAll wipes the persisted map.
     this.alarms.cancel("turn-timeout");
     this.alarms.cancel("forfeit");
@@ -376,6 +478,8 @@ export class Room extends DurableObject<Env> {
     if (this.engineState !== null && this.engineState.phase === "game-over") {
       this.alarms.cancel("turn-timeout");
       this.alarms.cancel("bot-think");
+      this.alarms.cancel("forfeit");
+      this.disconnects = [];
       this.botChainCount = 0;
       if (!this.alarms.has("stale")) {
         this.alarms.schedule("stale", Date.now() + STALE_MS);
@@ -389,6 +493,7 @@ export class Room extends DurableObject<Env> {
     if (this.engineState === null || this.engineState.phase !== "in-round") return false;
     const action = synthesizeTimeoutAction(this.engineState);
     if (action === null) {
+      this.advancePastEliminatedActor();
       this.scheduleTurnTimer();
       return false;
     }
@@ -405,18 +510,35 @@ export class Room extends DurableObject<Env> {
     return true;
   }
 
+  // Forfeit at N>2 ends the round with the forfeiter as durak. Multi-seat
+  // forfeit-as-elimination would need engine cooperation (mid-round skip
+  // of a seat without legal cards) and is out of scope here. Documented
+  // in apps/worker/README.md.
+  //
+  // Called by the alarm dispatcher when the earliest `forfeitAt` is past;
+  // we trust the alarm contract (the scheduler only fires the kind once
+  // its deadline elapsed) rather than re-comparing wall-clock time, so the
+  // test seam `testFireAlarm(fakeNow)` works without injecting time into
+  // this method.
   private handleForfeit(): boolean {
     if (this.engineState === null || this.engineState.phase !== "in-round") {
-      this.disconnect = null;
+      this.disconnects = [];
       return true;
     }
-    if (this.disconnect === null) return false;
-    const seat = this.disconnect.seat;
+    if (this.disconnects.length === 0) return false;
+    // Earliest pending disconnect becomes the durak. Tie-break by seat for
+    // determinism when two seats disconnect at the same instant.
+    const sorted = [...this.disconnects].sort(
+      (a, b) => a.forfeitAt - b.forfeitAt || a.seat - b.seat,
+    );
+    const first = sorted[0] as DisconnectState;
+    const seat = first.seat;
     const forfeit = forfeitState(this.engineState, seat);
     this.engineState = forfeit;
-    this.disconnect = null;
+    this.disconnects = [];
     this.alarms.cancel("turn-timeout");
     this.alarms.cancel("bot-think");
+    this.alarms.cancel("forfeit");
     this.botChainCount = 0;
     this.broadcast([{ type: "GAME_OVER", durak: seat }]);
     this.broadcastRoomState();
@@ -455,12 +577,47 @@ export class Room extends DurableObject<Env> {
     return undefined;
   }
 
-  private bothSeatsFilled(): boolean {
+  private allSeatsFilled(): boolean {
     return this.seats.every((s) => s !== null);
   }
 
+  // Count of seats that are "logically attached": connected human ws
+  // sockets plus reserved bot seats (which are always considered present).
   private attachedSeatCount(): number {
-    return this.ctx.getWebSockets().length + (this.botSeat !== null ? 1 : 0);
+    return this.ctx.getWebSockets().length + this.botSeats.length;
+  }
+
+  private isDisconnected(seat: SeatIndex): boolean {
+    return this.disconnects.some((d) => d.seat === seat);
+  }
+
+  private removeDisconnect(seat: SeatIndex): boolean {
+    const before = this.disconnects.length;
+    this.disconnects = this.disconnects.filter((d) => d.seat !== seat);
+    return this.disconnects.length !== before;
+  }
+
+  private earliestDisconnect(): DisconnectState | null {
+    if (this.disconnects.length === 0) return null;
+    let earliest = this.disconnects[0] as DisconnectState;
+    for (const d of this.disconnects) {
+      if (d.forfeitAt < earliest.forfeitAt) earliest = d;
+    }
+    return { ...earliest };
+  }
+
+  private refreshForfeitAlarm(): void {
+    const earliest = this.earliestDisconnect();
+    if (earliest === null) {
+      this.alarms.cancel("forfeit");
+    } else {
+      this.alarms.schedule("forfeit", earliest.forfeitAt);
+    }
+  }
+
+  private isEngineEliminated(seat: SeatIndex): boolean {
+    if (this.engineState === null || this.engineState.phase !== "in-round") return false;
+    return eliminatedSeatsOfState(this.engineState).has(seat);
   }
 
   private bucketFor(ws: WebSocket): TokenBucket {
@@ -479,12 +636,12 @@ export class Room extends DurableObject<Env> {
 
   private startGame(seed: number): void {
     if (this.engineState !== null) throw new Error("game already started");
-    if (!this.bothSeatsFilled()) throw new Error("seats not filled");
-    const initial = initialState({ seed });
+    if (!this.allSeatsFilled()) throw new Error("seats not filled");
+    const initial = initialState({ seed, playerCount: this.playerCount });
     const result = step(initial, { type: "START_GAME" });
     if (!result.ok) throw new Error(`START_GAME failed: ${result.reason}`);
     this.engineState = result.state;
-    this.rematchSeats = new Array<boolean>(SEAT_COUNT).fill(false);
+    this.rematchSeats = new Array<boolean>(this.playerCount).fill(false);
     this.broadcast(result.events);
     this.scheduleTurnTimer();
     this.armBotTurnIfNeeded();
@@ -511,13 +668,14 @@ export class Room extends DurableObject<Env> {
   }
 
   private shouldFireRematch(): boolean {
-    // Bot seats never click rematch; bot mode fires on the human's first
-    // request. Human mode requires both seats to opt in.
-    if (this.mode === "bot") {
-      const human = this.botSeat === 0 ? 1 : 0;
-      return this.rematchSeats[human] === true;
+    // Bots never request rematch. The trigger is "every human seat opted
+    // in" — the rematch fires once all non-bot seats have flipped their
+    // flag. In a pure-vs-bot room this means the host's first request.
+    for (let s = 0; s < this.playerCount; s++) {
+      if (this.botSeats.includes(s)) continue;
+      if (!this.rematchSeats[s]) return false;
     }
-    return this.rematchSeats.every((flag) => flag === true);
+    return true;
   }
 
   private fireRematch(): void {
@@ -526,7 +684,7 @@ export class Room extends DurableObject<Env> {
     this.alarms.cancel("bot-think");
     this.botChainCount = 0;
     this.engineState = null;
-    this.rematchSeats = new Array<boolean>(SEAT_COUNT).fill(false);
+    this.rematchSeats = new Array<boolean>(this.playerCount).fill(false);
     this.broadcastRoomState();
     this.startGame(newSeed());
   }
@@ -538,7 +696,10 @@ export class Room extends DurableObject<Env> {
     if (action.type === "START_GAME") {
       return { ok: false, reason: "FORBIDDEN_ACTION" };
     }
-    if (seat === this.botSeat) {
+    if (this.botSeats.includes(seat)) {
+      return { ok: false, reason: "FORBIDDEN_ACTION" };
+    }
+    if (this.engineState.phase === "in-round" && this.isEngineEliminated(seat)) {
       return { ok: false, reason: "FORBIDDEN_ACTION" };
     }
     const enforced = { ...action, by: seat };
@@ -547,10 +708,31 @@ export class Room extends DurableObject<Env> {
     this.engineState = result.state;
     this.cancelTurnTimer();
     this.broadcast(result.events);
+    this.advancePastEliminatedActor();
     this.armBotTurnIfNeeded();
     this.scheduleTurnTimer();
     this.bumpStaleIfFinished();
     return { ok: true, state: this.engineState, events: result.events };
+  }
+
+  // Engine-level edge case at N>2: a seat can play its last card mid-round
+  // (PLAYER_OUT) while still being `state.attacker`. After the round finishes
+  // resolving (defender's reaction), `activeActorSeat` would point at the
+  // eliminated attacker — neither the human (rejected) nor the bot driver
+  // (skips eliminated) can advance the game. Synthesize a TIMEOUT for them
+  // here; the engine resolves it as END_ROUND/TAKE_PILE which then runs
+  // `rotateRoles` and skips the eliminated seat correctly.
+  private advancePastEliminatedActor(): void {
+    if (this.engineState === null || this.engineState.phase !== "in-round") return;
+    for (let i = 0; i < this.playerCount * 2 && this.engineState.phase === "in-round"; i++) {
+      const active = activeActorSeat(this.engineState);
+      const eliminated = eliminatedSeatsOfState(this.engineState);
+      if (!eliminated.has(active)) break;
+      const result = step(this.engineState, { type: "TIMEOUT", by: active });
+      if (!result.ok) break;
+      this.engineState = result.state;
+      this.broadcast(result.events);
+    }
   }
 
   // Single bot iteration counter, reset whenever a non-bot move lands. The
@@ -564,7 +746,7 @@ export class Room extends DurableObject<Env> {
   // outstanding bot-think state. Idempotent — safe to call after every
   // engine transition.
   private armBotTurnIfNeeded(): void {
-    if (this.botSeat === null) {
+    if (this.botSeats.length === 0) {
       this.botChainCount = 0;
       this.clearThinkingState();
       return;
@@ -575,7 +757,7 @@ export class Room extends DurableObject<Env> {
       return;
     }
     const active = activeActorSeat(this.engineState);
-    if (active !== this.botSeat) {
+    if (!this.botSeats.includes(active)) {
       this.botChainCount = 0;
       this.clearThinkingState();
       return;
@@ -583,17 +765,17 @@ export class Room extends DurableObject<Env> {
     if (this.botChainCount >= this.botIterationCap) {
       this.botChainCount = 0;
       this.clearThinkingState();
-      this.sendErrorToHuman("BOT_LOOP_CAP", "bot iteration cap reached");
+      this.sendErrorToHumans("BOT_LOOP_CAP", "bot iteration cap reached");
       return;
     }
     this.botChainCount += 1;
-    const delay = computeThinkDelay({
+    const baseDelay = computeThinkDelay({
       state: this.engineState,
-      seat: this.botSeat,
+      seat: active,
       difficulty: this.botDifficulty,
       bounds: this.thinkBounds,
     });
-    if (delay <= 0) {
+    if (baseDelay <= 0) {
       // Pacing disabled (env override) — fall back to synchronous play so
       // tests that rely on instant bot turns keep their existing shape.
       const moved = this.runBotMoveNow();
@@ -604,8 +786,24 @@ export class Room extends DurableObject<Env> {
       }
       return;
     }
+    const delay = this.allBotsActive()
+      ? Math.round(baseDelay * ALL_BOTS_SPEEDUP_FACTOR)
+      : baseDelay;
     this.alarms.schedule("bot-think", Date.now() + delay);
     this.broadcastRoomState();
+  }
+
+  // True iff every seat still in the round (non-eliminated) is a bot.
+  // Drives the all-bots autoplay 2x speedup: once humans are spectators,
+  // bot-think delay is halved so the round wraps up quickly.
+  private allBotsActive(): boolean {
+    if (this.engineState === null || this.engineState.phase !== "in-round") return false;
+    const eliminated = eliminatedSeatsOfState(this.engineState);
+    for (let s = 0; s < this.playerCount; s++) {
+      if (eliminated.has(s)) continue;
+      if (!this.botSeats.includes(s)) return false;
+    }
+    return true;
   }
 
   private clearThinkingState(): void {
@@ -619,14 +817,14 @@ export class Room extends DurableObject<Env> {
   // turn. Caller (`dispatchFired`) calls `persist()` afterwards when this
   // returns true.
   private handleBotThink(): boolean {
-    if (this.botSeat === null) return false;
+    if (this.botSeats.length === 0) return false;
     if (this.engineState === null || this.engineState.phase !== "in-round") {
       this.botChainCount = 0;
       this.broadcastRoomState();
       return true;
     }
     const active = activeActorSeat(this.engineState);
-    if (active !== this.botSeat) {
+    if (!this.botSeats.includes(active)) {
       this.botChainCount = 0;
       this.broadcastRoomState();
       return true;
@@ -645,18 +843,19 @@ export class Room extends DurableObject<Env> {
   // Synchronously runs one bot.choose -> step. Returns true if a move
   // landed. Used by the alarm handler and by the zero-delay fast path.
   private runBotMoveNow(): boolean {
-    if (this.botSeat === null) return false;
+    if (this.botSeats.length === 0) return false;
     if (this.engineState === null || this.engineState.phase !== "in-round") return false;
     const active = activeActorSeat(this.engineState);
-    if (active !== this.botSeat) return false;
+    if (!this.botSeats.includes(active)) return false;
     const action = bot.choose(this.engineState, { difficulty: this.botDifficulty });
     const result = step(this.engineState, action);
     if (!result.ok) {
-      this.sendErrorToHuman("BOT_ILLEGAL_ACTION", `bot rejected: ${result.reason}`);
+      this.sendErrorToHumans("BOT_ILLEGAL_ACTION", `bot rejected: ${result.reason}`);
       return false;
     }
     this.engineState = result.state;
     this.broadcast(result.events);
+    this.advancePastEliminatedActor();
     return true;
   }
 
@@ -684,9 +883,13 @@ export class Room extends DurableObject<Env> {
     for (let i = 0; i < this.rematchSeats.length; i++) {
       if (this.rematchSeats[i]) rematchRequested.push(i);
     }
-    const disconnect = this.disconnect;
-    const thinkingSeats: SeatIndex[] =
-      this.botSeat !== null && this.alarms.has("bot-think") ? [this.botSeat] : [];
+    const earliest = this.earliestDisconnect();
+    const disconnects = this.disconnects.map((d) => ({ ...d }));
+    const thinkingSeats: SeatIndex[] = this.computeThinkingSeats();
+    const eliminated: SeatIndex[] =
+      this.engineState !== null && this.engineState.phase === "in-round"
+        ? Array.from(eliminatedSeatsOfState(this.engineState)).sort((a, b) => a - b)
+        : [];
     for (const ws of this.ctx.getWebSockets()) {
       const seat = this.seatForWebSocket(ws);
       if (seat === undefined) continue;
@@ -696,11 +899,21 @@ export class Room extends DurableObject<Env> {
         seats,
         you: seat,
         rematchRequested,
-        disconnect,
+        disconnect: earliest,
+        disconnects,
         thinkingSeats,
+        eliminated,
       };
       this.send(ws, msg);
     }
+  }
+
+  private computeThinkingSeats(): SeatIndex[] {
+    if (!this.alarms.has("bot-think")) return [];
+    if (this.engineState === null || this.engineState.phase !== "in-round") return [];
+    const active = activeActorSeat(this.engineState);
+    if (!this.botSeats.includes(active)) return [];
+    return [active];
   }
 
   // Replays the current engine state to a single WS so a rejoining seat
@@ -720,11 +933,13 @@ export class Room extends DurableObject<Env> {
     }
   }
 
-  private sendErrorToHuman(code: string, message: string): void {
-    if (this.botSeat === null) return;
-    const humanSeat = (this.botSeat === 0 ? 1 : 0) as SeatIndex;
-    const ws = this.clientForSeat(humanSeat);
-    if (ws) this.send(ws, { type: "Error", code, message });
+  private sendErrorToHumans(code: string, message: string): void {
+    for (const ws of this.ctx.getWebSockets()) {
+      const seat = this.seatForWebSocket(ws);
+      if (seat === undefined) continue;
+      if (this.botSeats.includes(seat)) continue;
+      this.send(ws, { type: "Error", code, message });
+    }
   }
 
   // ─── turn timer (DO Alarms) ─────────────────────────────────────────────
@@ -740,13 +955,13 @@ export class Room extends DurableObject<Env> {
 
   private async persist(): Promise<void> {
     const snapshot: PersistedRoom = {
-      mode: this.mode,
+      playerCount: this.playerCount,
       seats: this.seats,
       engine: this.engineState,
-      botSeat: this.botSeat,
+      botSeats: this.botSeats.slice(),
       botDifficulty: this.botDifficulty,
       rematchSeats: this.rematchSeats.slice(),
-      disconnect: this.disconnect,
+      disconnects: this.disconnects.map((d) => ({ ...d })),
       deadlines: this.alarms.toPersisted(),
     };
     await this.ctx.storage.put(STORAGE_KEY, snapshot);
@@ -835,4 +1050,21 @@ function parseFailureMessage(err: unknown): string {
   if (err instanceof SyntaxError) return "invalid JSON";
   if (err instanceof ZodError) return err.issues[0]?.message ?? "invalid message";
   return "invalid message";
+}
+
+// Mirrors the engine's internal `eliminatedSeatsOf` (not exported). A seat
+// is eliminated once its hand is empty AND no replenishment is possible
+// (talon empty + trumpCard null). The engine emits `PLAYER_OUT` events on
+// the same transition.
+function eliminatedSeatsOfState(state: {
+  hands: readonly (readonly Card[])[];
+  talon: readonly Card[];
+  trumpCard: Card | null;
+}): Set<number> {
+  if (state.talon.length > 0 || state.trumpCard !== null) return new Set();
+  const out = new Set<number>();
+  for (let i = 0; i < state.hands.length; i++) {
+    if ((state.hands[i] as readonly Card[]).length === 0) out.add(i);
+  }
+  return out;
 }

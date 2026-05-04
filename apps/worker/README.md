@@ -29,13 +29,19 @@ implements.
   hibernation and DO eviction because the map is serialized into the
   persisted room blob.
 - **Disconnect forfeit (ADR-0009)** - on `webSocketClose` mid-round,
-  the DO records the disconnected seat, schedules a forfeit deadline
-  30s out, and broadcasts `RoomState` with the disconnect populated to
-  the surviving seat. A reconnect with the same seat token before the
+  the DO appends a `DisconnectState { seat, forfeitAt }` to the room's
+  `disconnects[]` array (multiple seats can be in countdown
+  simultaneously), arms the `forfeit` alarm at the earliest deadline,
+  and broadcasts `RoomState` with the disconnect populated to the
+  surviving seats. A reconnect with the same seat token before the
   deadline cancels it and replays the current `Snapshot` so the
   rejoiner lands directly back in the game. On deadline fire the DO
-  synthesizes a `GameOverState` declaring the absent seat the durak
-  and emits a `GAME_OVER` event - the engine package is untouched.
+  synthesizes a `GameOverState` declaring the earliest-deadline absent
+  seat the durak and emits a `GAME_OVER` event - the engine package is
+  untouched. At N>2, this means a forfeit ends the round; full
+  forfeit-as-elimination (game continues with remaining players) would
+  need engine cooperation to skip a mid-round seat without legal cards
+  and is intentionally out of scope.
 - **Room GC** - three eviction triggers, all routed through the same
   `AlarmScheduler` slot:
   - `abandoned` (5 min) - room created via `POST /rooms` but no client
@@ -47,9 +53,26 @@ implements.
   Eviction = `state.storage.deleteAll()` plus an in-memory clear, then
   the DO can be hibernated freely. Logged via `console.info` on each
   eviction so prod logs show the GC rhythm.
-- **Persistence** - `mode`, `seats`, `engine`, and `botSeat` are
+- **Persistence** - `playerCount`, `seats`, `engine`, `botSeats`,
+  `rematchSeats`, `disconnects`, and the alarm `deadlines` map are
   stored under a single `room` key in `state.storage` after every
-  change. The constructor reloads them via `blockConcurrencyWhile`.
+  change. The constructor reloads them via `blockConcurrencyWhile` and
+  translates legacy 2-player blobs (`mode` + `botSeat` shape) on the
+  fly so in-flight upgrades don't lose state.
+- **N-player rooms (DUR-52)** - rooms carry a `playerCount` of 2..6
+  set at creation. `botSeats: SeatIndex[]` lists every bot seat (zero
+  or more). Seats fill from index 0; bots reserve the highest seat
+  indices first so the host always lands on seat 0.
+- **Spectator semantics** - eliminated seats (PLAYER_OUT fired by the
+  engine) stay attached to the room and keep receiving `Snapshot`,
+  `Events`, and `RoomState` broadcasts. `applyAction` from an
+  eliminated seat returns `Error { code: "FORBIDDEN_ACTION" }` and the
+  ws is *not* closed. `RoomStateMessage.eliminated` carries the
+  current set so clients can render the spectator view. A small
+  helper, `advancePastEliminatedActor`, synthesizes a `TIMEOUT` for
+  any eliminated seat that is still listed as the engine's
+  `attacker`/`defender` mid-round so the round resolves through the
+  engine's `rotateRoles` path (which already skips eliminated seats).
 - **Worker fetch handler** (`src/index.ts`) - routes
   `POST /rooms`, `GET /ws/:roomId`, `OPTIONS /rooms`, `GET /health`,
   with origin allowlist and per-IP create-room rate limit.
@@ -62,7 +85,9 @@ hands the active seat to a bot schedules a `bot-think` deadline via the
 seat is still a bot, schedules the next deadline. The driver replaces the
 old synchronous `runBotTurns()` loop with an alarm chain bounded by the
 existing `botIterationCap` so a misbehaving heuristic still can't spin
-forever.
+forever. The driver is N-bot from DUR-52: the engine returns a single
+active actor at any time, so multi-bot rooms simply produce more
+iterations of the same alarm chain — no parallelism.
 
 - Delay model lives in `src/bot-pacing.ts`. Default bounds: 400-1400 ms,
   scaled per difficulty (easy 0.7, medium 1.0, hard 1.2). The bound is
@@ -73,6 +98,11 @@ forever.
 - Determinism: same seed + same action sequence -> same think-delay
   sequence. The pure unit tests in `bot-pacing.test.ts` enforce both the
   bounds property and the no-mutation contract.
+- All-bots autoplay (DUR-52): when every non-eliminated seat is a bot
+  (typical case: humans got eliminated and now spectate), the bot-think
+  delay is multiplied by 0.5 so the round wraps up quickly. Spectator
+  humans still receive snapshots + events at full fidelity; only the
+  bot pacing speeds up.
 - Tunable via env: `BOT_THINK_MIN_MS`, `BOT_THINK_MAX_MS`. Setting both to
   `0` disables pacing — the room falls back to the synchronous fast path
   for tests and dev.
@@ -108,9 +138,17 @@ flags (`rematchSeats[]`) alongside the engine state and seat tokens.
 
 This is an app, not a library. The wire surface is:
 
-- `POST /rooms` (JSON body `{ "mode": "human" | "bot" }`) →
-  `{ roomId, hostToken, joinToken? }` per
-  `packages/protocol/src/http.ts`.
+- `POST /rooms` accepts either shape:
+  - **N-player (canonical)**:
+    `{ playerCount: 2|3|4|5|6, botCount: 0..(playerCount-1), difficulty?: "easy"|"medium"|"hard" }`
+  - **Legacy (back-compat for the existing 1v1 web client)**:
+    `{ mode: "human" | "bot", difficulty? }` translates to
+    `playerCount: 2, botCount: mode === "bot" ? 1 : 0`.
+
+  Returns
+  `{ roomId, hostToken, joinTokens: string[], joinToken? }`. The
+  legacy `joinToken` is populated only when `joinTokens.length === 1`
+  so the existing 2-player web flow keeps working until DUR-53.
 - `GET /ws/:roomId?token=<seatToken>` → websocket upgrade. Inbound
   messages parsed via `parseClientMessage` (Zod). Outbound messages
   match `ServerMessage` (`Snapshot`, `Events`, `RoomState`, `Error`).

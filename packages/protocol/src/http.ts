@@ -2,30 +2,89 @@ import { z } from "zod";
 
 export type BotDifficulty = "easy" | "medium" | "hard";
 
-export interface CreateRoomRequest {
+export type CreateRoomRequest = LegacyCreateRoomRequest | NPlayerCreateRoomRequest;
+
+export interface LegacyCreateRoomRequest {
   mode: "human" | "bot";
   /** Bot difficulty for `mode: "bot"` rooms. Ignored for human rooms. Defaults to medium. */
+  difficulty?: BotDifficulty | undefined;
+}
+
+export interface NPlayerCreateRoomRequest {
+  playerCount: 2 | 3 | 4 | 5 | 6;
+  /** Number of bot seats. Must satisfy `0 <= botCount < playerCount`. */
+  botCount: number;
+  /** Difficulty applied to all bots in the room. Defaults to medium. */
+  difficulty?: BotDifficulty | undefined;
+}
+
+export interface NormalizedCreateRoomRequest {
+  playerCount: 2 | 3 | 4 | 5 | 6;
+  botCount: number;
   difficulty?: BotDifficulty | undefined;
 }
 
 export interface CreateRoomResponse {
   roomId: string;
   hostToken: string;
+  /**
+   * Tokens for the remaining human seats (length = playerCount - botCount - 1).
+   * Empty when the host is the only human (e.g., 1v3-bot).
+   */
+  joinTokens: string[];
+  /**
+   * Legacy alias populated when `joinTokens.length === 1` so the existing
+   * web client (1v1 lobby flow) keeps working until it adopts the array
+   * shape.
+   */
   joinToken?: string | undefined;
 }
 
 export const botDifficultySchema = z.enum(["easy", "medium", "hard"]);
 
-export const createRoomRequestSchema = z.object({
+const playerCountSchema = z.union([
+  z.literal(2),
+  z.literal(3),
+  z.literal(4),
+  z.literal(5),
+  z.literal(6),
+]);
+
+export const legacyCreateRoomRequestSchema = z.object({
   mode: z.enum(["human", "bot"]),
   difficulty: botDifficultySchema.optional(),
 });
 
-export const createRoomResponseSchema = z.object({
-  roomId: z.string().min(1),
-  hostToken: z.string().min(1),
-  joinToken: z.string().min(1).optional(),
-});
+export const nPlayerCreateRoomRequestSchema = z
+  .object({
+    playerCount: playerCountSchema,
+    botCount: z.number().int().nonnegative(),
+    difficulty: botDifficultySchema.optional(),
+  })
+  .refine((v) => v.botCount < v.playerCount, {
+    message: "botCount must be < playerCount",
+    path: ["botCount"],
+  });
+
+export const createRoomRequestSchema = z.union([
+  nPlayerCreateRoomRequestSchema,
+  legacyCreateRoomRequestSchema,
+]);
+
+export const createRoomResponseSchema = z
+  .object({
+    roomId: z.string().min(1),
+    hostToken: z.string().min(1),
+    joinTokens: z.array(z.string().min(1)).optional(),
+    joinToken: z.string().min(1).optional(),
+  })
+  .transform((v) => {
+    // Back-compat: callers that send only `joinToken` still parse — surface
+    // the canonical `joinTokens` array regardless.
+    if (v.joinTokens) return v;
+    if (v.joinToken !== undefined) return { ...v, joinTokens: [v.joinToken] };
+    return { ...v, joinTokens: [] };
+  });
 
 export function parseCreateRoomRequest(raw: unknown): CreateRoomRequest {
   // Cast: zod widens optional fields to `T | undefined`, which collides with
@@ -39,10 +98,24 @@ export function parseCreateRoomResponse(raw: unknown): CreateRoomResponse {
   return createRoomResponseSchema.parse(raw) as CreateRoomResponse;
 }
 
-type AssertEqual<A, B> =
-  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : never;
-const _createRoomRequestParity: AssertEqual<
-  z.infer<typeof createRoomRequestSchema>,
-  CreateRoomRequest
-> = true;
-void _createRoomRequestParity;
+/**
+ * Collapses both request shapes to the N-player form. Legacy `mode: "human"`
+ * maps to `{ playerCount: 2, botCount: 0 }`; `mode: "bot"` maps to
+ * `{ playerCount: 2, botCount: 1 }`.
+ */
+export function normalizeCreateRoomRequest(req: CreateRoomRequest): NormalizedCreateRoomRequest {
+  if ("playerCount" in req) {
+    const out: NormalizedCreateRoomRequest = {
+      playerCount: req.playerCount,
+      botCount: req.botCount,
+    };
+    if (req.difficulty !== undefined) out.difficulty = req.difficulty;
+    return out;
+  }
+  const out: NormalizedCreateRoomRequest = {
+    playerCount: 2,
+    botCount: req.mode === "bot" ? 1 : 0,
+  };
+  if (req.difficulty !== undefined) out.difficulty = req.difficulty;
+  return out;
+}

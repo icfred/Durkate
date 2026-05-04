@@ -19,7 +19,7 @@ describe("createRoom", () => {
 
     const result = await createRoom("human", { serverUrl: "http://server.test", fetchImpl });
 
-    expect(result).toEqual({ roomId: "abc", hostToken: "h", joinToken: "j" });
+    expect(result).toEqual({ roomId: "abc", hostToken: "h", joinToken: "j", joinTokens: ["j"] });
     expect(calls).toHaveLength(1);
     const call = calls[0];
     if (!call) throw new Error("expected call");
