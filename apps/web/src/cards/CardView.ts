@@ -40,16 +40,18 @@ export function cardKey(card: Card): string {
 export type LegalState = "neutral" | "legal" | "illegal";
 
 export class CardView extends Container implements Focusable {
-  // The card is split into two stacked Containers:
-  //   - `skinLayer` holds the background graphics and any cosmetic overlays
-  //     (pattern textures, foil shaders) added by `SkinnedCard`. Filters
-  //     applied via `SkinnedCard.applySkin` target this layer only.
-  //   - `glyphLayer` holds the rank and suit text. It is added *above*
-  //     `skinLayer` and is never targeted by skin filters, so the glyphs
-  //     stay legible no matter how shiny the cosmetic.
-  // External wrappers reach the skin target via `skinLayer` (read-only
-  // public field).
+  // The card is split into three stacked sub-containers:
+  //   - `skinLayer` (filtered): bg fill only. SkinnedCard attaches its
+  //     pattern overlay and shader filters here. Cosmetic effects shimmer
+  //     across this layer.
+  //   - `borderLayer` (never filtered): the rounded-rect outline. Stays a
+  //     solid, predictable contour regardless of skin — without it the
+  //     edges of foil / chrome / holographic cards bled the shimmer
+  //     across the rim.
+  //   - `glyphLayer` (never filtered): rank and suit text, on top.
+  // External wrappers reach the skin target via `skinLayer` (public).
   readonly skinLayer: Container;
+  private readonly borderLayer: Graphics;
   private readonly glyphLayer: Container;
   private readonly bg: Graphics;
   private readonly cornerText: Text;
@@ -71,6 +73,10 @@ export class CardView extends Container implements Focusable {
 
     this.bg = new Graphics();
     this.skinLayer.addChild(this.bg);
+
+    this.borderLayer = new Graphics();
+    this.borderLayer.label = "card-border-layer";
+    this.addChild(this.borderLayer);
 
     this.glyphLayer = new Container();
     this.glyphLayer.label = "card-glyph-layer";
@@ -145,10 +151,16 @@ export class CardView extends Container implements Focusable {
       border = color.accent;
       borderWidth = 2;
     }
-    this.bg
+    // skinLayer: just the fill so cosmetic shaders have a solid surface to
+    // operate on. No stroke here — the border lives on its own un-filtered
+    // layer above.
+    this.bg.clear().roundRect(0, 0, CARD_W, CARD_H, 4).fill({ color: surface });
+    // borderLayer: stroke only, drawn on the same path. Sits above the
+    // skinLayer so it is never reached by SkinnedCard's filters and reads as
+    // a clean contour even on holographic / chrome cards.
+    this.borderLayer
       .clear()
       .roundRect(0, 0, CARD_W, CARD_H, 4)
-      .fill({ color: surface })
       .stroke({ color: border, width: borderWidth, alignment: 0 });
     if (isFace) {
       this.cornerText.x = 6;
