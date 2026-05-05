@@ -170,6 +170,12 @@ export class SkinnedCard extends Container {
       overlayAlpha: this.tunables.pattern.overlayAlpha,
       bumpScale: 2.0,
       texelSize: 1 / PROC_TILE_PX,
+      // SkinnedCard's own skew is set externally (by the tuner during
+      // drag tilt). Reading it here drives the shader's tilt-aware
+      // lighting / Fresnel rim — that's what gives depth as the card
+      // turns.
+      viewTiltX: this.skew.x,
+      viewTiltY: this.skew.y,
     });
   }
 
@@ -189,6 +195,8 @@ export class SkinnedCard extends Container {
       tileScaleY: tilesDown,
       tileOffsetX: this.spec.pattern.offsetX,
       tileOffsetY: this.spec.pattern.offsetY,
+      viewTiltX: this.skew.x,
+      viewTiltY: this.skew.y,
     });
   }
 

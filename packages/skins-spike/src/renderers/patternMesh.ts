@@ -57,6 +57,11 @@ uniform float uBumpScale;
 uniform float uTexelSize;
 uniform vec2 uCardSize;
 uniform float uCornerRadius;
+// (skewX, skewY) of the card. The mesh's geometry already shears via the
+// vertex MVP, but the shader also needs the angle so light direction +
+// Fresnel rim light can respond to the tilt — that's what gives a real
+// card its sense of depth as you turn it.
+uniform vec2 uViewTilt;
 
 // Signed distance from a pixel to a rounded rectangle: negative inside,
 // positive outside. Drives the silhouette mask in mesh-local space.
@@ -84,11 +89,19 @@ void main() {
   float hR = texture(uHeightMap, fract(tileUV + vec2(uTexelSize, 0.0))).r;
   float hT = texture(uHeightMap, fract(tileUV - vec2(0.0, uTexelSize))).r;
   float hB = texture(uHeightMap, fract(tileUV + vec2(0.0, uTexelSize))).r;
-  vec3 normal = normalize(vec3(
+  vec3 baseNormal = normalize(vec3(
     -(hR - hL) * uBumpScale,
     -(hB - hT) * uBumpScale,
     1.0
   ));
+
+  // Rotate the surface normal by the card's tilt so different parts of the
+  // pattern catch light at different angles. uViewTilt.x is skew.x (vertical
+  // shear, ~ rotation around screen X-axis) and uViewTilt.y is skew.y
+  // (horizontal shear, ~ rotation around screen Y-axis). Multiplied up so
+  // the effect reads at small tilts.
+  vec3 tiltVec = vec3(uViewTilt.y, -uViewTilt.x, 0.0) * 2.5;
+  vec3 normal = normalize(baseNormal + tiltVec);
 
   // Light direction by motion mode (subtle so it composes with foil).
   vec3 lightDir;
@@ -115,6 +128,12 @@ void main() {
   float spec = pow(max(0.0, dot(normal, halfway)), specPower);
   vec3 highlight = vec3(spec * gloss);
 
+  // Fresnel rim: surfaces glance brighter at grazing angles. With the
+  // tilted normal this gives a strong "the card is leaning" cue —
+  // edges of high-elevation areas glow when the card is held off-axis.
+  float fresnel = pow(1.0 - max(0.0, dot(normal, viewDir)), 3.0);
+  highlight += vec3(fresnel) * (0.35 + 0.65 * gloss);
+
   vec3 finalRGB = color * lit + highlight;
   finalColor = vec4(finalRGB, uOverlayAlpha * maskA);
 }
@@ -130,6 +149,7 @@ interface PatternMeshUniforms {
   uTexelSize: number;
   uCardSize: Float32Array;
   uCornerRadius: number;
+  uViewTilt: Float32Array;
 }
 
 export interface PatternMeshController {
@@ -145,6 +165,8 @@ export interface PatternMeshController {
     overlayAlpha: number;
     bumpScale: number;
     texelSize: number;
+    viewTiltX: number;
+    viewTiltY: number;
   }): void;
 }
 
@@ -176,6 +198,7 @@ export function createPatternMesh(
     uTexelSize: { value: 1 / 48, type: "f32" },
     uCardSize: { value: new Float32Array([cardWidth, cardHeight]), type: "vec2<f32>" },
     uCornerRadius: { value: 4, type: "f32" },
+    uViewTilt: { value: new Float32Array([0, 0]), type: "vec2<f32>" },
   });
 
   const shader = new Shader({
@@ -214,6 +237,8 @@ export function createPatternMesh(
       u.uOverlayAlpha = opts.overlayAlpha;
       u.uBumpScale = opts.bumpScale;
       u.uTexelSize = opts.texelSize;
+      u.uViewTilt[0] = opts.viewTiltX;
+      u.uViewTilt[1] = opts.viewTiltY;
     },
   };
 }
