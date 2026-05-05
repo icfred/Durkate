@@ -1,54 +1,46 @@
 import { color, spacing, stroke, typography } from "@durak/ui";
-import { Container, type FederatedPointerEvent, Graphics, Rectangle, Text } from "pixi.js";
+import { Container, type FederatedPointerEvent, Graphics, Text } from "pixi.js";
 
-const ROW_HEIGHT = 28;
+const ROW_HEIGHT = 24;
+const INPUT_WIDTH = 64;
+const INPUT_HEIGHT = 18;
 
-export interface SliderOptions {
+// ─── NumberRow ────────────────────────────────────────────────────────────
+//
+// A label + numeric input pair on one row. The input is a real
+// <input type="number"> overlaid via getBoundingClientRect on the canvas;
+// it carries its own rendering (caret, spinner, focus) so we don't have
+// to reinvent text editing inside Pixi. Sliders are gone — for parameter
+// tuning, typed values are unambiguous and faster than drag-to-search.
+
+export interface NumberRowOptions {
   label: string;
   width: number;
-  min: number;
-  max: number;
   initial: number;
+  min?: number;
+  max?: number;
   step?: number;
-  format?(value: number): string;
-  onChange(value: number): void;
-  /**
-   * If provided, clicking the value label invokes this callback. The screen
-   * uses it to mount an HTML number input over the value field for typed
-   * editing — sliders alone are too coarse for parameter tuning.
-   */
-  onRequestEdit?(slider: Slider): void;
+  format?(v: number): string;
+  onChange(v: number): void;
 }
 
-export class Slider extends Container {
-  private readonly track: Graphics;
-  private readonly handle: Graphics;
+export class NumberRow extends Container {
   private readonly labelText: Text;
-  private readonly valueText: Text;
-  private readonly trackWidth: number;
-  private readonly trackY: number;
-  private readonly trackX: number;
-  private readonly min: number;
-  private readonly max: number;
-  private readonly step: number;
-  private readonly format: (value: number) => string;
-  private readonly onChange: (value: number) => void;
-  private readonly onRequestEdit: ((slider: Slider) => void) | undefined;
-  private value: number;
-  private dragging = false;
+  private readonly box: Graphics;
+  private readonly htmlInput: HTMLInputElement;
+  private readonly format: (v: number) => string;
+  private readonly onChangeCb: (v: number) => void;
+  private currentValue: number;
+  private domDestroyed = false;
 
-  constructor(options: SliderOptions) {
+  constructor(opts: NumberRowOptions) {
     super();
-    this.min = options.min;
-    this.max = options.max;
-    this.value = options.initial;
-    this.step = options.step ?? 0;
-    this.format = options.format ?? ((v) => v.toFixed(2));
-    this.onChange = options.onChange;
-    this.onRequestEdit = options.onRequestEdit;
+    this.format = opts.format ?? ((v) => v.toFixed(2));
+    this.onChangeCb = opts.onChange;
+    this.currentValue = opts.initial;
 
     this.labelText = new Text({
-      text: options.label,
+      text: opts.label,
       style: {
         fontFamily: typography.family,
         fontSize: typography.size.xs,
@@ -58,153 +50,91 @@ export class Slider extends Container {
       },
     });
     this.labelText.x = 0;
-    this.labelText.y = 0;
+    this.labelText.y = Math.round((ROW_HEIGHT - this.labelText.height) / 2);
     this.addChild(this.labelText);
 
-    this.valueText = new Text({
-      text: this.format(this.value),
-      style: {
-        fontFamily: typography.family,
-        fontSize: typography.size.xs,
-        fill: color.text,
-        letterSpacing: typography.letterSpacing.tight,
-      },
-    });
-    this.valueText.eventMode = "static";
-    this.valueText.cursor = "text";
-    this.valueText.on("pointertap", (e) => {
-      e.stopPropagation();
-      this.onRequestEdit?.(this);
-    });
-    this.addChild(this.valueText);
+    this.box = new Graphics();
+    this.box.x = opts.width - INPUT_WIDTH;
+    this.box.y = Math.round((ROW_HEIGHT - INPUT_HEIGHT) / 2);
+    this.box
+      .roundRect(0, 0, INPUT_WIDTH, INPUT_HEIGHT, 2)
+      .fill({ color: color.bgSunken })
+      .stroke({ color: color.border, width: 1, alignment: 0 });
+    this.addChild(this.box);
 
-    const valueWidth = 56;
-    this.trackX = 0;
-    this.trackY = 14;
-    this.trackWidth = options.width - valueWidth - spacing.sm;
+    this.htmlInput = document.createElement("input");
+    this.htmlInput.type = "number";
+    this.htmlInput.value = this.format(opts.initial);
+    if (opts.min !== undefined) this.htmlInput.min = String(opts.min);
+    if (opts.max !== undefined) this.htmlInput.max = String(opts.max);
+    if (opts.step !== undefined) this.htmlInput.step = String(opts.step);
+    Object.assign(this.htmlInput.style, {
+      position: "absolute",
+      fontFamily: '"JetBrains Mono", monospace',
+      fontSize: "11px",
+      fontWeight: "700",
+      color: "#f3eddc",
+      background: "transparent",
+      border: "none",
+      outline: "none",
+      padding: "0 6px",
+      textAlign: "right",
+      display: "none",
+      zIndex: "100",
+      boxSizing: "border-box",
+    } satisfies Partial<CSSStyleDeclaration>);
+    document.body.appendChild(this.htmlInput);
 
-    this.track = new Graphics();
-    this.track.x = this.trackX;
-    this.track.y = this.trackY;
-    this.addChild(this.track);
-
-    this.handle = new Graphics();
-    this.handle.y = this.trackY;
-    this.handle.eventMode = "static";
-    this.handle.cursor = "ew-resize";
-    this.addChild(this.handle);
-
-    this.track.eventMode = "static";
-    this.track.cursor = "ew-resize";
-    this.track.on("pointerdown", (e) => this.startDragAt(e));
-
-    this.handle.on("pointerdown", (e) => {
-      e.stopPropagation();
-      this.dragging = true;
-      this.handle.cursor = "grabbing";
-    });
-
-    this.on("globalpointermove", (e) => {
-      if (!this.dragging) return;
-      this.applyFromPointer(e);
-    });
-
-    const release = (): void => {
-      if (!this.dragging) return;
-      this.dragging = false;
-      this.handle.cursor = "ew-resize";
+    const apply = (): void => {
+      const v = Number.parseFloat(this.htmlInput.value);
+      if (!Number.isFinite(v)) return;
+      this.currentValue = v;
+      this.onChangeCb(v);
     };
-    this.on("pointerup", release);
-    this.on("pointerupoutside", release);
-
-    this.valueText.x = this.trackX + this.trackWidth + spacing.sm;
-    this.valueText.y = this.trackY - 4;
-
-    this.redraw();
-  }
-
-  getValue(): number {
-    return this.value;
+    this.htmlInput.addEventListener("input", apply);
+    this.htmlInput.addEventListener("change", apply);
   }
 
   /**
-   * Apply a typed/edited value: clamp+snap, update the slider, and notify
-   * onChange if the value actually moved. Used by the screen's edit overlay.
+   * Sync the HTML input's page coords from the box's Pixi global position.
+   * Pass the canvas (so we can convert global → page) and the visible
+   * panel mask range (in page coords) so rows scrolled out of view hide
+   * their input rather than floating in the wrong place.
    */
-  applyEdit(raw: number): void {
-    if (!Number.isFinite(raw)) return;
-    const snapped = this.snap(raw);
-    if (snapped === this.value) return;
-    this.value = snapped;
-    this.redraw();
-    this.onChange(snapped);
-  }
-
-  /** Global Pixi-coords rectangle of the value-text hitbox. */
-  getValueGlobalBounds(): Rectangle {
-    const tl = this.valueText.toGlobal({ x: 0, y: 0 });
-    return new Rectangle(tl.x, tl.y, this.valueText.width, this.valueText.height);
-  }
-
-  set(value: number): void {
-    const clamped = this.snap(value);
-    if (clamped === this.value) return;
-    this.value = clamped;
-    this.redraw();
-  }
-
-  setSilently(value: number): void {
-    const clamped = this.snap(value);
-    this.value = clamped;
-    this.redraw();
-  }
-
-  private startDragAt(event: FederatedPointerEvent): void {
-    this.dragging = true;
-    this.handle.cursor = "grabbing";
-    this.applyFromPointer(event);
-  }
-
-  private applyFromPointer(event: FederatedPointerEvent): void {
-    const local = this.toLocal(event.global);
-    const t = clamp01((local.x - this.trackX) / this.trackWidth);
-    const newValue = this.snap(this.min + t * (this.max - this.min));
-    if (newValue === this.value) {
-      this.redraw();
+  syncDom(canvas: HTMLCanvasElement, clipTop: number, clipBottom: number): void {
+    if (this.domDestroyed) return;
+    const tl = this.box.toGlobal({ x: 0, y: 0 });
+    const rect = canvas.getBoundingClientRect();
+    const pageX = rect.left + tl.x;
+    const pageY = rect.top + tl.y;
+    if (pageY + INPUT_HEIGHT < clipTop || pageY > clipBottom) {
+      this.htmlInput.style.display = "none";
       return;
     }
-    this.value = newValue;
-    this.redraw();
-    this.onChange(newValue);
+    Object.assign(this.htmlInput.style, {
+      display: "block",
+      left: `${pageX}px`,
+      top: `${pageY}px`,
+      width: `${INPUT_WIDTH}px`,
+      height: `${INPUT_HEIGHT}px`,
+    } satisfies Partial<CSSStyleDeclaration>);
   }
 
-  private snap(v: number): number {
-    const clamped = Math.min(this.max, Math.max(this.min, v));
-    if (this.step <= 0) return clamped;
-    const steps = Math.round((clamped - this.min) / this.step);
-    return this.min + steps * this.step;
+  /** Update displayed value without firing onChange (avoids editing loops). */
+  setValue(v: number): void {
+    if (document.activeElement === this.htmlInput) return;
+    this.currentValue = v;
+    this.htmlInput.value = this.format(v);
   }
 
-  private redraw(): void {
-    const t = (this.value - this.min) / (this.max - this.min);
-    const handleX = this.trackX + t * this.trackWidth;
+  getValue(): number {
+    return this.currentValue;
+  }
 
-    this.track
-      .clear()
-      .roundRect(0, 6, this.trackWidth, 4, 2)
-      .fill({ color: color.bgSunken })
-      .stroke({ color: color.border, width: 1, alignment: 0 });
-
-    this.track.roundRect(0, 6, t * this.trackWidth, 4, 2).fill({ color: color.accent });
-
-    this.handle
-      .clear()
-      .roundRect(handleX - 5, 2, 10, 12, 2)
-      .fill({ color: color.surfaceFocus })
-      .stroke({ color: color.borderFocus, width: stroke.base, alignment: 0 });
-    this.handle.x = 0;
-
-    this.valueText.text = this.format(this.value);
+  destroyDom(): void {
+    if (this.domDestroyed) return;
+    this.domDestroyed = true;
+    this.htmlInput.remove();
   }
 
   static height(): number {
@@ -212,8 +142,13 @@ export class Slider extends Container {
   }
 }
 
+// ─── Cycle ─────────────────────────────────────────────────────────────────
+//
+// Cycle is a label-less < value > picker. The previous internal label was
+// redundant with the section header. The screen places its own row label
+// next to the cycle, matching the NumberRow layout.
+
 export interface CycleOptions<T extends string> {
-  label: string;
   width: number;
   options: readonly T[];
   initial: T;
@@ -222,11 +157,10 @@ export interface CycleOptions<T extends string> {
 
 export class Cycle<T extends string> extends Container {
   private readonly bg: Graphics;
-  private readonly labelText: Text;
   private readonly valueText: Text;
   private readonly options: readonly T[];
   private readonly w: number;
-  private readonly h = 18;
+  private readonly h = INPUT_HEIGHT;
   private readonly onChange: (value: T) => void;
   private current: T;
   private hovered = false;
@@ -238,20 +172,7 @@ export class Cycle<T extends string> extends Container {
     this.onChange = options.onChange;
     this.w = options.width;
 
-    this.labelText = new Text({
-      text: options.label,
-      style: {
-        fontFamily: typography.family,
-        fontSize: typography.size.xs,
-        fontWeight: typography.weight.bold,
-        fill: color.textMuted,
-        letterSpacing: typography.letterSpacing.wide,
-      },
-    });
-    this.addChild(this.labelText);
-
     this.bg = new Graphics();
-    this.bg.y = 10;
     this.addChild(this.bg);
 
     this.valueText = new Text({
@@ -317,7 +238,7 @@ export class Cycle<T extends string> extends Container {
       .stroke({ color: border, width: stroke.base, alignment: 0 });
     this.valueText.text = `< ${this.current.toUpperCase()} >`;
     this.valueText.x = Math.round((this.w - this.valueText.width) / 2);
-    this.valueText.y = 10 + Math.round((this.h - this.valueText.height) / 2);
+    this.valueText.y = Math.round((this.h - this.valueText.height) / 2);
   }
 
   static height(): number {
@@ -325,8 +246,5 @@ export class Cycle<T extends string> extends Container {
   }
 }
 
-function clamp01(v: number): number {
-  if (v < 0) return 0;
-  if (v > 1) return 1;
-  return v;
-}
+// Suppress used-import warning for spacing in case future rows reference it.
+void spacing;

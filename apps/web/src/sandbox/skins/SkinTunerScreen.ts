@@ -24,17 +24,20 @@ import {
 } from "pixi.js";
 import { CARD_H, CARD_W, CardView } from "../../cards/CardView.js";
 import type { Screen } from "../../screens/types.js";
-import { Cycle, Slider } from "./controls.js";
+import { Cycle, NumberRow } from "./controls.js";
 
-// Max tilt angle (radians) when the pointer is at the far corner of the
-// preview region. Small enough to read as "card responding to my pointer"
-// rather than as full perspective rotation.
+// Maximum tilt angle (radians) when the pointer is at the far corner of the
+// preview area while dragging. ~10° reads as a 3D-ish lean without dipping
+// into uncanny "this isn't a real card" territory.
 const TILT_MAX_RAD = 0.18;
+// Lerp coefficient for the tilt → 0 spring-back. Higher = snappier.
+const TILT_LERP = 0.18;
 
 const PANEL_WIDTH = 380;
 const PREVIEW_SCALE = 4;
 const FINISHES: readonly Finish[] = ["matte", "foil", "chrome", "holographic"];
 const MOTIONS: readonly Motion[] = ["none", "shimmer", "pulse", "drift"];
+const CYCLE_WIDTH = 140;
 
 const PREVIEW_CARD: Card = { suit: "spades", rank: 14 };
 
@@ -58,16 +61,17 @@ function sectionHeader({ panel, y, label }: SectionLayoutOpts): void {
   t.x = spacing.lg;
   t.y = y.value;
   panel.addChild(t);
-  y.value += t.height + spacing.sm;
+  y.value += t.height + spacing.xs;
 }
 
 export interface SkinTunerScreenOptions {
   assets: SkinAssets;
   ticker: Ticker;
   /**
-   * The Pixi canvas element. When provided, clicking a slider's value field
-   * mounts an HTML <input type="number"> over it for typed editing. Optional
-   * so unit tests (jsdom) can construct the screen without a real canvas.
+   * The Pixi canvas element. NumberRow inputs are HTML elements positioned
+   * via canvas.getBoundingClientRect, so the canvas reference is required
+   * for them to render. Optional so jsdom unit tests can construct the
+   * screen without a real canvas (inputs stay invisible in that case).
    */
   canvas?: HTMLCanvasElement;
 }
@@ -82,7 +86,6 @@ export class SkinTunerScreen extends Container implements Screen {
   private readonly codeText: Text;
   private readonly tickCallback: TickerCallback<unknown>;
   private readonly canvas: HTMLCanvasElement | undefined;
-  private editorEl: HTMLInputElement | null = null;
   private spec: SkinSpec = decode("000000000000");
   private axes: Axes = { pattern: true, tint: true, finish: true, motion: true };
   private tunables: Tunables = cloneTunables(defaultTunables);
@@ -92,6 +95,22 @@ export class SkinTunerScreen extends Container implements Screen {
   private readonly scrollMask: Graphics;
   private contentHeight = 0;
   private maskHeight = 0;
+
+  // Tilt state — only active while the user is dragging on the card. When
+  // released, target snaps to 0 and `current` lerps toward it each tick,
+  // giving a spring-back to flat.
+  private dragging = false;
+  private currentTiltX = 0;
+  private currentTiltY = 0;
+  private targetTiltX = 0;
+  private targetTiltY = 0;
+  private readonly windowPointerUp: () => void;
+
+  // NumberRow children get their HTML input positions synced on layout/
+  // scroll. valueSyncs let roll/reset re-read values from spec/tunables.
+  private readonly numberRows: NumberRow[] = [];
+  private readonly valueSyncs: Array<() => void> = [];
+  private readonly cycleSyncs: Array<() => void> = [];
 
   constructor(options: SkinTunerScreenOptions) {
     super();
@@ -110,15 +129,14 @@ export class SkinTunerScreen extends Container implements Screen {
     this.panel.addChild(this.scrollMask);
     this.panelInner.mask = this.scrollMask;
 
-    // Wheel handler: scroll the panel's content. Caps to content bounds.
     this.panel.eventMode = "static";
     this.panel.on("wheel", (e: FederatedWheelEvent) => this.handleWheel(e));
 
     this.preview = new Container();
     this.addChild(this.preview);
 
-    // Pivot the card at its own center so skew/rotate transforms tilt
-    // around the card's middle rather than the top-left corner.
+    // Pivot the card at its centre so skew/scale transforms tilt around
+    // the middle rather than the top-left corner.
     this.card = new SkinnedCard({
       base: new CardView(PREVIEW_CARD),
       baseWidth: CARD_W,
@@ -129,12 +147,23 @@ export class SkinTunerScreen extends Container implements Screen {
     this.card.pivot.set(CARD_W / 2, CARD_H / 2);
     this.preview.addChild(this.card);
 
-    // Pointer-follow tilt: track pointer over the whole stage and apply
-    // a small skew + scale so the card "leans" toward the pointer. The
-    // SkinTunerScreen container itself is the listener so the effect
-    // stays active even when the pointer drifts off the card.
+    // Tilt: only active while dragging on the card. globalpointermove
+    // updates the target while dragging; the ticker lerps current→target
+    // so releasing the pointer snaps the target to 0 and the card springs
+    // back to flat over a few frames.
+    this.card.eventMode = "static";
+    this.card.cursor = "grab";
+    this.card.on("pointerdown", () => this.startDrag());
     this.eventMode = "static";
-    this.on("globalpointermove", (e: FederatedPointerEvent) => this.handleTilt(e));
+    this.on("globalpointermove", (e: FederatedPointerEvent) => {
+      if (this.dragging) this.updateTiltTarget(e);
+    });
+    this.on("pointerup", () => this.endDrag());
+    this.on("pointerupoutside", () => this.endDrag());
+    // Window pointerup catches cases where the cursor leaves the canvas
+    // entirely while a drag is in progress.
+    this.windowPointerUp = () => this.endDrag();
+    window.addEventListener("pointerup", this.windowPointerUp);
 
     this.codeText = new Text({
       text: this.code,
@@ -160,12 +189,10 @@ export class SkinTunerScreen extends Container implements Screen {
   layout(viewWidth: number, viewHeight: number): void {
     this.panel.x = spacing.md;
     this.panel.y = spacing.md;
-    // Panel fills available vertical space; content scrolls inside.
     const panelH = Math.max(200, viewHeight - spacing.md * 2);
     this.panel.resize(PANEL_WIDTH, panelH);
     this.maskHeight = panelH;
     this.scrollMask.clear().rect(0, 0, PANEL_WIDTH, panelH).fill({ color: 0xffffff });
-    // Re-clamp scroll position now that the visible window has changed.
     const minY = Math.min(0, this.maskHeight - this.contentHeight);
     if (this.panelInner.y < minY) this.panelInner.y = minY;
     if (this.panelInner.y > 0) this.panelInner.y = 0;
@@ -173,13 +200,21 @@ export class SkinTunerScreen extends Container implements Screen {
     const previewW = CARD_W * PREVIEW_SCALE;
     const previewH = CARD_H * PREVIEW_SCALE;
     const availableX = viewWidth - PANEL_WIDTH - spacing.md * 2;
-    // Preview origin is the card's CENTER (we set pivot to card center
-    // earlier so transforms rotate around the middle).
     this.preview.x = Math.round(
       spacing.md + PANEL_WIDTH + (availableX - previewW) / 2 + previewW / 2,
     );
     this.preview.y = Math.round((viewHeight - previewH) / 2 + previewH / 2);
+
+    this.syncInputDoms();
   }
+
+  dispose(): void {
+    this.ticker.remove(this.tickCallback);
+    window.removeEventListener("pointerup", this.windowPointerUp);
+    for (const row of this.numberRows) row.destroyDom();
+  }
+
+  // ─── Input / scroll plumbing ────────────────────────────────────────
 
   private handleWheel(e: FederatedWheelEvent): void {
     if (this.contentHeight <= this.maskHeight) return;
@@ -188,41 +223,50 @@ export class SkinTunerScreen extends Container implements Screen {
     this.panelInner.y = Math.max(minY, Math.min(0, next));
     const native = e.nativeEvent;
     if (native instanceof Event) native.preventDefault();
+    this.syncInputDoms();
   }
 
-  private handleTilt(e: FederatedPointerEvent): void {
-    // Distance from pointer to the preview origin (= card center, because
-    // we set the card's pivot to its midpoint), normalized to ±1 across
-    // a region the size of the preview itself.
+  private syncInputDoms(): void {
+    if (!this.canvas) return;
+    const rect = this.canvas.getBoundingClientRect();
+    const clipTop = rect.top + this.panel.y;
+    const clipBottom = clipTop + this.maskHeight;
+    for (const row of this.numberRows) {
+      row.syncDom(this.canvas, clipTop, clipBottom);
+    }
+  }
+
+  // ─── Tilt drag ──────────────────────────────────────────────────────
+
+  private startDrag(): void {
+    this.dragging = true;
+    this.card.cursor = "grabbing";
+  }
+
+  private endDrag(): void {
+    if (!this.dragging) return;
+    this.dragging = false;
+    this.card.cursor = "grab";
+    this.targetTiltX = 0;
+    this.targetTiltY = 0;
+  }
+
+  private updateTiltTarget(e: FederatedPointerEvent): void {
     const cardW = CARD_W * PREVIEW_SCALE;
     const cardH = CARD_H * PREVIEW_SCALE;
     const relX = (e.global.x - this.preview.x) / cardW;
     const relY = (e.global.y - this.preview.y) / cardH;
     const cx = clamp(relX, -1.5, 1.5);
     const cy = clamp(relY, -1.5, 1.5);
-    // Skew is a shear (not a true rotation), but at small angles it reads
-    // as a tilt — left/right of pointer leans the card sideways, top/
-    // bottom leans the card forward/back.
-    const tiltY = cx * TILT_MAX_RAD;
-    const tiltX = -cy * TILT_MAX_RAD;
-    this.card.skew.set(tiltY, tiltX);
-    // Slight foreshortening on the leaning axis fakes the depth without
-    // needing a proper perspective shader.
-    this.card.scale.x = PREVIEW_SCALE * (1 - Math.abs(tiltY) * 0.18);
-    this.card.scale.y = PREVIEW_SCALE * (1 - Math.abs(tiltX) * 0.18);
+    this.targetTiltY = cx * TILT_MAX_RAD;
+    this.targetTiltX = -cy * TILT_MAX_RAD;
   }
 
-  dispose(): void {
-    this.ticker.remove(this.tickCallback);
-    if (this.editorEl) {
-      this.editorEl.remove();
-      this.editorEl = null;
-    }
-  }
+  // ─── Panel build ────────────────────────────────────────────────────
 
   private buildPanel(): void {
-    const sliderWidth = PANEL_WIDTH - spacing.lg * 2;
-    const cycleWidth = PANEL_WIDTH - spacing.lg * 2;
+    const rowWidth = PANEL_WIDTH - spacing.lg * 2;
+    const buttonWidth = rowWidth;
     const y = { value: spacing.md };
     const panel = this.panelInner;
 
@@ -248,19 +292,19 @@ export class SkinTunerScreen extends Container implements Screen {
 
     const rollBtn = new Button({
       label: "ROLL RANDOM CODE",
-      width: cycleWidth,
-      height: 30,
+      width: buttonWidth,
+      height: 28,
       onActivate: () => this.rollNewCode(),
     });
     rollBtn.x = spacing.lg;
     rollBtn.y = y.value;
     panel.addChild(rollBtn);
-    y.value += 30 + spacing.sm;
+    y.value += 28 + spacing.xs;
 
     const noSkinBtn = new Button({
       label: this.skinsActive ? "NO-SKIN PRESET" : "[NO-SKIN PRESET]",
-      width: cycleWidth,
-      height: 26,
+      width: buttonWidth,
+      height: 24,
       onActivate: () => {
         this.skinsActive = !this.skinsActive;
         noSkinBtn.setLabel(this.skinsActive ? "NO-SKIN PRESET" : "[NO-SKIN PRESET]");
@@ -270,18 +314,18 @@ export class SkinTunerScreen extends Container implements Screen {
     noSkinBtn.x = spacing.lg;
     noSkinBtn.y = y.value;
     panel.addChild(noSkinBtn);
-    y.value += 26 + spacing.sm;
+    y.value += 24 + spacing.xs;
 
     const resetBtn = new Button({
       label: "RESET TUNABLES",
-      width: cycleWidth,
-      height: 26,
+      width: buttonWidth,
+      height: 24,
       onActivate: () => this.resetTunables(),
     });
     resetBtn.x = spacing.lg;
     resetBtn.y = y.value;
     panel.addChild(resetBtn);
-    y.value += 26 + spacing.md;
+    y.value += 24 + spacing.md;
 
     sectionHeader({ panel, y, label: "AXES" });
     const axisRow = new Container();
@@ -303,62 +347,60 @@ export class SkinTunerScreen extends Container implements Screen {
       axisRow.addChild(chip);
       xOff += chip.chipWidth + spacing.xs;
     }
-    y.value += 28 + spacing.md;
+    y.value += 24 + spacing.md;
 
     sectionHeader({ panel, y, label: "PATTERN" });
     const patternIndexLabels = Array.from({ length: PATTERN_VARIANTS }, (_, i) => `P${i}`);
-    const patternIndexCycle = new Cycle({
-      label: "PATTERN",
-      width: cycleWidth,
+    y.value += this.addCycle(panel, y.value, rowWidth, {
+      label: "INDEX",
       options: patternIndexLabels,
-      initial: patternIndexLabels[this.spec.pattern.index] ?? "P0",
-      onChange: (v) => {
+      read: () => patternIndexLabels[this.spec.pattern.index] ?? "P0",
+      write: (v) => {
         const idx = patternIndexLabels.indexOf(v);
         this.spec = { ...this.spec, pattern: { ...this.spec.pattern, index: idx } };
         this.applyAll();
       },
     });
-    patternIndexCycle.x = spacing.lg;
-    patternIndexCycle.y = y.value;
-    panel.addChild(patternIndexCycle);
-    y.value += Cycle.height();
-
-    y.value += this.addSlider(panel, y.value, sliderWidth, {
+    y.value += this.addNumber(panel, y.value, rowWidth, {
       label: "OFFSET X",
       min: 0,
       max: 1,
-      initial: this.spec.pattern.offsetX,
-      onChange: (v) => {
+      step: 0.01,
+      read: () => this.spec.pattern.offsetX,
+      write: (v) => {
         this.spec = { ...this.spec, pattern: { ...this.spec.pattern, offsetX: v } };
         this.applyAll();
       },
     });
-    y.value += this.addSlider(panel, y.value, sliderWidth, {
+    y.value += this.addNumber(panel, y.value, rowWidth, {
       label: "OFFSET Y",
       min: 0,
       max: 1,
-      initial: this.spec.pattern.offsetY,
-      onChange: (v) => {
+      step: 0.01,
+      read: () => this.spec.pattern.offsetY,
+      write: (v) => {
         this.spec = { ...this.spec, pattern: { ...this.spec.pattern, offsetY: v } };
         this.applyAll();
       },
     });
-    y.value += this.addSlider(panel, y.value, sliderWidth, {
+    y.value += this.addNumber(panel, y.value, rowWidth, {
       label: "SCALE",
       min: 0.5,
       max: 3,
-      initial: this.spec.pattern.scale,
-      onChange: (v) => {
+      step: 0.05,
+      read: () => this.spec.pattern.scale,
+      write: (v) => {
         this.spec = { ...this.spec, pattern: { ...this.spec.pattern, scale: v } };
         this.applyAll();
       },
     });
-    y.value += this.addSlider(panel, y.value, sliderWidth, {
+    y.value += this.addNumber(panel, y.value, rowWidth, {
       label: "ALPHA",
       min: 0,
       max: 1,
-      initial: this.tunables.pattern.overlayAlpha,
-      onChange: (v) => {
+      step: 0.01,
+      read: () => this.tunables.pattern.overlayAlpha,
+      write: (v) => {
         this.tunables = {
           ...this.tunables,
           pattern: { ...this.tunables.pattern, overlayAlpha: v },
@@ -366,65 +408,77 @@ export class SkinTunerScreen extends Container implements Screen {
         this.card.setTunables(this.tunables);
       },
     });
-    y.value += spacing.md;
+    y.value += this.addNumber(panel, y.value, rowWidth, {
+      label: "TILE SIZE",
+      min: 8,
+      max: 64,
+      step: 1,
+      format: (v) => `${Math.round(v)}`,
+      read: () => this.tunables.pattern.tileSize,
+      write: (v) => {
+        this.tunables = {
+          ...this.tunables,
+          pattern: { ...this.tunables.pattern, tileSize: v },
+        };
+        this.card.setTunables(this.tunables);
+      },
+    });
+    y.value += spacing.sm;
 
     sectionHeader({ panel, y, label: "TINT" });
-    y.value += this.addSlider(panel, y.value, sliderWidth, {
+    y.value += this.addNumber(panel, y.value, rowWidth, {
       label: "HUE",
       min: -180,
       max: 180,
-      initial: this.spec.tint.hue * 180,
       step: 1,
-      format: (v) => `${Math.round(v)}°`,
-      onChange: (v) => {
+      format: (v) => `${Math.round(v)}`,
+      read: () => this.spec.tint.hue * 180,
+      write: (v) => {
         this.spec = { ...this.spec, tint: { ...this.spec.tint, hue: v / 180 } };
         this.applyAll();
       },
     });
-    y.value += this.addSlider(panel, y.value, sliderWidth, {
+    y.value += this.addNumber(panel, y.value, rowWidth, {
       label: "SATURATION",
       min: 0,
       max: 2,
-      initial: this.spec.tint.saturation,
-      onChange: (v) => {
+      step: 0.01,
+      read: () => this.spec.tint.saturation,
+      write: (v) => {
         this.spec = { ...this.spec, tint: { ...this.spec.tint, saturation: v } };
         this.applyAll();
       },
     });
-    y.value += this.addSlider(panel, y.value, sliderWidth, {
+    y.value += this.addNumber(panel, y.value, rowWidth, {
       label: "BRIGHTNESS",
       min: 0,
       max: 2,
-      initial: this.spec.tint.brightness,
-      onChange: (v) => {
+      step: 0.01,
+      read: () => this.spec.tint.brightness,
+      write: (v) => {
         this.spec = { ...this.spec, tint: { ...this.spec.tint, brightness: v } };
         this.applyAll();
       },
     });
-    y.value += spacing.md;
+    y.value += spacing.sm;
 
     sectionHeader({ panel, y, label: "FINISH" });
-    const finishCycle = new Cycle<Finish>({
-      label: "FINISH",
-      width: cycleWidth,
+    y.value += this.addCycle<Finish>(panel, y.value, rowWidth, {
+      label: "KIND",
       options: FINISHES,
-      initial: this.spec.finish,
-      onChange: (v) => {
+      read: () => this.spec.finish,
+      write: (v) => {
         this.spec = { ...this.spec, finish: v };
         this.applyAll();
       },
     });
-    finishCycle.x = spacing.lg;
-    finishCycle.y = y.value;
-    panel.addChild(finishCycle);
-    y.value += Cycle.height();
-
-    y.value += this.addSlider(panel, y.value, sliderWidth, {
-      label: "FOIL STRENGTH",
+    y.value += this.addNumber(panel, y.value, rowWidth, {
+      label: "FOIL STR",
       min: 0,
       max: 1,
-      initial: this.tunables.foil.foilStrength,
-      onChange: (v) => {
+      step: 0.01,
+      read: () => this.tunables.foil.foilStrength,
+      write: (v) => {
         this.tunables = {
           ...this.tunables,
           foil: { ...this.tunables.foil, foilStrength: v },
@@ -432,12 +486,13 @@ export class SkinTunerScreen extends Container implements Screen {
         this.card.setTunables(this.tunables);
       },
     });
-    y.value += this.addSlider(panel, y.value, sliderWidth, {
-      label: "CHROME STRENGTH",
+    y.value += this.addNumber(panel, y.value, rowWidth, {
+      label: "CHROME STR",
       min: 0,
       max: 1,
-      initial: this.tunables.foil.chromeStrength,
-      onChange: (v) => {
+      step: 0.01,
+      read: () => this.tunables.foil.chromeStrength,
+      write: (v) => {
         this.tunables = {
           ...this.tunables,
           foil: { ...this.tunables.foil, chromeStrength: v },
@@ -445,12 +500,13 @@ export class SkinTunerScreen extends Container implements Screen {
         this.card.setTunables(this.tunables);
       },
     });
-    y.value += this.addSlider(panel, y.value, sliderWidth, {
-      label: "HOLO STRENGTH",
+    y.value += this.addNumber(panel, y.value, rowWidth, {
+      label: "HOLO STR",
       min: 0,
       max: 1,
-      initial: this.tunables.foil.holographicStrength,
-      onChange: (v) => {
+      step: 0.01,
+      read: () => this.tunables.foil.holographicStrength,
+      write: (v) => {
         this.tunables = {
           ...this.tunables,
           foil: { ...this.tunables.foil, holographicStrength: v },
@@ -458,14 +514,13 @@ export class SkinTunerScreen extends Container implements Screen {
         this.card.setTunables(this.tunables);
       },
     });
-    y.value += this.addSlider(panel, y.value, sliderWidth, {
+    y.value += this.addNumber(panel, y.value, rowWidth, {
       label: "PIXEL CELL",
       min: 1,
       max: 8,
-      initial: this.tunables.foil.cellSize,
       step: 0.5,
-      format: (v) => `${v.toFixed(1)}u`,
-      onChange: (v) => {
+      read: () => this.tunables.foil.cellSize,
+      write: (v) => {
         this.tunables = {
           ...this.tunables,
           foil: { ...this.tunables.foil, cellSize: v },
@@ -473,30 +528,25 @@ export class SkinTunerScreen extends Container implements Screen {
         this.card.setTunables(this.tunables);
       },
     });
-    y.value += spacing.md;
+    y.value += spacing.sm;
 
     sectionHeader({ panel, y, label: "MOTION" });
-    const motionCycle = new Cycle<Motion>({
-      label: "MOTION",
-      width: cycleWidth,
+    y.value += this.addCycle<Motion>(panel, y.value, rowWidth, {
+      label: "KIND",
       options: MOTIONS,
-      initial: this.spec.motion,
-      onChange: (v) => {
+      read: () => this.spec.motion,
+      write: (v) => {
         this.spec = { ...this.spec, motion: v };
         this.applyAll();
       },
     });
-    motionCycle.x = spacing.lg;
-    motionCycle.y = y.value;
-    panel.addChild(motionCycle);
-    y.value += Cycle.height();
-
-    y.value += this.addSlider(panel, y.value, sliderWidth, {
-      label: "SHIMMER SPEED",
+    y.value += this.addNumber(panel, y.value, rowWidth, {
+      label: "SHIMMER SPD",
       min: 0,
       max: 2,
-      initial: this.tunables.motion.shimmerSpeed,
-      onChange: (v) => {
+      step: 0.01,
+      read: () => this.tunables.motion.shimmerSpeed,
+      write: (v) => {
         this.tunables = {
           ...this.tunables,
           motion: { ...this.tunables.motion, shimmerSpeed: v },
@@ -504,12 +554,27 @@ export class SkinTunerScreen extends Container implements Screen {
         this.card.setTunables(this.tunables);
       },
     });
-    y.value += this.addSlider(panel, y.value, sliderWidth, {
-      label: "PULSE SPEED",
+    y.value += this.addNumber(panel, y.value, rowWidth, {
+      label: "SHIMMER WIDTH",
+      min: 0.01,
+      max: 0.5,
+      step: 0.01,
+      read: () => this.tunables.motion.shimmerWidth,
+      write: (v) => {
+        this.tunables = {
+          ...this.tunables,
+          motion: { ...this.tunables.motion, shimmerWidth: v },
+        };
+        this.card.setTunables(this.tunables);
+      },
+    });
+    y.value += this.addNumber(panel, y.value, rowWidth, {
+      label: "PULSE SPD",
       min: 0,
       max: 5,
-      initial: this.tunables.motion.pulseSpeed,
-      onChange: (v) => {
+      step: 0.05,
+      read: () => this.tunables.motion.pulseSpeed,
+      write: (v) => {
         this.tunables = {
           ...this.tunables,
           motion: { ...this.tunables.motion, pulseSpeed: v },
@@ -517,12 +582,27 @@ export class SkinTunerScreen extends Container implements Screen {
         this.card.setTunables(this.tunables);
       },
     });
-    y.value += this.addSlider(panel, y.value, sliderWidth, {
-      label: "DRIFT SPEED",
+    y.value += this.addNumber(panel, y.value, rowWidth, {
+      label: "PULSE AMT",
+      min: 0,
+      max: 1,
+      step: 0.01,
+      read: () => this.tunables.motion.pulseAmount,
+      write: (v) => {
+        this.tunables = {
+          ...this.tunables,
+          motion: { ...this.tunables.motion, pulseAmount: v },
+        };
+        this.card.setTunables(this.tunables);
+      },
+    });
+    y.value += this.addNumber(panel, y.value, rowWidth, {
+      label: "DRIFT SPD",
       min: 0,
       max: 0.5,
-      initial: this.tunables.motion.driftSpeed,
-      onChange: (v) => {
+      step: 0.005,
+      read: () => this.tunables.motion.driftSpeed,
+      write: (v) => {
         this.tunables = {
           ...this.tunables,
           motion: { ...this.tunables.motion, driftSpeed: v },
@@ -531,123 +611,106 @@ export class SkinTunerScreen extends Container implements Screen {
       },
     });
 
-    // Panel height is set in layout() to fit the viewport — content height
-    // is recorded here so wheel scrolling can clamp to the natural extent.
     this.contentHeight = y.value + spacing.md;
   }
 
-  private addSlider(
+  // ─── Row helpers ────────────────────────────────────────────────────
+
+  private addNumber(
     panel: Container,
     yPos: number,
     width: number,
     opts: {
       label: string;
-      min: number;
-      max: number;
-      initial: number;
+      min?: number;
+      max?: number;
       step?: number;
       format?(v: number): string;
-      onChange(v: number): void;
+      read(): number;
+      write(v: number): void;
     },
   ): number {
-    const slider = new Slider({
+    const row = new NumberRow({
       label: opts.label,
       width,
-      min: opts.min,
-      max: opts.max,
-      initial: opts.initial,
+      initial: opts.read(),
+      ...(opts.min !== undefined ? { min: opts.min } : {}),
+      ...(opts.max !== undefined ? { max: opts.max } : {}),
       ...(opts.step !== undefined ? { step: opts.step } : {}),
       ...(opts.format !== undefined ? { format: opts.format } : {}),
-      onChange: opts.onChange,
-      onRequestEdit: (s) => this.openEditor(s, opts.min, opts.max, opts.step ?? 0),
+      onChange: opts.write,
     });
-    slider.x = spacing.lg;
-    slider.y = yPos;
-    panel.addChild(slider);
-    return Slider.height();
+    row.x = spacing.lg;
+    row.y = yPos;
+    panel.addChild(row);
+    this.numberRows.push(row);
+    this.valueSyncs.push(() => row.setValue(opts.read()));
+    return NumberRow.height();
   }
 
-  /**
-   * Mount a styled HTML <input type="number"> over a slider's value field
-   * so the user can type a precise value. Sliders alone are too coarse for
-   * tuning. The overlay positions itself via canvas.getBoundingClientRect(),
-   * so it follows the panel exactly. Enter commits, Escape cancels, blur
-   * also commits.
-   */
-  private openEditor(slider: Slider, min: number, max: number, step: number): void {
-    if (!this.canvas) return;
-    if (this.editorEl) {
-      this.editorEl.remove();
-      this.editorEl = null;
-    }
-    const bounds = slider.getValueGlobalBounds();
-    const rect = this.canvas.getBoundingClientRect();
-    const pad = 4;
-    const width = Math.max(60, Math.ceil(bounds.width) + pad * 2);
-    const height = Math.max(20, Math.ceil(bounds.height) + pad);
+  private addCycle<T extends string>(
+    panel: Container,
+    yPos: number,
+    width: number,
+    opts: {
+      label: string;
+      options: readonly T[];
+      read(): T;
+      write(v: T): void;
+    },
+  ): number {
+    const wrapper = new Container();
+    wrapper.x = spacing.lg;
+    wrapper.y = yPos;
 
-    const input = document.createElement("input");
-    input.type = "number";
-    input.value = slider.getValue().toFixed(2);
-    input.min = String(min);
-    input.max = String(max);
-    if (step > 0) input.step = String(step);
-    Object.assign(input.style, {
-      position: "absolute",
-      left: `${rect.left + bounds.x - pad}px`,
-      top: `${rect.top + bounds.y - pad / 2}px`,
-      width: `${width}px`,
-      height: `${height}px`,
-      fontFamily: "monospace",
-      fontSize: "12px",
-      background: "#1a1612",
-      color: "#f3eddc",
-      border: "1px solid #d36a4a",
-      borderRadius: "2px",
-      padding: "0 4px",
-      outline: "none",
-      zIndex: "10000",
-    } satisfies Partial<CSSStyleDeclaration>);
-
-    const cleanup = (): void => {
-      if (this.editorEl !== input) return;
-      this.editorEl = null;
-      input.remove();
-    };
-    const commit = (): void => {
-      const v = Number.parseFloat(input.value);
-      if (Number.isFinite(v)) slider.applyEdit(v);
-      cleanup();
-    };
-    const cancel = (): void => cleanup();
-
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        commit();
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        cancel();
-      }
+    const labelText = new Text({
+      text: opts.label,
+      style: {
+        fontFamily: typography.family,
+        fontSize: typography.size.xs,
+        fontWeight: typography.weight.bold,
+        fill: color.textMuted,
+        letterSpacing: typography.letterSpacing.wide,
+      },
     });
-    input.addEventListener("blur", commit);
+    labelText.x = 0;
+    labelText.y = Math.round((NumberRow.height() - labelText.height) / 2);
+    wrapper.addChild(labelText);
 
-    document.body.appendChild(input);
-    this.editorEl = input;
-    input.focus();
-    input.select();
+    const cycle = new Cycle({
+      width: CYCLE_WIDTH,
+      options: opts.options,
+      initial: opts.read(),
+      onChange: opts.write,
+    });
+    cycle.x = width - CYCLE_WIDTH;
+    cycle.y = Math.round((NumberRow.height() - 18) / 2);
+    wrapper.addChild(cycle);
+
+    panel.addChild(wrapper);
+    this.cycleSyncs.push(() => cycle.setSilently(opts.read()));
+    return NumberRow.height();
   }
+
+  // ─── Apply / lifecycle ──────────────────────────────────────────────
 
   private rollNewCode(): void {
     this.code = rollCode(this.nextRand);
     this.spec = decode(this.code);
     this.codeText.text = this.code;
     this.applyAll();
+    this.refreshControls();
   }
 
   private resetTunables(): void {
     this.tunables = cloneTunables(defaultTunables);
     this.card.setTunables(this.tunables);
+    this.refreshControls();
+  }
+
+  private refreshControls(): void {
+    for (const sync of this.valueSyncs) sync();
+    for (const sync of this.cycleSyncs) sync();
   }
 
   private applyAll(): void {
@@ -656,6 +719,18 @@ export class SkinTunerScreen extends Container implements Screen {
   }
 
   private onTick(_ticker: Ticker): void {
+    // Lerp the card's actual tilt toward the target. While dragging, the
+    // target tracks pointer position; on release the target snaps to 0
+    // and the card springs back over a few frames.
+    const dx = this.targetTiltX - this.currentTiltX;
+    const dy = this.targetTiltY - this.currentTiltY;
+    if (Math.abs(dx) > 1e-4 || Math.abs(dy) > 1e-4) {
+      this.currentTiltX += dx * TILT_LERP;
+      this.currentTiltY += dy * TILT_LERP;
+      this.card.skew.set(this.currentTiltY, this.currentTiltX);
+      this.card.scale.x = PREVIEW_SCALE * (1 - Math.abs(this.currentTiltY) * 0.18);
+      this.card.scale.y = PREVIEW_SCALE * (1 - Math.abs(this.currentTiltX) * 0.18);
+    }
     if (!this.skinsActive) return;
     if (!this.axes.motion || !this.axes.finish) return;
     const t = performance.now() / 1000;
@@ -704,7 +779,7 @@ class AxisChip extends Container {
   private active: boolean;
   private hovered = false;
   private readonly w: number;
-  private readonly h = 28;
+  private readonly h = 24;
   private readonly onChange: (active: boolean) => void;
 
   constructor(options: AxisChipOptions) {
