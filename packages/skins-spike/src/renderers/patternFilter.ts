@@ -30,6 +30,17 @@ uniform vec2 uTileOffset;
 uniform float uOverlayAlpha;
 uniform float uBumpScale;
 uniform float uTexelSize;
+uniform vec2 uCardSize;
+uniform float uCornerRadius;
+
+// Signed distance from a pixel to a rounded rectangle: negative inside,
+// positive outside. Used to clip the pattern to the card's rounded-rect
+// silhouette so it doesn't bleed past the bg's curved corners (which is
+// especially obvious during the drag tilt).
+float roundedRectSdf(vec2 px, vec2 size, float r) {
+  vec2 q = abs(px - size * 0.5) - (size * 0.5 - r);
+  return length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
+}
 
 void main() {
   // Tile UV: how many tile-repeats fit across the card.
@@ -89,7 +100,15 @@ void main() {
   vec3 highlight = vec3(spec * gloss);
 
   vec3 finalRGB = color * lit + highlight;
-  finalColor = vec4(finalRGB, uOverlayAlpha);
+
+  // Clip to the card's rounded-rect silhouette. Without this the pattern
+  // fills the square corners that the bg leaves transparent and bleeds
+  // outside the card edge during tilt.
+  vec2 px = vTextureCoord * uCardSize;
+  float sdf = roundedRectSdf(px, uCardSize, uCornerRadius);
+  float maskA = clamp(0.5 - sdf, 0.0, 1.0);
+
+  finalColor = vec4(finalRGB, uOverlayAlpha * maskA);
 }
 `;
 
@@ -102,6 +121,8 @@ interface PatternUniformBlock {
     uOverlayAlpha: number;
     uBumpScale: number;
     uTexelSize: number;
+    uCardSize: Float32Array;
+    uCornerRadius: number;
   };
 }
 
@@ -124,6 +145,9 @@ export interface PatternFilterController {
     overlayAlpha: number;
     bumpScale: number;
     texelSize: number;
+    cardWidth: number;
+    cardHeight: number;
+    cornerRadius: number;
   }): void;
 }
 
@@ -139,6 +163,8 @@ export function createPatternFilter(initial: PatternBundle): PatternFilterContro
         uOverlayAlpha: { value: 0.55, type: "f32" },
         uBumpScale: { value: 2.0, type: "f32" },
         uTexelSize: { value: 1 / 48, type: "f32" },
+        uCardSize: { value: new Float32Array([60, 88]), type: "vec2<f32>" },
+        uCornerRadius: { value: 4, type: "f32" },
       },
       uColorMap: initial.color.source,
       uColorSampler: initial.color.source.style,
@@ -172,6 +198,9 @@ export function createPatternFilter(initial: PatternBundle): PatternFilterContro
       u.uOverlayAlpha = opts.overlayAlpha;
       u.uBumpScale = opts.bumpScale;
       u.uTexelSize = opts.texelSize;
+      u.uCardSize[0] = opts.cardWidth;
+      u.uCardSize[1] = opts.cardHeight;
+      u.uCornerRadius = opts.cornerRadius;
     },
   };
 }

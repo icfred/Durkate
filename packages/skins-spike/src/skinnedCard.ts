@@ -163,6 +163,11 @@ export class SkinnedCard extends Container {
       overlayAlpha: this.tunables.pattern.overlayAlpha,
       bumpScale: 2.0,
       texelSize: 1 / PROC_TILE_PX,
+      cardWidth: this.baseWidth,
+      cardHeight: this.baseHeight,
+      // Matches CardView.redraw's roundRect(0, 0, CARD_W, CARD_H, 4) so the
+      // pattern's silhouette tracks the bg's rounded corners exactly.
+      cornerRadius: 4,
     });
   }
 
