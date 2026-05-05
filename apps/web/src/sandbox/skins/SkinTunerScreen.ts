@@ -13,10 +13,23 @@ import {
   type Tunables,
 } from "@durak/skins-spike";
 import { Button, color, Panel, spacing, stroke, typography } from "@durak/ui";
-import { Container, Graphics, Text, type Ticker, type TickerCallback } from "pixi.js";
+import {
+  Container,
+  type FederatedPointerEvent,
+  type FederatedWheelEvent,
+  Graphics,
+  Text,
+  type Ticker,
+  type TickerCallback,
+} from "pixi.js";
 import { CARD_H, CARD_W, CardView } from "../../cards/CardView.js";
 import type { Screen } from "../../screens/types.js";
 import { Cycle, Slider } from "./controls.js";
+
+// Max tilt angle (radians) when the pointer is at the far corner of the
+// preview region. Small enough to read as "card responding to my pointer"
+// rather than as full perspective rotation.
+const TILT_MAX_RAD = 0.18;
 
 const PANEL_WIDTH = 380;
 const PREVIEW_SCALE = 4;
@@ -76,6 +89,9 @@ export class SkinTunerScreen extends Container implements Screen {
   private skinsActive = true;
   private code = "000000000000";
   private rngState = 0xc0ffee;
+  private readonly scrollMask: Graphics;
+  private contentHeight = 0;
+  private maskHeight = 0;
 
   constructor(options: SkinTunerScreenOptions) {
     super();
@@ -88,9 +104,21 @@ export class SkinTunerScreen extends Container implements Screen {
     this.panelInner = new Container();
     this.panel.addChild(this.panelInner);
 
+    // Scroll mask: clips panelInner to the panel's visible area so the
+    // panel always fits the viewport. Wheel scrolls panelInner.y inside.
+    this.scrollMask = new Graphics();
+    this.panel.addChild(this.scrollMask);
+    this.panelInner.mask = this.scrollMask;
+
+    // Wheel handler: scroll the panel's content. Caps to content bounds.
+    this.panel.eventMode = "static";
+    this.panel.on("wheel", (e: FederatedWheelEvent) => this.handleWheel(e));
+
     this.preview = new Container();
     this.addChild(this.preview);
 
+    // Pivot the card at its own center so skew/rotate transforms tilt
+    // around the card's middle rather than the top-left corner.
     this.card = new SkinnedCard({
       base: new CardView(PREVIEW_CARD),
       baseWidth: CARD_W,
@@ -98,7 +126,15 @@ export class SkinTunerScreen extends Container implements Screen {
       assets: this.assets,
     });
     this.card.scale.set(PREVIEW_SCALE);
+    this.card.pivot.set(CARD_W / 2, CARD_H / 2);
     this.preview.addChild(this.card);
+
+    // Pointer-follow tilt: track pointer over the whole stage and apply
+    // a small skew + scale so the card "leans" toward the pointer. The
+    // SkinTunerScreen container itself is the listener so the effect
+    // stays active even when the pointer drifts off the card.
+    this.eventMode = "static";
+    this.on("globalpointermove", (e: FederatedPointerEvent) => this.handleTilt(e));
 
     this.codeText = new Text({
       text: this.code,
@@ -124,11 +160,56 @@ export class SkinTunerScreen extends Container implements Screen {
   layout(viewWidth: number, viewHeight: number): void {
     this.panel.x = spacing.md;
     this.panel.y = spacing.md;
+    // Panel fills available vertical space; content scrolls inside.
+    const panelH = Math.max(200, viewHeight - spacing.md * 2);
+    this.panel.resize(PANEL_WIDTH, panelH);
+    this.maskHeight = panelH;
+    this.scrollMask.clear().rect(0, 0, PANEL_WIDTH, panelH).fill({ color: 0xffffff });
+    // Re-clamp scroll position now that the visible window has changed.
+    const minY = Math.min(0, this.maskHeight - this.contentHeight);
+    if (this.panelInner.y < minY) this.panelInner.y = minY;
+    if (this.panelInner.y > 0) this.panelInner.y = 0;
+
     const previewW = CARD_W * PREVIEW_SCALE;
     const previewH = CARD_H * PREVIEW_SCALE;
     const availableX = viewWidth - PANEL_WIDTH - spacing.md * 2;
-    this.preview.x = Math.round(spacing.md + PANEL_WIDTH + (availableX - previewW) / 2);
-    this.preview.y = Math.round((viewHeight - previewH) / 2);
+    // Preview origin is the card's CENTER (we set pivot to card center
+    // earlier so transforms rotate around the middle).
+    this.preview.x = Math.round(
+      spacing.md + PANEL_WIDTH + (availableX - previewW) / 2 + previewW / 2,
+    );
+    this.preview.y = Math.round((viewHeight - previewH) / 2 + previewH / 2);
+  }
+
+  private handleWheel(e: FederatedWheelEvent): void {
+    if (this.contentHeight <= this.maskHeight) return;
+    const minY = this.maskHeight - this.contentHeight;
+    const next = this.panelInner.y - e.deltaY;
+    this.panelInner.y = Math.max(minY, Math.min(0, next));
+    const native = e.nativeEvent;
+    if (native instanceof Event) native.preventDefault();
+  }
+
+  private handleTilt(e: FederatedPointerEvent): void {
+    // Distance from pointer to the preview origin (= card center, because
+    // we set the card's pivot to its midpoint), normalized to ±1 across
+    // a region the size of the preview itself.
+    const cardW = CARD_W * PREVIEW_SCALE;
+    const cardH = CARD_H * PREVIEW_SCALE;
+    const relX = (e.global.x - this.preview.x) / cardW;
+    const relY = (e.global.y - this.preview.y) / cardH;
+    const cx = clamp(relX, -1.5, 1.5);
+    const cy = clamp(relY, -1.5, 1.5);
+    // Skew is a shear (not a true rotation), but at small angles it reads
+    // as a tilt — left/right of pointer leans the card sideways, top/
+    // bottom leans the card forward/back.
+    const tiltY = cx * TILT_MAX_RAD;
+    const tiltX = -cy * TILT_MAX_RAD;
+    this.card.skew.set(tiltY, tiltX);
+    // Slight foreshortening on the leaning axis fakes the depth without
+    // needing a proper perspective shader.
+    this.card.scale.x = PREVIEW_SCALE * (1 - Math.abs(tiltY) * 0.18);
+    this.card.scale.y = PREVIEW_SCALE * (1 - Math.abs(tiltX) * 0.18);
   }
 
   dispose(): void {
@@ -450,7 +531,9 @@ export class SkinTunerScreen extends Container implements Screen {
       },
     });
 
-    this.panel.resize(PANEL_WIDTH, y.value + spacing.md);
+    // Panel height is set in layout() to fit the viewport — content height
+    // is recorded here so wheel scrolling can clamp to the natural extent.
+    this.contentHeight = y.value + spacing.md;
   }
 
   private addSlider(
@@ -587,6 +670,10 @@ export class SkinTunerScreen extends Container implements Screen {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, v));
 }
 
 function cloneTunables(t: Tunables): Tunables {
