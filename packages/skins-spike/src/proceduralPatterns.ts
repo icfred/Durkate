@@ -201,11 +201,15 @@ function truchetBundle(seed: number): PatternBundle {
   return makeBundle((height, regionId, finishMask) => {
     const cells = 4;
     const cellSize = N / cells;
-    // Background fill — region 1 (darker palette slot) gives the truchet
-    // its negative-space colour without dipping into substrate (region 0).
+    // Background fill — region 2 (medium palette slot). Was region 1, but
+    // palette[1] is the darkest VISIBLE colour across all colorways so
+    // truchet ended up looking uniformly dark regardless of colorway.
+    // Region 2 is brighter and varies more between colorways (teal /
+    // brown / green / purple / red / blue), making the pattern actually
+    // change appearance per colorway.
     for (let y = 0; y < N; y++) {
       for (let x = 0; x < N; x++) {
-        setRegion(regionId, x, y, 1);
+        setRegion(regionId, x, y, 2);
         setHeight(height, x, y, 0);
         setFinishMask(finishMask, x, y, 0);
       }
@@ -241,11 +245,13 @@ function mazeBundle(seed: number): PatternBundle {
   return makeBundle((height, regionId, finishMask) => {
     const cells = 8;
     const cellSize = N / cells;
-    // Floor: region 1 (instead of 0) so the dominant area still has
-    // colour from the colorway palette rather than substrate.
+    // Floor: region 2 (medium palette slot). Same reasoning as truchet
+    // bg — palette[1] was so dark every colorway looked the same. The
+    // floor is the bulk of the card so it drives the cross-colorway
+    // contrast.
     for (let y = 0; y < N; y++) {
       for (let x = 0; x < N; x++) {
-        setRegion(regionId, x, y, 1);
+        setRegion(regionId, x, y, 2);
         setHeight(height, x, y, 0);
         setFinishMask(finishMask, x, y, 0);
       }
@@ -270,7 +276,7 @@ function mazeBundle(seed: number): PatternBundle {
             for (let j = 0; j < t; j++) {
               const px = x0 + i;
               const py = y0 + cellSize - 1 - j;
-              setRegion(regionId, px, py, j === 0 ? 7 : 5);
+              setRegion(regionId, px, py, j === 0 ? 7 : 6);
               setHeight(height, px, py, 1);
               setFinishMask(finishMask, px, py, j === 0 ? 0.85 : 0.5);
             }
@@ -281,7 +287,7 @@ function mazeBundle(seed: number): PatternBundle {
             for (let j = 0; j < t; j++) {
               const px = x0 + cellSize - 1 - j;
               const py = y0 + i;
-              setRegion(regionId, px, py, j === 0 ? 7 : 5);
+              setRegion(regionId, px, py, j === 0 ? 7 : 6);
               setHeight(height, px, py, 1);
               setFinishMask(finishMask, px, py, j === 0 ? 0.85 : 0.5);
             }

@@ -118,13 +118,13 @@ void main() {
   vec3 finalRGB = color * lit + highlight;
 
   // Wear: scratch-map driven. The "stock" colour the pattern wears
-  // toward is the colorway's palette[0], which by convention is the
-  // card background — the dark substrate the pattern was painted on.
-  // Slightly darkened so chips read as recessed material rather than
-  // matching the BG exactly (which would make scratches invisible on
-  // patterns whose background is also palette[0]).
+  // toward is palette[0] — by convention the card's substrate. Sample
+  // the palette texture at region 0's centre. (Earlier this referenced
+  // a uPalette[8] uniform array that was refactored out in favour of
+  // uPaletteMap; the leftover broke shader compilation and the whole
+  // pattern mesh rendered as nothing.)
   if (uWear > 0.001) {
-    vec3 stock = uPalette[0].rgb * 0.55;
+    vec3 stock = texture(uPaletteMap, vec2(0.5 / 8.0, 0.5)).rgb * 0.55;
     float wearThreshold = texture(uScratchMap, vUV).r;
     float scratchAmount = smoothstep(wearThreshold - 0.06, wearThreshold + 0.02, uWear);
     finalRGB = mix(finalRGB, stock, scratchAmount * 0.8);
