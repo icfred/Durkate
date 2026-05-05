@@ -48,10 +48,11 @@ mount.appendChild(app.canvas);
 
 const sandboxParam = new URLSearchParams(window.location.search).get("sandbox");
 if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
-  const skinAssets = await loadSkinAssets(app.renderer, {
-    imageUrl: "/skins/atlas.png",
-    manifestUrl: "/skins/atlas.json",
-  });
+  // Load skin assets at runtime via the procedural generator. The pre-baked
+  // atlas in /public/skins/ was built around the old bitmap-only patterns
+  // and can't represent the procedural ones; we'll re-introduce a bake step
+  // later if startup cost ever matters.
+  const skinAssets = await loadSkinAssets(app.renderer);
   const screen =
     sandboxParam === "skins"
       ? new SkinSandboxScreen({ assets: skinAssets, ticker: app.ticker })
