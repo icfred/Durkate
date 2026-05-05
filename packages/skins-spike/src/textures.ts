@@ -1,4 +1,5 @@
 import { Graphics, Rectangle, type Renderer, type Texture } from "pixi.js";
+import { generateProceduralPatterns } from "./proceduralPatterns.js";
 
 export const CARD_WIDTH = 96;
 export const CARD_HEIGHT = 144;
@@ -12,10 +13,15 @@ export interface SkinAssets {
 }
 
 export function createSkinAssets(renderer: Renderer): SkinAssets {
+  // Pattern slots: P0-P3 are procedural (voronoi, fbm marble, truchet arcs,
+  // maze) — colored, organic, generated pixel-by-pixel from seeds. P4-P7
+  // are simple bitmap motifs kept as a baseline for direct comparison.
+  const procedural = generateProceduralPatterns(renderer);
+  const bitmap = [0, 1, 5, 6].map((i) => makePatternTile(renderer, i));
   return {
     cardSurface: makeCardSurface(renderer),
     cardDecoration: makeCardDecoration(renderer),
-    patterns: Array.from({ length: PATTERN_COUNT }, (_, i) => makePatternTile(renderer, i)),
+    patterns: [...procedural, ...bitmap],
   };
 }
 
