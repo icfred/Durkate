@@ -20,7 +20,10 @@ export type DeadlineKind =
   // Room GC: game-over has lingered without rematch / re-engagement.
   | "stale"
   // Bot pacing: pre-move "thinking" delay before a bot's next action.
-  | "bot-think";
+  | "bot-think"
+  // FFA throw-in window: pending END_ROUND / TAKE_PILE deferred while
+  // every non-defender gets a beat to throw in or pass (ADR-0011).
+  | "close-window";
 
 export type PersistedDeadlines = Partial<Record<DeadlineKind, number>>;
 

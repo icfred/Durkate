@@ -77,6 +77,33 @@ implements.
   `POST /rooms`, `GET /ws/:roomId`, `OPTIONS /rooms`, `GET /health`,
   with origin allowlist and per-IP create-room rate limit.
 
+## FFA throw-in window (ADR-0011)
+
+When the engine accepts an `END_ROUND` or `TAKE_PILE` while
+`playerCount > 2`, the worker defers the apply by `CLOSE_WINDOW_MS`
+(default 2.5 s). The pending state lives on the room as
+`pendingClose: { kind, closesAt, passed[] } | null` and rides every
+`RoomState` broadcast so clients can render the countdown.
+
+- `THROW_IN` during the window applies through the engine and resets
+  `closesAt` to `now + CLOSE_WINDOW_MS`; `passed[]` is cleared.
+- `PASS { by }` (engine-level, pure observer) appends to `passed[]`.
+  When every non-eliminated non-defender has passed, the close fires
+  immediately.
+- Other actions (including a duplicate `END_ROUND` / `TAKE_PILE`) are
+  rejected with `FORBIDDEN_ACTION`.
+- The `close-window` alarm fires the deferred action if no one has
+  thrown in or passed the threshold.
+- N=2 collapses the window to zero (the only non-defender is the
+  attacker, who already had unbounded time pre-submit).
+- Bot fan-out: every non-defender non-eliminated bot is queued on
+  `botFanOut: Map<seat, deadline>`; when the shared `bot-think` alarm
+  fires it drains the map. Each bot picks the cheapest matching-rank
+  `THROW_IN` if any, else `PASS`.
+- Tunable env var: `CLOSE_WINDOW_MS`. The vitest config sets it to `0`
+  by default so existing end-to-end flows aren't slowed; window-aware
+  tests opt in via `testSetCloseWindowMs(...)`.
+
 ## Bot pacing
 
 Bots don't snap moves the instant it's their turn. Every transition that
@@ -226,6 +253,10 @@ Worker name: `durak-server`. Public URL:
   bounds for the bot pre-move "thinking" delay. Both `0` disables pacing
   (bot acts synchronously). The vitest pool sets both to `0` so existing
   end-to-end bot games stay deterministic without advancing fake time.
+- `CLOSE_WINDOW_MS` (runtime, default 2500) - FFA throw-in pacing window
+  (ADR-0011). `0` disables the window entirely (round-resolving actions
+  apply instantly). The vitest pool sets this to `0` for the same reason
+  as bot pacing.
 - `CLOUDFLARE_API_TOKEN` (CI secret) - Workers + DO scopes.
 - `CLOUDFLARE_ACCOUNT_ID` (CI secret) - account id for the deploy.
 

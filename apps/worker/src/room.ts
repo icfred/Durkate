@@ -17,6 +17,7 @@ import {
   type CreateRoomResponse,
   type DisconnectState,
   type ErrorMessage,
+  type PendingCloseState,
   parseClientMessage,
   type RoomSeat,
   type RoomStateMessage,
@@ -46,6 +47,9 @@ interface PersistedRoom {
   rematchSeats?: boolean[];
   disconnects?: DisconnectState[];
   deadlines?: PersistedDeadlines;
+  pendingClose?: PendingCloseState | null;
+  pendingCloseBy?: SeatIndex | null;
+  botFanOut?: { seat: SeatIndex; at: number }[];
   // Legacy fields kept for back-compat parsing only.
   mode?: "human" | "bot";
   botSeat?: SeatIndex | null;
@@ -68,6 +72,10 @@ const DEFAULT_BOT_ITERATION_CAP = 200;
 const DEFAULT_RATE_LIMIT = { capacity: 20, refillIntervalMs: 5_000 };
 const STORAGE_KEY = "room";
 const DEFAULT_DISCONNECT_FORFEIT_MS = 30_000;
+// FFA throw-in window default (ADR-0011). At N=2 the window collapses to
+// 0 — the only non-defender is the attacker, who already had every chance
+// to throw in before submitting the round-resolving action.
+const DEFAULT_CLOSE_WINDOW_MS = 2_500;
 // Room GC eviction timeouts. See apps/worker/README.md.
 const ABANDONED_MS = 5 * 60 * 1000;
 const IDLE_MS = 5 * 60 * 1000;
@@ -83,6 +91,7 @@ interface Env {
   DISCONNECT_FORFEIT_MS?: string;
   BOT_THINK_MIN_MS?: string;
   BOT_THINK_MAX_MS?: string;
+  CLOSE_WINDOW_MS?: string;
 }
 
 export class Room extends DurableObject<Env> {
@@ -93,8 +102,22 @@ export class Room extends DurableObject<Env> {
   private botDifficulty: BotDifficulty = DEFAULT_BOT_DIFFICULTY;
   private rematchSeats: boolean[] = [false, false];
   private disconnects: DisconnectState[] = [];
+  // FFA throw-in window (ADR-0011). When non-null, the engine has not yet
+  // applied the stored kind — it sits behind a `close-window` alarm that
+  // fires after `closesAt`. THROW_IN extends, PASS appends, every active
+  // non-defender passing fires the close immediately.
+  private pendingClose: PendingCloseState | null = null;
+  // The seat that originally submitted the round-resolving action. We
+  // re-issue the action from the original `by` so the engine's
+  // attacker/defender legality checks still pass when the alarm fires.
+  private pendingCloseBy: SeatIndex | null = null;
+  // Per-seat bot-think deadlines for the fan-out during `pendingClose`.
+  // Empty outside the window; arming this composes with the existing
+  // single-actor `bot-think` slot via `armBotTurnIfNeeded`.
+  private botFanOut: Map<SeatIndex, number> = new Map();
   private readonly turnTimeoutMs: number;
   private readonly disconnectForfeitMs: number;
+  private closeWindowMs: number;
   private readonly botIterationCap: number;
   private readonly rateLimitCapacity: number;
   private thinkBounds: ThinkBounds;
@@ -111,6 +134,13 @@ export class Room extends DurableObject<Env> {
     this.disconnectForfeitMs = Number(
       env.DISCONNECT_FORFEIT_MS ?? String(DEFAULT_DISCONNECT_FORFEIT_MS),
     );
+    const closeWindowRaw = env.CLOSE_WINDOW_MS;
+    const closeWindowOverride =
+      closeWindowRaw && closeWindowRaw.length > 0 ? Number(closeWindowRaw) : NaN;
+    this.closeWindowMs =
+      Number.isFinite(closeWindowOverride) && closeWindowOverride >= 0
+        ? closeWindowOverride
+        : DEFAULT_CLOSE_WINDOW_MS;
     this.botIterationCap = DEFAULT_BOT_ITERATION_CAP;
     const capacityOverride = Number(env.RATE_LIMIT_CAPACITY ?? "");
     this.rateLimitCapacity =
@@ -148,6 +178,11 @@ export class Room extends DurableObject<Env> {
       this.rematchSeats = persisted.rematchSeats ?? [false, false];
       this.disconnects = persisted.disconnect ? [persisted.disconnect] : [];
     }
+    this.pendingClose = persisted.pendingClose ?? null;
+    this.pendingCloseBy = persisted.pendingCloseBy ?? null;
+    this.botFanOut = new Map(
+      (persisted.botFanOut ?? []).map((entry) => [entry.seat, entry.at] as const),
+    );
     this.alarms.load(persisted.deadlines);
   }
 
@@ -406,6 +441,24 @@ export class Room extends DurableObject<Env> {
     return this.allBotsActive();
   }
 
+  testSetCloseWindowMs(ms: number): void {
+    this.closeWindowMs = ms;
+  }
+
+  testCloseWindowMs(): number {
+    return this.closeWindowMs;
+  }
+
+  testPendingClose(): PendingCloseState | null {
+    return this.pendingClose
+      ? { ...this.pendingClose, passed: [...this.pendingClose.passed] }
+      : null;
+  }
+
+  testBotFanOut(): { seat: SeatIndex; at: number }[] {
+    return Array.from(this.botFanOut.entries()).map(([seat, at]) => ({ seat, at }));
+  }
+
   // Test seam: synthesize a hand-empty for the given seat so tests can
   // exercise spectator semantics without grinding to game-over by hand.
   testEliminateSeat(seat: SeatIndex): void {
@@ -434,6 +487,9 @@ export class Room extends DurableObject<Env> {
         if (this.handleForfeit()) mutated = true;
       } else if (kind === "bot-think") {
         if (this.handleBotThink()) mutated = true;
+      } else if (kind === "close-window") {
+        this.fireCloseWindow();
+        mutated = true;
       } else if (kind === "abandoned" || kind === "idle" || kind === "stale") {
         await this.evict(kind);
         // evict deletes all storage so we don't persist after.
@@ -459,6 +515,9 @@ export class Room extends DurableObject<Env> {
     this.botSeats = [];
     this.rematchSeats = new Array<boolean>(this.playerCount).fill(false);
     this.disconnects = [];
+    this.pendingClose = null;
+    this.pendingCloseBy = null;
+    this.botFanOut.clear();
     // Clear all alarm bookkeeping before deleteAll wipes the persisted map.
     this.alarms.cancel("turn-timeout");
     this.alarms.cancel("forfeit");
@@ -466,6 +525,7 @@ export class Room extends DurableObject<Env> {
     this.alarms.cancel("idle");
     this.alarms.cancel("stale");
     this.alarms.cancel("bot-think");
+    this.alarms.cancel("close-window");
     await this.ctx.storage.deleteAll();
   }
 
@@ -479,7 +539,11 @@ export class Room extends DurableObject<Env> {
       this.alarms.cancel("turn-timeout");
       this.alarms.cancel("bot-think");
       this.alarms.cancel("forfeit");
+      this.alarms.cancel("close-window");
       this.disconnects = [];
+      this.pendingClose = null;
+      this.pendingCloseBy = null;
+      this.botFanOut.clear();
       this.botChainCount = 0;
       if (!this.alarms.has("stale")) {
         this.alarms.schedule("stale", Date.now() + STALE_MS);
@@ -536,9 +600,13 @@ export class Room extends DurableObject<Env> {
     const forfeit = forfeitState(this.engineState, seat);
     this.engineState = forfeit;
     this.disconnects = [];
+    this.pendingClose = null;
+    this.pendingCloseBy = null;
+    this.botFanOut.clear();
     this.alarms.cancel("turn-timeout");
     this.alarms.cancel("bot-think");
     this.alarms.cancel("forfeit");
+    this.alarms.cancel("close-window");
     this.botChainCount = 0;
     this.broadcast([{ type: "GAME_OVER", durak: seat }]);
     this.broadcastRoomState();
@@ -682,7 +750,11 @@ export class Room extends DurableObject<Env> {
     this.cancelTurnTimer();
     this.alarms.cancel("stale");
     this.alarms.cancel("bot-think");
+    this.alarms.cancel("close-window");
     this.botChainCount = 0;
+    this.pendingClose = null;
+    this.pendingCloseBy = null;
+    this.botFanOut.clear();
     this.engineState = null;
     this.rematchSeats = new Array<boolean>(this.playerCount).fill(false);
     this.broadcastRoomState();
@@ -703,6 +775,59 @@ export class Room extends DurableObject<Env> {
       return { ok: false, reason: "FORBIDDEN_ACTION" };
     }
     const enforced = { ...action, by: seat };
+    return this.applyEnforcedAction(enforced);
+  }
+
+  // Shared apply path: human submissions arrive here through `applyAction`
+  // (with the auth/`by` overrides), bot decisions arrive here directly via
+  // `runBotMoveNow` / fan-out alarm. Encapsulates the pending-close window
+  // state machine so both paths agree on legality and side effects.
+  private applyEnforcedAction(enforced: Action): ApplyResult {
+    if (this.engineState === null) return { ok: false, reason: "GAME_NOT_STARTED" };
+    if (this.engineState.phase !== "in-round") {
+      const result = step(this.engineState, enforced);
+      if (!result.ok) return { ok: false, reason: result.reason };
+      this.engineState = result.state;
+      this.cancelTurnTimer();
+      this.broadcast(result.events);
+      this.armBotTurnIfNeeded();
+      this.scheduleTurnTimer();
+      this.bumpStaleIfFinished();
+      return { ok: true, state: this.engineState, events: result.events };
+    }
+
+    if (this.pendingClose !== null) {
+      // During the throw-in window only THROW_IN and PASS are accepted —
+      // everything else (including a duplicate END_ROUND / TAKE_PILE) is
+      // rejected so the pending action's parameters are stable until close.
+      if (enforced.type === "PASS") return this.handlePassDuringWindow(enforced);
+      if (enforced.type === "THROW_IN") return this.handleThrowInDuringWindow(enforced);
+      return { ok: false, reason: "FORBIDDEN_ACTION" };
+    }
+
+    if (enforced.type === "PASS") {
+      // PASS outside the window has no addressee — there is no decision
+      // pending that a pass would defer.
+      return { ok: false, reason: "FORBIDDEN_ACTION" };
+    }
+
+    // Round-resolving actions open the pending-close window when the
+    // engine accepts them. Anything else applies immediately.
+    if (
+      (enforced.type === "END_ROUND" || enforced.type === "TAKE_PILE") &&
+      this.shouldOpenCloseWindow()
+    ) {
+      const probe = step(this.engineState, enforced);
+      if (!probe.ok) return { ok: false, reason: probe.reason };
+      this.openCloseWindow(enforced);
+      return { ok: true, state: this.engineState, events: [] };
+    }
+
+    return this.applyToEngine(enforced);
+  }
+
+  private applyToEngine(enforced: Action): ApplyResult {
+    if (this.engineState === null) return { ok: false, reason: "GAME_NOT_STARTED" };
     const result = step(this.engineState, enforced);
     if (!result.ok) return { ok: false, reason: result.reason };
     this.engineState = result.state;
@@ -713,6 +838,159 @@ export class Room extends DurableObject<Env> {
     this.scheduleTurnTimer();
     this.bumpStaleIfFinished();
     return { ok: true, state: this.engineState, events: result.events };
+  }
+
+  private handlePassDuringWindow(action: Extract<Action, { type: "PASS" }>): ApplyResult {
+    if (this.engineState === null || this.pendingClose === null) {
+      return { ok: false, reason: "FORBIDDEN_ACTION" };
+    }
+    const result = step(this.engineState, action);
+    if (!result.ok) return { ok: false, reason: result.reason };
+    if (!this.pendingClose.passed.includes(action.by)) {
+      this.pendingClose = {
+        ...this.pendingClose,
+        passed: [...this.pendingClose.passed, action.by].sort((a, b) => a - b),
+      };
+    }
+    this.botFanOut.delete(action.by);
+    this.broadcast(result.events);
+    if (this.allActiveNonDefendersPassed()) {
+      // Everyone has explicitly opted out — fire the close immediately
+      // rather than waiting for the alarm.
+      this.alarms.cancel("close-window");
+      this.fireCloseWindow();
+      return { ok: true, state: this.engineState, events: result.events };
+    }
+    this.refreshBotFanOutAlarm();
+    this.broadcastRoomState();
+    return { ok: true, state: this.engineState, events: result.events };
+  }
+
+  private handleThrowInDuringWindow(action: Extract<Action, { type: "THROW_IN" }>): ApplyResult {
+    if (this.engineState === null || this.pendingClose === null) {
+      return { ok: false, reason: "FORBIDDEN_ACTION" };
+    }
+    const result = step(this.engineState, action);
+    if (!result.ok) return { ok: false, reason: result.reason };
+    this.engineState = result.state;
+    // Reset the window: every non-defender gets fresh consideration after
+    // a pile-on. Cancel both bot fan-out and the close alarm; we re-arm.
+    this.pendingClose = {
+      ...this.pendingClose,
+      closesAt: Date.now() + this.closeWindowMs,
+      passed: [],
+    };
+    this.botFanOut.clear();
+    this.cancelTurnTimer();
+    this.broadcast(result.events);
+    this.alarms.schedule("close-window", this.pendingClose.closesAt);
+    this.scheduleBotFanOut();
+    this.broadcastRoomState();
+    return { ok: true, state: this.engineState, events: result.events };
+  }
+
+  // The window is meaningless at N=2 — the only non-defender is the
+  // attacker, and the attacker had unlimited time to throw in before
+  // submitting the round-resolver. Skip it for back-compat with the
+  // existing 1v1 flows. Also skip when the pacing override sets
+  // `closeWindowMs` to 0 (test seam).
+  private shouldOpenCloseWindow(): boolean {
+    if (this.engineState === null || this.engineState.phase !== "in-round") return false;
+    if (this.playerCount <= 2) return false;
+    if (this.closeWindowMs <= 0) return false;
+    return true;
+  }
+
+  private openCloseWindow(action: Extract<Action, { type: "END_ROUND" | "TAKE_PILE" }>): void {
+    const closesAt = Date.now() + this.closeWindowMs;
+    this.pendingClose = { kind: action.type, closesAt, passed: [] };
+    this.pendingCloseBy = action.by;
+    this.botFanOut.clear();
+    this.cancelTurnTimer();
+    this.alarms.cancel("bot-think");
+    this.alarms.schedule("close-window", closesAt);
+    this.scheduleBotFanOut();
+    this.broadcastRoomState();
+  }
+
+  private fireCloseWindow(): void {
+    if (this.engineState === null || this.pendingClose === null) {
+      this.pendingClose = null;
+      this.pendingCloseBy = null;
+      this.botFanOut.clear();
+      return;
+    }
+    const action: Action =
+      this.pendingClose.kind === "END_ROUND"
+        ? { type: "END_ROUND", by: this.pendingCloseBy ?? 0 }
+        : { type: "TAKE_PILE", by: this.pendingCloseBy ?? 0 };
+    this.pendingClose = null;
+    this.pendingCloseBy = null;
+    this.botFanOut.clear();
+    this.alarms.cancel("close-window");
+    this.applyToEngine(action);
+    // Clear pendingClose from broadcast view in case applyToEngine returns
+    // mid-game (still in-round): RoomState was already broadcast inside
+    // applyToEngine via armBotTurnIfNeeded paths, but we want a fresh one
+    // with `pendingClose: null` so the client retracts the banner.
+    this.broadcastRoomState();
+  }
+
+  private allActiveNonDefendersPassed(): boolean {
+    if (this.engineState === null || this.engineState.phase !== "in-round") return true;
+    if (this.pendingClose === null) return true;
+    const eliminated = eliminatedSeatsOfState(this.engineState);
+    const passed = new Set(this.pendingClose.passed);
+    for (let s = 0; s < this.playerCount; s++) {
+      if (s === this.engineState.defender) continue;
+      if (eliminated.has(s)) continue;
+      if (!passed.has(s)) return false;
+    }
+    return true;
+  }
+
+  // Schedules bot fan-out: every non-defender non-eliminated bot seat that
+  // hasn't already passed gets a per-seat deadline. Their actual decision
+  // (THROW_IN matching card if any, else PASS) runs when the shared
+  // bot-think alarm fires.
+  private scheduleBotFanOut(): void {
+    if (this.engineState === null || this.engineState.phase !== "in-round") return;
+    if (this.pendingClose === null) return;
+    const eliminated = eliminatedSeatsOfState(this.engineState);
+    const passed = new Set(this.pendingClose.passed);
+    const now = Date.now();
+    for (const seat of this.botSeats) {
+      if (seat === this.engineState.defender) continue;
+      if (eliminated.has(seat)) continue;
+      if (passed.has(seat)) continue;
+      if (this.botFanOut.has(seat)) continue;
+      const baseDelay = computeThinkDelay({
+        state: this.engineState,
+        seat,
+        difficulty: this.botDifficulty,
+        bounds: this.thinkBounds,
+      });
+      const delay = baseDelay <= 0 ? 0 : baseDelay;
+      this.botFanOut.set(seat, now + delay);
+    }
+    this.refreshBotFanOutAlarm();
+  }
+
+  // Earliest of the pending fan-out deadlines decides when bot-think fires.
+  // The alarm dispatcher drains every entry whose deadline elapsed.
+  private refreshBotFanOutAlarm(): void {
+    if (this.botFanOut.size === 0) {
+      // Don't cancel bot-think here unconditionally — the regular pacing
+      // path (non-window) also uses it. Only cancel if there's no pending
+      // window-driven fan-out *and* the regular path doesn't want it.
+      if (this.pendingClose !== null) this.alarms.cancel("bot-think");
+      return;
+    }
+    let earliest = Number.POSITIVE_INFINITY;
+    for (const at of this.botFanOut.values()) {
+      if (at < earliest) earliest = at;
+    }
+    this.alarms.schedule("bot-think", earliest);
   }
 
   // Engine-level edge case at N>2: a seat can play its last card mid-round
@@ -754,6 +1032,13 @@ export class Room extends DurableObject<Env> {
     if (this.engineState === null || this.engineState.phase !== "in-round") {
       this.botChainCount = 0;
       this.clearThinkingState();
+      return;
+    }
+    if (this.pendingClose !== null) {
+      // The fan-out scheduler owns bot-think while the close window is open.
+      // The active actor is a bystander — it's the pre-resolution defender
+      // for END_ROUND or the pre-pile attacker for TAKE_PILE — and the
+      // single-bot pacing path would mis-fire if it tried to act here.
       return;
     }
     const active = activeActorSeat(this.engineState);
@@ -823,6 +1108,10 @@ export class Room extends DurableObject<Env> {
       this.broadcastRoomState();
       return true;
     }
+    if (this.pendingClose !== null) {
+      this.runBotFanOut();
+      return true;
+    }
     const active = activeActorSeat(this.engineState);
     if (!this.botSeats.includes(active)) {
       this.botChainCount = 0;
@@ -838,6 +1127,28 @@ export class Room extends DurableObject<Env> {
     this.armBotTurnIfNeeded();
     this.bumpStaleIfFinished();
     return true;
+  }
+
+  // Drains every pending fan-out seat. The single AlarmScheduler slot
+  // can't carry per-seat deadlines, so when bot-think fires during the
+  // window we treat every queued bot as ready — staggering is a UX nicety
+  // that didn't survive the single-slot constraint. The first THROW_IN
+  // extends the window (and resets fan-out for everyone); remaining
+  // unprocessed seats fall out for re-scheduling on the next pass.
+  private runBotFanOut(): void {
+    if (this.engineState === null || this.engineState.phase !== "in-round") return;
+    if (this.pendingClose === null) return;
+    const due = Array.from(this.botFanOut.keys()).sort((a, b) => a - b);
+    for (const seat of due) {
+      if (this.engineState === null || this.engineState.phase !== "in-round") break;
+      if (this.pendingClose === null) break;
+      this.botFanOut.delete(seat);
+      const action = chooseFanOutAction(this.engineState, seat);
+      this.applyEnforcedAction(action);
+    }
+    if (this.pendingClose !== null) {
+      this.refreshBotFanOutAlarm();
+    }
   }
 
   // Synchronously runs one bot.choose -> step. Returns true if a move
@@ -890,6 +1201,9 @@ export class Room extends DurableObject<Env> {
       this.engineState !== null && this.engineState.phase === "in-round"
         ? Array.from(eliminatedSeatsOfState(this.engineState)).sort((a, b) => a - b)
         : [];
+    const pendingClose: PendingCloseState | null = this.pendingClose
+      ? { ...this.pendingClose, passed: [...this.pendingClose.passed] }
+      : null;
     for (const ws of this.ctx.getWebSockets()) {
       const seat = this.seatForWebSocket(ws);
       if (seat === undefined) continue;
@@ -903,14 +1217,20 @@ export class Room extends DurableObject<Env> {
         disconnects,
         thinkingSeats,
         eliminated,
+        pendingClose,
       };
       this.send(ws, msg);
     }
   }
 
   private computeThinkingSeats(): SeatIndex[] {
-    if (!this.alarms.has("bot-think")) return [];
     if (this.engineState === null || this.engineState.phase !== "in-round") return [];
+    if (this.pendingClose !== null) {
+      // During the window, every bot seat with a pending fan-out is
+      // "thinking" — the client renders all of them in parallel.
+      return Array.from(this.botFanOut.keys()).sort((a, b) => a - b);
+    }
+    if (!this.alarms.has("bot-think")) return [];
     const active = activeActorSeat(this.engineState);
     if (!this.botSeats.includes(active)) return [];
     return [active];
@@ -963,6 +1283,11 @@ export class Room extends DurableObject<Env> {
       rematchSeats: this.rematchSeats.slice(),
       disconnects: this.disconnects.map((d) => ({ ...d })),
       deadlines: this.alarms.toPersisted(),
+      pendingClose: this.pendingClose
+        ? { ...this.pendingClose, passed: [...this.pendingClose.passed] }
+        : null,
+      pendingCloseBy: this.pendingCloseBy,
+      botFanOut: Array.from(this.botFanOut.entries()).map(([seat, at]) => ({ seat, at })),
     };
     await this.ctx.storage.put(STORAGE_KEY, snapshot);
   }
@@ -1050,6 +1375,32 @@ function parseFailureMessage(err: unknown): string {
   if (err instanceof SyntaxError) return "invalid JSON";
   if (err instanceof ZodError) return err.issues[0]?.message ?? "invalid message";
   return "invalid message";
+}
+
+// Picks a fan-out reply for one bot seat during the close window. If the
+// seat has at least one card whose rank is on the table, throw the
+// cheapest such card; otherwise pass. Re-uses the engine's standard
+// "cheapest card" ordering (non-trumps first, low rank first) so the bot
+// never spends a high-rank card on a throw-in when a low one would do.
+export function chooseFanOutAction(state: InRoundState, seat: SeatIndex): Action {
+  const hand = state.hands[seat] ?? [];
+  if (hand.length === 0) return { type: "PASS", by: seat };
+  const ranks = new Set<number>();
+  for (const pair of state.table) {
+    ranks.add(pair.attack.rank);
+    if (pair.defense) ranks.add(pair.defense.rank);
+  }
+  const candidates = hand.filter((c) => ranks.has(c.rank));
+  if (candidates.length === 0) return { type: "PASS", by: seat };
+  const trump = state.trumpSuit;
+  const sorted = [...candidates].sort((a, b) => {
+    const trumpA = a.suit === trump ? 1 : 0;
+    const trumpB = b.suit === trump ? 1 : 0;
+    if (trumpA !== trumpB) return trumpA - trumpB;
+    return a.rank - b.rank;
+  });
+  const card = sorted[0] as Card;
+  return { type: "THROW_IN", by: seat, card };
 }
 
 // Mirrors the engine's internal `eliminatedSeatsOf` (not exported). A seat

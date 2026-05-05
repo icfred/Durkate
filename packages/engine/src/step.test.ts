@@ -1711,3 +1711,76 @@ describe("step elimination at N=4", () => {
     expect(playerOut).toEqual([{ type: "PLAYER_OUT", seat: 3 }]);
   });
 });
+
+describe("step PASS (FFA throw-in window)", () => {
+  const trump = card("hearts", 11);
+
+  it("emits PLAYER_PASSED without mutating state", () => {
+    const state = mkInRound({
+      trump,
+      hands: [[card("spades", 7)], [card("spades", 6)], [card("clubs", 9)]],
+      table: [{ attack: card("clubs", 8), defense: card("clubs", 10) }],
+      attacker: 0,
+      defender: 1,
+    });
+    const r = step(state, { type: "PASS", by: 2 });
+    if (!r.ok) throw new Error(`unexpected rejection: ${r.reason}`);
+    expect(r.state).toBe(state);
+    expect(r.events).toEqual([{ type: "PLAYER_PASSED", by: 2 }]);
+  });
+
+  it("accepts PASS from the attacker (also a non-defender)", () => {
+    const state = mkInRound({
+      trump,
+      hands: [[card("spades", 7)], [card("spades", 6)], [card("clubs", 9)]],
+      table: [{ attack: card("clubs", 8), defense: card("clubs", 10) }],
+      attacker: 0,
+      defender: 1,
+    });
+    const r = step(state, { type: "PASS", by: 0 });
+    if (!r.ok) throw new Error(`unexpected rejection: ${r.reason}`);
+    expect(r.events).toEqual([{ type: "PLAYER_PASSED", by: 0 }]);
+  });
+
+  it("rejects PASS from the defender", () => {
+    const state = mkInRound({
+      trump,
+      hands: [[card("spades", 7)], [card("spades", 6)], [card("clubs", 9)]],
+      table: [{ attack: card("clubs", 8), defense: card("clubs", 10) }],
+      attacker: 0,
+      defender: 1,
+    });
+    const r = step(state, { type: "PASS", by: 1 });
+    expect(r).toEqual({ ok: false, reason: "DEFENDER_CANNOT_PASS" });
+  });
+
+  it("rejects PASS from an eliminated seat", () => {
+    const state = mkInRound({
+      trump,
+      trumpCard: null,
+      hands: [[card("spades", 7)], [card("spades", 6)], []],
+      table: [{ attack: card("clubs", 8), defense: card("clubs", 10) }],
+      attacker: 0,
+      defender: 1,
+    });
+    const r = step(state, { type: "PASS", by: 2 });
+    expect(r).toEqual({ ok: false, reason: "ELIMINATED_CANNOT_PASS" });
+  });
+
+  it("rejects PASS from an out-of-range seat", () => {
+    const state = mkInRound({
+      trump,
+      hands: [[card("spades", 7)], [card("spades", 6)], [card("clubs", 9)]],
+      table: [{ attack: card("clubs", 8), defense: card("clubs", 10) }],
+      attacker: 0,
+      defender: 1,
+    });
+    const r = step(state, { type: "PASS", by: 9 });
+    expect(r).toEqual({ ok: false, reason: "INVALID_SEAT" });
+  });
+
+  it("rejects PASS outside in-round phase", () => {
+    const r = step(initialState({ seed: 1, playerCount: 3 }), { type: "PASS", by: 0 });
+    expect(r).toEqual({ ok: false, reason: "WRONG_PHASE" });
+  });
+});

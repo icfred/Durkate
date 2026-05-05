@@ -22,6 +22,10 @@ export default defineConfig({
           // so the seat-0 driver loops don't have to advance fake time.
           BOT_THINK_MIN_MS: "0",
           BOT_THINK_MAX_MS: "0",
+          // FFA throw-in window disabled by default in tests so existing
+          // end-to-end flows don't stall on the 2.5s pacing. Tests that
+          // exercise the window override this via `testSetCloseWindowMs`.
+          CLOSE_WINDOW_MS: "0",
         },
       },
     }),
