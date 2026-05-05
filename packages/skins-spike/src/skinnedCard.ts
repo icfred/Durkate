@@ -31,6 +31,11 @@ export interface SkinnedCardOptions {
  */
 export class SkinnedCard extends Container {
   private readonly base: Container;
+  // The Container that cosmetic effects target. If `base` is a CardView (or
+  // anything that exposes a `skinLayer` field), filters and pattern overlay
+  // attach there — sitting *under* the rank/suit glyphs so the text stays
+  // legible. Falls back to `base` for non-CardView wrappers.
+  private readonly skinTarget: Container;
   private readonly pattern: TilingSprite;
   private readonly tintFilter: ColorMatrixFilter;
   private readonly foil: FoilController;
@@ -42,6 +47,7 @@ export class SkinnedCard extends Container {
   constructor(options: SkinnedCardOptions) {
     super();
     this.base = options.base;
+    this.skinTarget = resolveSkinTarget(options.base);
     this.assets = options.assets;
     this.addChild(this.base);
 
@@ -53,7 +59,10 @@ export class SkinnedCard extends Container {
       height: options.baseHeight,
     });
     this.pattern.visible = false;
-    this.addChild(this.pattern);
+    // Pattern goes inside the skin target so it sits between the bg and the
+    // rank/suit glyphs. Adding it to `this` instead would put it above the
+    // glyphs and obscure them — the bug this layering rewrite fixes.
+    this.skinTarget.addChild(this.pattern);
 
     this.tintFilter = new ColorMatrixFilter();
     this.foil = createFoilFilter();
@@ -72,7 +81,7 @@ export class SkinnedCard extends Container {
 
     if (!spec) {
       this.pattern.visible = false;
-      this.base.filters = [];
+      this.skinTarget.filters = [];
       return;
     }
 
@@ -112,7 +121,7 @@ export class SkinnedCard extends Container {
       filters.push(this.foil.filter);
     }
 
-    this.base.filters = filters;
+    this.skinTarget.filters = filters;
   }
 
   tick(timeSeconds: number): void {
@@ -152,4 +161,13 @@ function motionToFloat(motion: Motion): number {
     case "drift":
       return 3;
   }
+}
+
+// CardView exposes a `skinLayer` field; other wrappers may not. When the base
+// is something else (a tester's plain Container, etc.) we fall back to the
+// base itself — the previous behaviour of filtering the whole base.
+function resolveSkinTarget(base: Container): Container {
+  const candidate = (base as { skinLayer?: unknown }).skinLayer;
+  if (candidate instanceof Container) return candidate;
+  return base;
 }

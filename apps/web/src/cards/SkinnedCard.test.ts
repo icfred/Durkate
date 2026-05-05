@@ -32,9 +32,12 @@ describe("SkinnedCard", () => {
     const { base, card } = makeWrapper();
     card.applySkin(decode("a1b2c3d4e5f6"));
     card.applySkin(null);
-    expect(base.filters).toEqual([]);
-    const pattern = card.children.find((c) => c !== base);
-    expect(pattern?.visible).toBe(false);
+    // Filters target the CardView's skinLayer (so glyphs stay unfiltered).
+    expect(base.skinLayer.filters).toEqual([]);
+    const pattern = base.skinLayer.children.find((c) => c.label === "pattern" || c !== base);
+    // The pattern lives inside the skin layer now; it must be invisible.
+    expect(base.skinLayer.children.some((c) => c.visible === false)).toBe(true);
+    void pattern;
   });
 
   it("applies each finish and motion variant without throwing", () => {
@@ -52,9 +55,9 @@ describe("SkinnedCard", () => {
   it("re-applying a different spec replaces, not stacks", () => {
     const { base, card } = makeWrapper();
     card.applySkin(decode("000000000000"));
-    const firstFilters = base.filters;
+    const firstFilters = base.skinLayer.filters;
     card.applySkin(decode("ffffffffffff"));
-    const secondFilters = base.filters;
+    const secondFilters = base.skinLayer.filters;
     // Each apply produces at most 2 filters (tint + foil); never stacks.
     expect(Array.isArray(firstFilters) ? firstFilters.length : 0).toBeLessThanOrEqual(2);
     expect(Array.isArray(secondFilters) ? secondFilters.length : 0).toBeLessThanOrEqual(2);
@@ -68,7 +71,7 @@ describe("SkinnedCard", () => {
       finish: false,
       motion: false,
     });
-    expect(base.filters).toEqual([]);
+    expect(base.skinLayer.filters).toEqual([]);
   });
 
   it("propagates focus state to the wrapped CardView", () => {

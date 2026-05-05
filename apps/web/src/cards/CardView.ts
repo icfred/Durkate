@@ -40,6 +40,17 @@ export function cardKey(card: Card): string {
 export type LegalState = "neutral" | "legal" | "illegal";
 
 export class CardView extends Container implements Focusable {
+  // The card is split into two stacked Containers:
+  //   - `skinLayer` holds the background graphics and any cosmetic overlays
+  //     (pattern textures, foil shaders) added by `SkinnedCard`. Filters
+  //     applied via `SkinnedCard.applySkin` target this layer only.
+  //   - `glyphLayer` holds the rank and suit text. It is added *above*
+  //     `skinLayer` and is never targeted by skin filters, so the glyphs
+  //     stay legible no matter how shiny the cosmetic.
+  // External wrappers reach the skin target via `skinLayer` (read-only
+  // public field).
+  readonly skinLayer: Container;
+  private readonly glyphLayer: Container;
   private readonly bg: Graphics;
   private readonly cornerText: Text;
   private readonly centerText: Text;
@@ -53,8 +64,17 @@ export class CardView extends Container implements Focusable {
     super();
     this.card = card;
     this.faceDown = faceDown;
+
+    this.skinLayer = new Container();
+    this.skinLayer.label = "card-skin-layer";
+    this.addChild(this.skinLayer);
+
     this.bg = new Graphics();
-    this.addChild(this.bg);
+    this.skinLayer.addChild(this.bg);
+
+    this.glyphLayer = new Container();
+    this.glyphLayer.label = "card-glyph-layer";
+    this.addChild(this.glyphLayer);
 
     const fill =
       card && !faceDown ? (isRedSuit(card.suit) ? color.danger : color.text) : color.text;
@@ -77,8 +97,8 @@ export class CardView extends Container implements Focusable {
         fill,
       },
     });
-    this.addChild(this.cornerText);
-    this.addChild(this.centerText);
+    this.glyphLayer.addChild(this.cornerText);
+    this.glyphLayer.addChild(this.centerText);
 
     this.redraw();
   }
