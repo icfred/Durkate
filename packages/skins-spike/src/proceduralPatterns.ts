@@ -5,7 +5,9 @@ import type { PatternBundle } from "./renderers/patternMesh.js";
 // textures (no colors):
 //
 //   - height:     surface elevation per pixel
-//   - regionId:   integer region index 0..7, encoded so the shader can
+//   - regionId:   integer region index 1..7 (the visible palette range);
+//                 NEVER 0 — palette[0] is reserved as the card's substrate
+//                 colour, only revealed by wear. Encoded so the shader can
 //                 recover via int(round(r * 7)). Sampled with NEAREST.
 //   - finishMask: stencil for the metallic/holographic stamping
 //
@@ -28,8 +30,10 @@ function setFinishMask(buf: Uint8Array, x: number, y: number, m: number): void {
 }
 
 function setRegion(buf: Uint8Array, x: number, y: number, region: number): void {
-  // Encode 0..7 as 0..255 in even steps. Decode in shader as
-  // int(round(r * 7.0)).
+  // Encode 1..7 as 36..255 in even steps. Decode in shader as
+  // int(round(r * 7.0)). Region 0 is reserved for wear/substrate; this
+  // helper accepts 0 for callers that explicitly want the substrate
+  // colour, but generators should only use 1..7 for visible regions.
   const clamped = Math.max(0, Math.min(7, region | 0));
   buf[y * N + x] = Math.round((clamped / 7) * 255);
 }
@@ -77,6 +81,13 @@ function tileFbm(x: number, y: number, basePeriod: number, seed: number, octaves
     amp *= 0.5;
   }
   return total / norm;
+}
+
+// Map a hash value [0,1) to a region in 1..7 (inclusive). Reserves
+// region 0 for substrate/wear so visible patterns always use a non-bg
+// palette slot.
+function regionFromHash(h: number): number {
+  return 1 + Math.floor(h * 7);
 }
 
 // ---- Texture upload -------------------------------------------------------
@@ -155,7 +166,7 @@ function voronoiBundle(seed: number): PatternBundle {
             }
           }
         }
-        const region = Math.floor(hash2(bestId, bestId * 13, seed + 99) * 8);
+        const region = regionFromHash(hash2(bestId, bestId * 13, seed + 99));
         setRegion(regionId, x, y, region);
         const edge = Math.sqrt(secondBest) - Math.sqrt(best);
         const h = Math.min(1, edge / (cellSize * 0.6));
@@ -170,7 +181,6 @@ function voronoiBundle(seed: number): PatternBundle {
 function fbmMarbleBundle(seed: number): PatternBundle {
   return makeBundle((height, regionId, finishMask) => {
     const period = 4;
-    const bands = 8;
     for (let y = 0; y < N; y++) {
       for (let x = 0; x < N; x++) {
         const u = (x / N) * period;
@@ -178,7 +188,7 @@ function fbmMarbleBundle(seed: number): PatternBundle {
         const n = tileFbm(u, v, period, seed, 4);
         let m = 0.5 + 0.5 * Math.sin((u + v) * 1.4 + n * 6.28);
         m = Math.max(0, Math.min(1, (m - 0.5) * 1.4 + 0.5));
-        const region = Math.min(bands - 1, Math.floor(m * bands));
+        const region = regionFromHash(m);
         setRegion(regionId, x, y, region);
         setHeight(height, x, y, n);
         setFinishMask(finishMask, x, y, m * m);
@@ -191,10 +201,11 @@ function truchetBundle(seed: number): PatternBundle {
   return makeBundle((height, regionId, finishMask) => {
     const cells = 4;
     const cellSize = N / cells;
-    // Background fill — region 0, no relief, no finish.
+    // Background fill — region 1 (darker palette slot) gives the truchet
+    // its negative-space colour without dipping into substrate (region 0).
     for (let y = 0; y < N; y++) {
       for (let x = 0; x < N; x++) {
-        setRegion(regionId, x, y, 0);
+        setRegion(regionId, x, y, 1);
         setHeight(height, x, y, 0);
         setFinishMask(finishMask, x, y, 0);
       }
@@ -214,10 +225,8 @@ function truchetBundle(seed: number): PatternBundle {
             const d1 = Math.hypot(px - ax, py - ay);
             const d2 = Math.hypot(px - bx2, py - by2);
             const e = Math.min(Math.abs(d1 - r), Math.abs(d2 - r));
-            // Region: 5 (highlight ring) on the arc band, 3 (mid) for the
-            // wider halo, 0 (background) elsewhere.
-            if (e < 0.6) setRegion(regionId, ox + px, oy + py, 5);
-            else if (e < 1.6) setRegion(regionId, ox + px, oy + py, 3);
+            if (e < 0.6) setRegion(regionId, ox + px, oy + py, 6);
+            else if (e < 1.6) setRegion(regionId, ox + px, oy + py, 4);
             const ridge = Math.exp(-(e * e) / 2.5);
             setHeight(height, ox + px, oy + py, ridge);
             setFinishMask(finishMask, ox + px, oy + py, ridge);
@@ -232,9 +241,11 @@ function mazeBundle(seed: number): PatternBundle {
   return makeBundle((height, regionId, finishMask) => {
     const cells = 8;
     const cellSize = N / cells;
+    // Floor: region 1 (instead of 0) so the dominant area still has
+    // colour from the colorway palette rather than substrate.
     for (let y = 0; y < N; y++) {
       for (let x = 0; x < N; x++) {
-        setRegion(regionId, x, y, 0); // floor
+        setRegion(regionId, x, y, 1);
         setHeight(height, x, y, 0);
         setFinishMask(finishMask, x, y, 0);
       }
@@ -259,8 +270,6 @@ function mazeBundle(seed: number): PatternBundle {
             for (let j = 0; j < t; j++) {
               const px = x0 + i;
               const py = y0 + cellSize - 1 - j;
-              // Region 7 for the wall top edge (uses palette[7]),
-              // region 5 for the wall body.
               setRegion(regionId, px, py, j === 0 ? 7 : 5);
               setHeight(height, px, py, 1);
               setFinishMask(finishMask, px, py, j === 0 ? 0.85 : 0.5);
@@ -283,6 +292,173 @@ function mazeBundle(seed: number): PatternBundle {
   });
 }
 
+// Crackle: voronoi-like cells with thin dark borders (cracks) and
+// brighter cell interiors. Reads as cracked porcelain or stained glass.
+function crackleBundle(seed: number): PatternBundle {
+  return makeBundle((height, regionId, finishMask) => {
+    const cells = 5;
+    const cellSize = N / cells;
+    const wrap = (n: number) => ((n % cells) + cells) % cells;
+    const seedAt = (cx: number, cy: number) => {
+      const wx = wrap(cx);
+      const wy = wrap(cy);
+      const jx = hash2(wx, wy, seed);
+      const jy = hash2(wx + 17, wy + 31, seed ^ 0xfeedface);
+      return {
+        x: (cx + jx) * cellSize,
+        y: (cy + jy) * cellSize,
+        id: wx * 31 + wy * 7,
+      };
+    };
+    for (let y = 0; y < N; y++) {
+      for (let x = 0; x < N; x++) {
+        let best = Number.POSITIVE_INFINITY;
+        let secondBest = Number.POSITIVE_INFINITY;
+        let bestId = 0;
+        const cx = Math.floor(x / cellSize);
+        const cy = Math.floor(y / cellSize);
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const s = seedAt(cx + dx, cy + dy);
+            const ddx = s.x - x;
+            const ddy = s.y - y;
+            const d = ddx * ddx + ddy * ddy;
+            if (d < best) {
+              secondBest = best;
+              best = d;
+              bestId = s.id;
+            } else if (d < secondBest) {
+              secondBest = d;
+            }
+          }
+        }
+        const edge = Math.sqrt(secondBest) - Math.sqrt(best);
+        // Crack width: pixels with edge < 1.2 are cracks (dark).
+        if (edge < 1.2) {
+          setRegion(regionId, x, y, 1); // crack uses dark palette slot
+          setHeight(height, x, y, 0);
+          setFinishMask(finishMask, x, y, 0);
+        } else {
+          // Cell interior — bright varied region. 2..7 range.
+          const region = 2 + Math.floor(hash2(bestId, bestId * 17, seed + 33) * 6);
+          setRegion(regionId, x, y, region);
+          const interior = Math.min(1, (edge - 1.2) / (cellSize * 0.5));
+          setHeight(height, x, y, 0.4 + 0.6 * interior);
+          setFinishMask(finishMask, x, y, 0.5 + 0.5 * interior);
+        }
+      }
+    }
+  });
+}
+
+// Polka dots: regular grid of soft circles, each with a varied region.
+function dotsBundle(seed: number): PatternBundle {
+  return makeBundle((height, regionId, finishMask) => {
+    const dots = 6;
+    const cellSize = N / dots;
+    const dotRadius = cellSize * 0.36;
+    // Background
+    for (let y = 0; y < N; y++) {
+      for (let x = 0; x < N; x++) {
+        setRegion(regionId, x, y, 2);
+        setHeight(height, x, y, 0);
+        setFinishMask(finishMask, x, y, 0);
+      }
+    }
+    for (let dy = 0; dy < dots; dy++) {
+      for (let dx = 0; dx < dots; dx++) {
+        const cx = (dx + 0.5) * cellSize;
+        const cy = (dy + 0.5) * cellSize;
+        // Each dot picks a region 3..7 from a hash, so neighbours don't
+        // duplicate too predictably.
+        const dotRegion = 3 + Math.floor(hash2(dx, dy, seed) * 5);
+        for (let py = 0; py < cellSize; py++) {
+          for (let px = 0; px < cellSize; px++) {
+            const wx = dx * cellSize + px;
+            const wy = dy * cellSize + py;
+            const ddx = wx - cx;
+            const ddy = wy - cy;
+            const r = Math.hypot(ddx, ddy);
+            if (r < dotRadius) {
+              const t = 1 - r / dotRadius;
+              setRegion(regionId, wx, wy, dotRegion);
+              // Bell-shape height for raised dot.
+              setHeight(height, wx, wy, smooth(t));
+              setFinishMask(finishMask, wx, wy, t * t);
+            }
+          }
+        }
+      }
+    }
+  });
+}
+
+// Stripes: 4 alternating coloured diagonal stripes, with raised relief
+// on alternating bands.
+function stripesBundle(seed: number): PatternBundle {
+  return makeBundle((height, regionId, finishMask) => {
+    const stripes = 8; // number of stripes along the diagonal
+    const palette = [3, 5, 4, 6, 2, 7, 3, 5]; // 8-stripe colour rotation
+    for (let y = 0; y < N; y++) {
+      for (let x = 0; x < N; x++) {
+        const t = ((x + y) / N) * stripes;
+        const stripeIdx = Math.floor(t) % stripes;
+        const region = palette[stripeIdx] ?? 3;
+        setRegion(regionId, x, y, region);
+        // Soft height bump per stripe — cosine wave inside each stripe.
+        const inStripe = t - Math.floor(t);
+        const bump = Math.sin(inStripe * Math.PI);
+        setHeight(height, x, y, bump * 0.7);
+        // Even stripes are "metallic" (foil-stamped); odd are matte.
+        setFinishMask(finishMask, x, y, stripeIdx % 2 === 0 ? bump * 0.8 : 0);
+      }
+    }
+    // Suppress unused-arg warning for seed at lint time without
+    // changing call shape.
+    void seed;
+  });
+}
+
+// Brick: horizontal courses of offset rectangles with mortar lines.
+function brickBundle(seed: number): PatternBundle {
+  return makeBundle((height, regionId, finishMask) => {
+    const courses = 6; // rows of bricks
+    const courseH = N / courses;
+    const bricksPerRow = 4;
+    const brickW = N / bricksPerRow;
+    const mortar = 1.5; // px
+    for (let y = 0; y < N; y++) {
+      const courseIdx = Math.floor(y / courseH);
+      const rowOffset = (courseIdx % 2) * (brickW / 2);
+      for (let x = 0; x < N; x++) {
+        const localY = y - courseIdx * courseH;
+        const ox = x + rowOffset;
+        const brickIdx = Math.floor(ox / brickW);
+        const localX = ox - brickIdx * brickW;
+        const onMortarV = localX < mortar || localX > brickW - mortar;
+        const onMortarH = localY < mortar || localY > courseH - mortar;
+        if (onMortarV || onMortarH) {
+          // Mortar (region 1, dark filler)
+          setRegion(regionId, x, y, 1);
+          setHeight(height, x, y, 0);
+          setFinishMask(finishMask, x, y, 0);
+        } else {
+          // Brick interior — varied region per brick
+          const region = 2 + Math.floor(hash2(brickIdx, courseIdx, seed) * 6);
+          setRegion(regionId, x, y, region);
+          // Brick face slightly raised; subtle bevel toward edges
+          const edgeX = Math.min(localX - mortar, brickW - mortar - localX);
+          const edgeY = Math.min(localY - mortar, courseH - mortar - localY);
+          const edge = Math.min(edgeX, edgeY);
+          const bevel = Math.min(1, edge / 2);
+          setHeight(height, x, y, 0.5 + 0.5 * bevel);
+          setFinishMask(finishMask, x, y, 0.4 * bevel);
+        }
+      }
+    }
+  });
+}
+
 // ---- Public API -----------------------------------------------------------
 
 interface ProceduralRecipe {
@@ -292,14 +468,14 @@ interface ProceduralRecipe {
 }
 
 const RECIPES: readonly ProceduralRecipe[] = [
-  { name: "voronoi-a", seed: 0xa17c, generator: voronoiBundle },
-  { name: "fbm-a", seed: 0xb29d, generator: fbmMarbleBundle },
-  { name: "truchet-a", seed: 0xc34e, generator: truchetBundle },
-  { name: "maze-a", seed: 0xd45f, generator: mazeBundle },
-  { name: "voronoi-b", seed: 0x217a, generator: voronoiBundle },
-  { name: "fbm-b", seed: 0x32b8, generator: fbmMarbleBundle },
-  { name: "truchet-b", seed: 0x43c1, generator: truchetBundle },
-  { name: "maze-b", seed: 0x54d9, generator: mazeBundle },
+  { name: "voronoi", seed: 0xa17c, generator: voronoiBundle },
+  { name: "fbm", seed: 0xb29d, generator: fbmMarbleBundle },
+  { name: "truchet", seed: 0xc34e, generator: truchetBundle },
+  { name: "maze", seed: 0xd45f, generator: mazeBundle },
+  { name: "crackle", seed: 0x217a, generator: crackleBundle },
+  { name: "dots", seed: 0x32b8, generator: dotsBundle },
+  { name: "stripes", seed: 0x43c1, generator: stripesBundle },
+  { name: "brick", seed: 0x54d9, generator: brickBundle },
 ];
 
 export function generateProceduralPatterns(_renderer: Renderer): PatternBundle[] {
