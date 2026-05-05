@@ -27,9 +27,14 @@ import type { Screen } from "../../screens/types.js";
 import { Cycle, NumberRow } from "./controls.js";
 
 // Maximum tilt angle (radians) when the pointer is at the far corner of the
-// preview area while dragging. ~10° reads as a 3D-ish lean without dipping
-// into uncanny "this isn't a real card" territory.
-const TILT_MAX_RAD = 0.18;
+// preview area while dragging. ~5-6° reads as a subtle 3D lean. Pixi skew
+// is a shear, not a real rotation, so larger values quickly distort the
+// card into an obvious parallelogram instead of a tilted rectangle.
+const TILT_MAX_RAD = 0.1;
+// How strongly skew also foreshortens the corresponding axis. Multiplying
+// by current skew angle gives a fake-perspective "leaning side gets
+// smaller" feel.
+const TILT_FORESHORTEN = 0.1;
 // Lerp coefficient for the tilt → 0 spring-back. Higher = snappier.
 const TILT_LERP = 0.18;
 
@@ -728,8 +733,8 @@ export class SkinTunerScreen extends Container implements Screen {
       this.currentTiltX += dx * TILT_LERP;
       this.currentTiltY += dy * TILT_LERP;
       this.card.skew.set(this.currentTiltY, this.currentTiltX);
-      this.card.scale.x = PREVIEW_SCALE * (1 - Math.abs(this.currentTiltY) * 0.18);
-      this.card.scale.y = PREVIEW_SCALE * (1 - Math.abs(this.currentTiltX) * 0.18);
+      this.card.scale.x = PREVIEW_SCALE * (1 - Math.abs(this.currentTiltY) * TILT_FORESHORTEN);
+      this.card.scale.y = PREVIEW_SCALE * (1 - Math.abs(this.currentTiltX) * TILT_FORESHORTEN);
     }
     if (!this.skinsActive) return;
     if (!this.axes.motion || !this.axes.finish) return;

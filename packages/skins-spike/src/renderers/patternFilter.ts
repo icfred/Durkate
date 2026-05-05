@@ -52,22 +52,27 @@ void main() {
   ));
 
   // Light direction varies by motion mode. uMotion floats: 0 none, 1
-  // shimmer (sweep), 2 pulse (intensity), 3 drift (rotate).
+  // shimmer (sweep), 2 pulse (intensity), 3 drift (wobble).
+  // Motion intensities are deliberately subtle — the pattern shader
+  // composes with the foil shader on top, and full-throttle motion in
+  // both fights for attention rather than feeling unified.
   vec3 lightDir;
   float pulseMod = 1.0;
   if (uMotion < 0.5) {
     lightDir = normalize(vec3(-0.5, -0.5, 0.7));
   } else if (uMotion < 1.5) {
-    // Shimmer: light sweeps left-right.
-    lightDir = normalize(vec3(sin(uTime * 2.0) * 0.7, -0.4, 0.7));
+    // Shimmer: small horizontal sweep around the default top-left.
+    lightDir = normalize(vec3(-0.4 + sin(uTime * 1.5) * 0.3, -0.5, 0.7));
   } else if (uMotion < 2.5) {
-    // Pulse: light direction stable, intensity oscillates.
+    // Pulse: light direction stable, intensity gently oscillates.
     lightDir = normalize(vec3(-0.5, -0.5, 0.7));
-    pulseMod = 0.55 + 0.45 * (0.5 + 0.5 * sin(uTime * 2.5));
+    pulseMod = 0.78 + 0.22 * (0.5 + 0.5 * sin(uTime * 2.0));
   } else {
-    // Drift: light direction rotates slowly.
-    float angle = uTime * 0.5;
-    lightDir = normalize(vec3(cos(angle) * 0.6, sin(angle) * 0.6, 0.7));
+    // Drift: light wobbles in a small ellipse near top-left rather than
+    // a full circular rotation — feels like a card being held with
+    // gentle motion instead of a disco ball.
+    float a = uTime * 0.35;
+    lightDir = normalize(vec3(-0.45 + cos(a) * 0.2, -0.45 + sin(a) * 0.18, 0.7));
   }
 
   float lambert = max(0.0, dot(normal, lightDir));
