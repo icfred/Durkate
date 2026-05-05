@@ -1,4 +1,4 @@
-import { decode, type Finish, type Motion, type SkinAssets, SkinnedCard } from "@durak/skins-spike";
+import { decode, type Finish, type SkinAssets, SkinnedCard } from "@durak/skins-spike";
 import { Texture } from "pixi.js";
 import { describe, expect, it } from "vitest";
 import { CARD_H, CARD_W, CardView } from "./CardView.js";
@@ -44,15 +44,12 @@ describe("SkinnedCard", () => {
     void pattern;
   });
 
-  it("applies each finish and motion variant without throwing", () => {
+  it("applies each finish variant without throwing", () => {
     const { card } = makeWrapper();
     const finishes: readonly Finish[] = ["matte", "foil", "chrome", "holographic"];
-    const motions: readonly Motion[] = ["none", "shimmer", "pulse", "drift"];
     const baseSpec = decode("000000000000");
     for (const finish of finishes) {
-      for (const motion of motions) {
-        expect(() => card.applySkin({ ...baseSpec, finish, motion })).not.toThrow();
-      }
+      expect(() => card.applySkin({ ...baseSpec, finish })).not.toThrow();
     }
   });
 
@@ -73,7 +70,6 @@ describe("SkinnedCard", () => {
       pattern: false,
       tint: false,
       finish: false,
-      motion: false,
     });
     expect(base.skinLayer.filters).toEqual([]);
   });
@@ -86,19 +82,15 @@ describe("SkinnedCard", () => {
     expect(() => base.setFocus(false)).not.toThrow();
   });
 
-  it("tick is a no-op when finish is matte or motion is none", () => {
+  it("refreshTilt is a no-op before any skin has been applied", () => {
     const { card } = makeWrapper();
-    const baseSpec = decode("000000000000");
-    card.applySkin({ ...baseSpec, finish: "matte", motion: "shimmer" });
-    expect(() => card.tick(1.0)).not.toThrow();
-    card.applySkin({ ...baseSpec, finish: "foil", motion: "none" });
-    expect(() => card.tick(1.0)).not.toThrow();
+    expect(() => card.refreshTilt()).not.toThrow();
   });
 
-  it("tick advances motion on animated finishes", () => {
+  it("refreshTilt updates shader uniforms after a skin is applied", () => {
     const { card } = makeWrapper();
-    const baseSpec = decode("000000000000");
-    card.applySkin({ ...baseSpec, finish: "holographic", motion: "drift" });
-    expect(() => card.tick(1.5)).not.toThrow();
+    card.applySkin(decode("000000000000"));
+    card.skew.set(0.1, -0.05);
+    expect(() => card.refreshTilt()).not.toThrow();
   });
 });

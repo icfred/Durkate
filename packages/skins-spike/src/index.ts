@@ -2,7 +2,7 @@ export { type AtlasUrls, loadSkinAssets } from "./atlas.js";
 export { CODE_LENGTH, isValidCode, rollCode } from "./code.js";
 export type { PatternBundle } from "./renderers/patternMesh.js";
 export { type Axes, SkinnedCard, type SkinnedCardOptions } from "./skinnedCard.js";
-export { decode, type Finish, type Motion, PATTERN_VARIANTS, type SkinSpec } from "./spec.js";
+export { decode, type Finish, PATTERN_VARIANTS, type SkinSpec } from "./spec.js";
 export {
   CARD_HEIGHT,
   CARD_WIDTH,
@@ -14,7 +14,6 @@ export {
 export {
   defaultTunables,
   type FoilTunables,
-  type MotionTunables,
   type PatternRender,
   type SpecRanges,
   type Tunables,

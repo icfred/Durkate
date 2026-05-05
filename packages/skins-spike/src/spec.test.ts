@@ -41,6 +41,5 @@ describe("decode", () => {
     expect(spec.tint.hue).toBeGreaterThanOrEqual(-1);
     expect(spec.tint.hue).toBeLessThan(1);
     expect(["matte", "foil", "chrome", "holographic"]).toContain(spec.finish);
-    expect(["none", "shimmer", "pulse", "drift"]).toContain(spec.motion);
   });
 });

@@ -4,7 +4,6 @@ import {
   decode,
   defaultTunables,
   type Finish,
-  type Motion,
   PATTERN_VARIANTS,
   rollCode,
   type SkinAssets,
@@ -41,7 +40,6 @@ const TILT_LERP = 0.18;
 const PANEL_WIDTH = 380;
 const PREVIEW_SCALE = 4;
 const FINISHES: readonly Finish[] = ["matte", "foil", "chrome", "holographic"];
-const MOTIONS: readonly Motion[] = ["none", "shimmer", "pulse", "drift"];
 const CYCLE_WIDTH = 140;
 
 const PREVIEW_CARD: Card = { suit: "spades", rank: 14 };
@@ -92,7 +90,7 @@ export class SkinTunerScreen extends Container implements Screen {
   private readonly tickCallback: TickerCallback<unknown>;
   private readonly canvas: HTMLCanvasElement | undefined;
   private spec: SkinSpec = decode("000000000000");
-  private axes: Axes = { pattern: true, tint: true, finish: true, motion: true };
+  private axes: Axes = { pattern: true, tint: true, finish: true };
   private tunables: Tunables = cloneTunables(defaultTunables);
   private skinsActive = true;
   private code = "000000000000";
@@ -338,7 +336,7 @@ export class SkinTunerScreen extends Container implements Screen {
     axisRow.y = y.value;
     panel.addChild(axisRow);
     let xOff = 0;
-    const axisKeys: ReadonlyArray<keyof Axes> = ["pattern", "tint", "finish", "motion"];
+    const axisKeys: ReadonlyArray<keyof Axes> = ["pattern", "tint", "finish"];
     for (const key of axisKeys) {
       const chip = new AxisChip({
         label: String(key).toUpperCase(),
@@ -533,88 +531,6 @@ export class SkinTunerScreen extends Container implements Screen {
         this.card.setTunables(this.tunables);
       },
     });
-    y.value += spacing.sm;
-
-    sectionHeader({ panel, y, label: "MOTION" });
-    y.value += this.addCycle<Motion>(panel, y.value, rowWidth, {
-      label: "KIND",
-      options: MOTIONS,
-      read: () => this.spec.motion,
-      write: (v) => {
-        this.spec = { ...this.spec, motion: v };
-        this.applyAll();
-      },
-    });
-    y.value += this.addNumber(panel, y.value, rowWidth, {
-      label: "SHIMMER SPD",
-      min: 0,
-      max: 2,
-      step: 0.01,
-      read: () => this.tunables.motion.shimmerSpeed,
-      write: (v) => {
-        this.tunables = {
-          ...this.tunables,
-          motion: { ...this.tunables.motion, shimmerSpeed: v },
-        };
-        this.card.setTunables(this.tunables);
-      },
-    });
-    y.value += this.addNumber(panel, y.value, rowWidth, {
-      label: "SHIMMER WIDTH",
-      min: 0.01,
-      max: 0.5,
-      step: 0.01,
-      read: () => this.tunables.motion.shimmerWidth,
-      write: (v) => {
-        this.tunables = {
-          ...this.tunables,
-          motion: { ...this.tunables.motion, shimmerWidth: v },
-        };
-        this.card.setTunables(this.tunables);
-      },
-    });
-    y.value += this.addNumber(panel, y.value, rowWidth, {
-      label: "PULSE SPD",
-      min: 0,
-      max: 5,
-      step: 0.05,
-      read: () => this.tunables.motion.pulseSpeed,
-      write: (v) => {
-        this.tunables = {
-          ...this.tunables,
-          motion: { ...this.tunables.motion, pulseSpeed: v },
-        };
-        this.card.setTunables(this.tunables);
-      },
-    });
-    y.value += this.addNumber(panel, y.value, rowWidth, {
-      label: "PULSE AMT",
-      min: 0,
-      max: 1,
-      step: 0.01,
-      read: () => this.tunables.motion.pulseAmount,
-      write: (v) => {
-        this.tunables = {
-          ...this.tunables,
-          motion: { ...this.tunables.motion, pulseAmount: v },
-        };
-        this.card.setTunables(this.tunables);
-      },
-    });
-    y.value += this.addNumber(panel, y.value, rowWidth, {
-      label: "DRIFT SPD",
-      min: 0,
-      max: 0.5,
-      step: 0.005,
-      read: () => this.tunables.motion.driftSpeed,
-      write: (v) => {
-        this.tunables = {
-          ...this.tunables,
-          motion: { ...this.tunables.motion, driftSpeed: v },
-        };
-        this.card.setTunables(this.tunables);
-      },
-    });
 
     this.contentHeight = y.value + spacing.md;
   }
@@ -726,7 +642,10 @@ export class SkinTunerScreen extends Container implements Screen {
   private onTick(_ticker: Ticker): void {
     // Lerp the card's actual tilt toward the target. While dragging, the
     // target tracks pointer position; on release the target snaps to 0
-    // and the card springs back over a few frames.
+    // and the card springs back over a few frames. Whenever the tilt
+    // changes the card's skin shaders need a refresh — they read the
+    // skew as uViewTilt to drive their tilt-aware lighting / Fresnel /
+    // hue shift, which is the only "motion" the skin system has.
     const dx = this.targetTiltX - this.currentTiltX;
     const dy = this.targetTiltY - this.currentTiltY;
     if (Math.abs(dx) > 1e-4 || Math.abs(dy) > 1e-4) {
@@ -735,11 +654,8 @@ export class SkinTunerScreen extends Container implements Screen {
       this.card.skew.set(this.currentTiltY, this.currentTiltX);
       this.card.scale.x = PREVIEW_SCALE * (1 - Math.abs(this.currentTiltY) * TILT_FORESHORTEN);
       this.card.scale.y = PREVIEW_SCALE * (1 - Math.abs(this.currentTiltX) * TILT_FORESHORTEN);
+      if (this.skinsActive) this.card.refreshTilt();
     }
-    if (!this.skinsActive) return;
-    if (!this.axes.motion || !this.axes.finish) return;
-    const t = performance.now() / 1000;
-    this.card.tick(t);
   }
 
   private nextRand = (): number => {
@@ -768,7 +684,6 @@ function cloneTunables(t: Tunables): Tunables {
       brightness: [...t.spec.brightness] as [number, number],
     },
     foil: { ...t.foil },
-    motion: { ...t.motion },
   };
 }
 

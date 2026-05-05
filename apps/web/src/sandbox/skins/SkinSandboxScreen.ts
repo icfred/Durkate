@@ -102,7 +102,7 @@ export class SkinSandboxScreen extends Container implements Screen {
   private readonly fpsLabel: Text;
   private readonly cards: SkinnedCard[] = [];
   private readonly codes: string[] = [];
-  private readonly axes: Axes = { pattern: true, tint: true, finish: true, motion: true };
+  private readonly axes: Axes = { pattern: true, tint: true, finish: true };
   private readonly focus = new FocusManager();
   private readonly tickCallback: TickerCallback<unknown>;
   private cardCount = 36;
@@ -212,7 +212,7 @@ export class SkinSandboxScreen extends Container implements Screen {
     axisRow.y = 44;
     this.toolbar.addChild(axisRow);
 
-    const axisKeys: ReadonlyArray<keyof Axes> = ["pattern", "tint", "finish", "motion"];
+    const axisKeys: ReadonlyArray<keyof Axes> = ["pattern", "tint", "finish"];
     let xOff = 0;
     for (const key of axisKeys) {
       const toggle = new AxisToggle({
@@ -310,10 +310,9 @@ export class SkinSandboxScreen extends Container implements Screen {
       this.fpsAccumMs = 0;
       this.layoutFps();
     }
-    if (this.skinsActive && this.axes.motion && this.axes.finish) {
-      const t = performance.now() / 1000;
-      for (const card of this.cards) card.tick(t);
-    }
+    // Skins are now driven by tilt only (no time-based motion), so the
+    // sandbox grid doesn't need a per-frame tick — cards are static
+    // unless the user interacts.
   }
 
   private layoutFps(): void {

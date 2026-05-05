@@ -22,21 +22,12 @@ export interface FoilTunables {
   cellSize: number;
 }
 
-export interface MotionTunables {
-  shimmerSpeed: number;
-  shimmerWidth: number;
-  pulseSpeed: number;
-  pulseAmount: number;
-  driftSpeed: number;
-}
-
 export interface Tunables {
   cardWidth: number;
   cardHeight: number;
   pattern: PatternRender;
   spec: SpecRanges;
   foil: FoilTunables;
-  motion: MotionTunables;
 }
 
 export const defaultTunables: Tunables = {
@@ -54,12 +45,5 @@ export const defaultTunables: Tunables = {
     chromeStrength: 0.6,
     holographicStrength: 0.75,
     cellSize: 4,
-  },
-  motion: {
-    shimmerSpeed: 0.4,
-    shimmerWidth: 0.08,
-    pulseSpeed: 2.5,
-    pulseAmount: 0.25,
-    driftSpeed: 0.08,
   },
 };
