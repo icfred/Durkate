@@ -1,4 +1,4 @@
-import { ColorMatrixFilter, Container, type Filter } from "pixi.js";
+import { ColorMatrixFilter, Container } from "pixi.js";
 import { PROC_TILE_PX } from "./proceduralPatterns.js";
 import { createFoilMesh, type FoilMeshController } from "./renderers/foilMesh.js";
 import { createPatternMesh, type PatternMeshController } from "./renderers/patternMesh.js";
@@ -112,6 +112,7 @@ export class SkinnedCard extends Container {
     if (!spec) {
       this.patternCtrl.view.visible = false;
       this.foilCtrl.view.visible = false;
+      this.patternCtrl.view.filters = [];
       this.skinTarget.filters = [];
       return;
     }
@@ -139,15 +140,23 @@ export class SkinnedCard extends Container {
       this.foilCtrl.view.visible = false;
     }
 
-    const filters: Filter[] = [];
+    // Tint applies ONLY to the pattern mesh — never to the foil. Real
+    // gold and silver foil stay gold and silver regardless of how the
+    // underlying pattern is hue-shifted; tinting them too would turn
+    // a "gold foil" finish into "blue foil" depending on the spec's
+    // hue setting, which reads as a bug.
     if (axes.tint) {
       this.tintFilter.reset();
       this.tintFilter.hue(spec.tint.hue * 180, false);
       this.tintFilter.saturate(spec.tint.saturation - 1, true);
       this.tintFilter.brightness(spec.tint.brightness, true);
-      filters.push(this.tintFilter);
+      this.patternCtrl.view.filters = [this.tintFilter];
+    } else {
+      this.patternCtrl.view.filters = [];
     }
-    this.skinTarget.filters = filters;
+    // skinTarget itself stays unfiltered now; per-mesh filters above
+    // handle the tint scoping.
+    this.skinTarget.filters = [];
   }
 
   private refreshPatternLook(): void {

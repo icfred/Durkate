@@ -91,10 +91,13 @@ void main() {
   vec3 sheen = vec3(0.0);
   float strength = 0.0;
 
-  // Gloss gating — both metals and holo are stamped onto only the
-  // glossy regions of the pattern. Matte cells of the pattern stay
-  // unmodified so the underlying colour shows through.
-  float coverage = smoothstep(0.35, 0.78, gloss);
+  // Gloss gating — both metals and holo stamp ONLY where the pattern's
+  // gloss map is high. The previous range (0.35-0.78) was greedy: it
+  // covered most of every voronoi cell and most fbm vein peaks, which
+  // meant the pattern's varied colours were mostly hidden under foil.
+  // Tightening to 0.55-0.88 means stamps land just on the brightest
+  // peaks; the rest of the pattern stays visible as the colour layer.
+  float coverage = smoothstep(0.55, 0.88, gloss);
 
   if (uFinish < 3.5) {
     // METALLIC: Silver (1) / Gold (2) / Bronze (3). Each has its own
