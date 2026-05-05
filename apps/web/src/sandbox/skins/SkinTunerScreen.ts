@@ -531,6 +531,20 @@ export class SkinTunerScreen extends Container implements Screen {
         this.card.setTunables(this.tunables);
       },
     });
+    y.value += spacing.sm;
+
+    sectionHeader({ panel, y, label: "WEAR" });
+    y.value += this.addNumber(panel, y.value, rowWidth, {
+      label: "FLOAT",
+      min: 0,
+      max: 1,
+      step: 0.01,
+      read: () => this.tunables.wear,
+      write: (v) => {
+        this.tunables = { ...this.tunables, wear: v };
+        this.card.setTunables(this.tunables);
+      },
+    });
 
     this.contentHeight = y.value + spacing.md;
   }
@@ -684,6 +698,7 @@ function cloneTunables(t: Tunables): Tunables {
       brightness: [...t.spec.brightness] as [number, number],
     },
     foil: { ...t.foil },
+    wear: t.wear,
   };
 }
 

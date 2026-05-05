@@ -54,6 +54,14 @@ uniform float uCornerRadius;
 // parts of the height map catch the static light when the card is
 // tilted, and drives the Fresnel rim glow.
 uniform vec2 uViewTilt;
+// 0 = factory-new, 1 = battle-scarred. Desaturates and adds scratch
+// noise. Same control on both pattern and foil so the whole surface
+// ages together.
+uniform float uWear;
+
+float hashWear(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
 
 float roundedRectSdf(vec2 px, vec2 size, float r) {
   vec2 q = abs(px - size * 0.5) - (size * 0.5 - r);
@@ -106,6 +114,55 @@ void main() {
   highlight += vec3(fresnel) * (0.35 + 0.65 * gloss);
 
   vec3 finalRGB = color * lit + highlight;
+
+  // Wear: multi-layer card aging. Real cards don't degrade uniformly —
+  // corners go first as white card stock shows through, scratches run
+  // in directional lines, dirt collects in low-relief valleys, and
+  // colours fade overall.
+  if (uWear > 0.001) {
+    vec3 stock = vec3(0.94, 0.91, 0.86); // cream card-stock material
+
+    // Edge proximity. Distance to nearest edge identifies near-edge
+    // pixels; max() of x/y edge distances identifies CORNER pixels
+    // (both close to an edge), where wear is worst.
+    vec2 toEdge = min(px, uCardSize - px);
+    float edgeDist = min(toEdge.x, toEdge.y);
+    float edgeProx = pow(1.0 - smoothstep(0.0, 14.0, edgeDist), 1.8);
+    float cornerProx = pow(1.0 - smoothstep(0.0, 11.0, max(toEdge.x, toEdge.y)), 2.0);
+    float edgeWear = clamp(edgeProx + cornerProx * 0.6, 0.0, 1.0);
+
+    // Edge whitening: coloured ink rubs to card stock near edges.
+    finalRGB = mix(finalRGB, stock, edgeWear * uWear * 0.85);
+
+    // Directional scratches. Hash cells stretched along a +15° axis
+    // give long thin scratch lines (1.5px wide × 26px long). A second
+    // pass at -25° cross-hatches at high wear. The threshold formula
+    // 0.99 - wear*K means at wear=0 essentially no cells qualify, so
+    // scratches actually onset cleanly above zero rather than always
+    // peeking through.
+    mat2 rotA = mat2(0.97, 0.26, -0.26, 0.97);
+    mat2 rotB = mat2(0.91, -0.42, 0.42, 0.91);
+    vec2 sa = rotA * px;
+    float ha = hashWear(floor(vec2(sa.x / 1.5, sa.y / 26.0)));
+    float scrA = step(0.99 - uWear * 0.15, ha);
+    vec2 sb = rotB * px;
+    float hb = hashWear(floor(vec2(sb.x / 1.5, sb.y / 32.0)));
+    float scrB = step(0.99 - uWear * 0.10, hb);
+    float scratch = max(scrA, scrB);
+
+    // Scratches expose card stock — slightly brighter than the colour
+    // because the scratched area is bare material catching the light.
+    finalRGB = mix(finalRGB, stock * 1.05, scratch * uWear * 0.55);
+
+    // Dirt accumulation in low-relief areas: valleys (1 - height)
+    // darken as grime collects.
+    finalRGB *= 1.0 - (1.0 - height) * uWear * 0.25;
+
+    // Global colour fade.
+    float wlum = dot(finalRGB, vec3(0.299, 0.587, 0.114));
+    finalRGB = mix(finalRGB, vec3(wlum) * 0.92, uWear * 0.2);
+  }
+
   finalColor = vec4(finalRGB, uOverlayAlpha * maskA);
 }
 `;
@@ -119,6 +176,7 @@ interface PatternMeshUniforms {
   uCardSize: Float32Array;
   uCornerRadius: number;
   uViewTilt: Float32Array;
+  uWear: number;
 }
 
 export interface PatternMeshController {
@@ -134,6 +192,7 @@ export interface PatternMeshController {
     texelSize: number;
     viewTiltX: number;
     viewTiltY: number;
+    wear: number;
   }): void;
 }
 
@@ -158,6 +217,7 @@ export function createPatternMesh(
     uCardSize: { value: new Float32Array([cardWidth, cardHeight]), type: "vec2<f32>" },
     uCornerRadius: { value: 4, type: "f32" },
     uViewTilt: { value: new Float32Array([0, 0]), type: "vec2<f32>" },
+    uWear: { value: 0, type: "f32" },
   });
 
   const shader = new Shader({
@@ -196,6 +256,7 @@ export function createPatternMesh(
       u.uTexelSize = opts.texelSize;
       u.uViewTilt[0] = opts.viewTiltX;
       u.uViewTilt[1] = opts.viewTiltY;
+      u.uWear = opts.wear;
     },
   };
 }

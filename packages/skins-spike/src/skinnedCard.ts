@@ -156,6 +156,7 @@ export class SkinnedCard extends Container {
       texelSize: 1 / PROC_TILE_PX,
       viewTiltX: this.skew.x,
       viewTiltY: this.skew.y,
+      wear: this.tunables.wear,
     });
   }
 
@@ -173,6 +174,7 @@ export class SkinnedCard extends Container {
       tileOffsetY: this.spec.pattern.offsetY,
       viewTiltX: this.skew.x,
       viewTiltY: this.skew.y,
+      wear: this.tunables.wear,
     });
   }
 

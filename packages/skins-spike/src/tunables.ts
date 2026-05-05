@@ -28,6 +28,13 @@ export interface Tunables {
   pattern: PatternRender;
   spec: SpecRanges;
   foil: FoilTunables;
+  /**
+   * Surface condition. 0 = factory-new (mint), 1 = battle-scarred. Both
+   * pattern and foil shaders desaturate and add scuff noise as wear
+   * climbs; the foil also chips its own alpha so high-wear cards show
+   * gaps where the finish has rubbed off.
+   */
+  wear: number;
 }
 
 export const defaultTunables: Tunables = {
@@ -50,4 +57,5 @@ export const defaultTunables: Tunables = {
     holographicStrength: 0.95,
     cellSize: 4,
   },
+  wear: 0,
 };

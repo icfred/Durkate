@@ -58,6 +58,7 @@ uniform vec2 uCardSize;
 uniform float uCornerRadius;
 uniform vec2 uPixelGrid;
 uniform vec2 uViewTilt;
+uniform float uWear;
 
 // Smooth full-rainbow hue palette. Per-pixel quantization comes from the
 // uPixelGrid sampling above — colors are uniform within each grid cell —
@@ -125,26 +126,30 @@ void main() {
     float coverage = smoothstep(0.35, 0.78, gloss);
     strength = coverage * uFoilStrength;
   } else if (uFinish < 2.5) {
-    // CHROME — FULL COVERAGE. Vertical metallic gradient + sweep
-    // highlight + height-based embossing so the pattern's relief
-    // shows through the chrome surface.
+    // CHROME — FULL COVERAGE. Punchier vertical metallic gradient +
+    // tilt-fading sweep + stronger height embossing.
     float horizon = 1.0 - abs(pixelUv.y - 0.5) * 2.0;
     horizon = floor(max(horizon, 0.0) * 4.0) / 4.0;
-    vec3 sky = mix(vec3(0.32, 0.42, 0.58), vec3(0.92, 0.94, 0.98), horizon);
-    sky = mix(sky, vec3(0.95, 0.82, 0.62), step(0.7, 1.0 - horizon) * 0.4);
+    // Deep navy at edges, bright cream at horizon, warm gold rim.
+    // More saturated than before so the metal reads as polished steel
+    // rather than washed grey.
+    vec3 sky = mix(vec3(0.16, 0.24, 0.46), vec3(0.99, 0.97, 0.92), horizon);
+    sky = mix(sky, vec3(1.0, 0.85, 0.55), step(0.7, 1.0 - horizon) * 0.55);
 
-    // Sweep: single column wide regardless of pixel grid size. The old
-    // 1.5-cell threshold made the sweep get visibly thicker at coarse
-    // pixel cells; 0.5 keeps it to exactly one cell.
+    // Sweep fades in with tilt magnitude. At rest it's invisible —
+    // the bright bar down the middle was reading as a permanent
+    // feature rather than a movement-cue. Smoothstep starts at 0.015
+    // rad so very small tilts stay clean, ramps in by 0.06.
     float sweepBase = clamp(0.5 + uViewTilt.x * 2.5, 0.0, 1.0);
     float sweepX = floor(sweepBase * uPixelGrid.x) / uPixelGrid.x;
     float sweep = step(abs(pixelUv.x - sweepX) * uPixelGrid.x, 0.5);
+    sweep *= smoothstep(0.015, 0.06, tiltMag);
 
-    // Embossing — pattern's bumps brighten the chrome, valleys darken.
-    // Multiplicative so it preserves the gradient's hue/temperature.
-    float emboss = 0.65 + 0.55 * height;
+    // Stronger embossing — bumps brighten, valleys darken — so the
+    // pattern's relief reads as etched metal.
+    float emboss = 0.5 + 0.8 * height;
 
-    sheen = (sky + vec3(sweep) * 0.7) * emboss;
+    sheen = (sky + vec3(sweep) * 0.85) * emboss;
     strength = uChromeStrength;
   } else {
     // HOLOGRAPHIC — STAMPED, like foil. Three smooth rainbow ramps
@@ -174,14 +179,44 @@ void main() {
     strength = coverage * uHoloStrength;
   }
 
-  // Tilt-magnitude brightness boost: shiny finishes catch significantly
-  // more light at glancing angles. Applied universally so chrome,
-  // foil, and holo all flare slightly when turned.
   strength *= 1.0 + tiltMag * 1.6;
   strength = clamp(strength, 0.0, 1.0);
 
-  // Premultiplied alpha output — Pixi's normal blend mode handles
-  // alpha-replacement compositing of the foil over the pattern.
+  // Wear: scratches and edge wear chip the finish off entirely
+  // (alpha drop), revealing the pattern beneath. The colour that
+  // remains also fades. Same scratch / edge math as the pattern
+  // shader so they line up — scratches run continuously across
+  // both layers, finish-on rubbed-off transitions are sharp.
+  if (uWear > 0.001) {
+    vec2 toEdge = min(px, uCardSize - px);
+    float edgeDist = min(toEdge.x, toEdge.y);
+    float edgeProx = pow(1.0 - smoothstep(0.0, 14.0, edgeDist), 1.8);
+    float cornerProx = pow(1.0 - smoothstep(0.0, 11.0, max(toEdge.x, toEdge.y)), 2.0);
+    float edgeWear = clamp(edgeProx + cornerProx * 0.6, 0.0, 1.0);
+
+    mat2 rotA = mat2(0.97, 0.26, -0.26, 0.97);
+    mat2 rotB = mat2(0.91, -0.42, 0.42, 0.91);
+    vec2 sa = rotA * px;
+    float ha = hash21(floor(vec2(sa.x / 1.5, sa.y / 26.0)));
+    float scrA = step(0.99 - uWear * 0.15, ha);
+    vec2 sb = rotB * px;
+    float hb = hash21(floor(vec2(sb.x / 1.5, sb.y / 32.0)));
+    float scrB = step(0.99 - uWear * 0.10, hb);
+    float scratch = max(scrA, scrB);
+
+    // Edge whitening eats the alpha — finish has rubbed off entirely
+    // at corners and edges.
+    strength *= 1.0 - edgeWear * uWear * 0.9;
+    // Scratches chip alpha along long thin lines so the pattern shows
+    // through where the foil has flaked off.
+    strength *= 1.0 - scratch * uWear * 0.85;
+
+    // What finish remains is duller — desaturated as the diffraction
+    // film degrades.
+    float wlum = dot(sheen, vec3(0.299, 0.587, 0.114));
+    sheen = mix(sheen, vec3(wlum) * 0.82, uWear * 0.4);
+  }
+
   finalColor = vec4(sheen * strength, strength);
 }
 `;
@@ -198,6 +233,7 @@ interface FoilMeshUniforms {
   uCornerRadius: number;
   uPixelGrid: Float32Array;
   uViewTilt: Float32Array;
+  uWear: number;
 }
 
 export interface FoilMeshController {
@@ -212,6 +248,7 @@ export interface FoilMeshController {
     tileOffsetY: number;
     viewTiltX: number;
     viewTiltY: number;
+    wear: number;
   }): void;
   setTunables(opts: { foilStrength: number; chromeStrength: number; holoStrength: number }): void;
   setPixelGrid(cellsX: number, cellsY: number): void;
@@ -241,6 +278,7 @@ export function createFoilMesh(
     uCornerRadius: { value: 4, type: "f32" },
     uPixelGrid: { value: new Float32Array([15, 22]), type: "vec2<f32>" },
     uViewTilt: { value: new Float32Array([0, 0]), type: "vec2<f32>" },
+    uWear: { value: 0, type: "f32" },
   });
 
   const shader = new Shader({
@@ -279,6 +317,7 @@ export function createFoilMesh(
       u.uTileOffset[1] = opts.tileOffsetY;
       u.uViewTilt[0] = opts.viewTiltX;
       u.uViewTilt[1] = opts.viewTiltY;
+      u.uWear = opts.wear;
     },
     setTunables(opts) {
       u.uFoilStrength = opts.foilStrength;
