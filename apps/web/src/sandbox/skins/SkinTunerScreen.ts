@@ -1,7 +1,6 @@
+import type { Card } from "@durak/engine";
 import {
   type Axes,
-  CARD_HEIGHT,
-  CARD_WIDTH,
   decode,
   defaultTunables,
   type Finish,
@@ -9,12 +8,13 @@ import {
   PATTERN_VARIANTS,
   rollCode,
   type SkinAssets,
-  SkinCard,
+  SkinnedCard,
   type SkinSpec,
   type Tunables,
 } from "@durak/skins-spike";
 import { Button, color, Panel, spacing, stroke, typography } from "@durak/ui";
 import { Container, Graphics, Text, type Ticker, type TickerCallback } from "pixi.js";
+import { CARD_H, CARD_W, CardView } from "../../cards/CardView.js";
 import type { Screen } from "../../screens/types.js";
 import { Cycle, Slider } from "./controls.js";
 
@@ -22,6 +22,8 @@ const PANEL_WIDTH = 380;
 const PREVIEW_SCALE = 4;
 const FINISHES: readonly Finish[] = ["matte", "foil", "chrome", "holographic"];
 const MOTIONS: readonly Motion[] = ["none", "shimmer", "pulse", "drift"];
+
+const PREVIEW_CARD: Card = { suit: "spades", rank: 14 };
 
 interface SectionLayoutOpts {
   panel: Container;
@@ -54,7 +56,7 @@ export interface SkinTunerScreenOptions {
 export class SkinTunerScreen extends Container implements Screen {
   private readonly ticker: Ticker;
   private readonly assets: SkinAssets;
-  private readonly card: SkinCard;
+  private readonly card: SkinnedCard;
   private readonly preview: Container;
   private readonly panel: Panel;
   private readonly panelInner: Container;
@@ -63,6 +65,7 @@ export class SkinTunerScreen extends Container implements Screen {
   private spec: SkinSpec = decode("000000000000");
   private axes: Axes = { pattern: true, tint: true, finish: true, motion: true };
   private tunables: Tunables = cloneTunables(defaultTunables);
+  private skinsActive = true;
   private code = "000000000000";
   private rngState = 0xc0ffee;
 
@@ -79,7 +82,12 @@ export class SkinTunerScreen extends Container implements Screen {
     this.preview = new Container();
     this.addChild(this.preview);
 
-    this.card = new SkinCard(this.assets);
+    this.card = new SkinnedCard({
+      base: new CardView(PREVIEW_CARD),
+      baseWidth: CARD_W,
+      baseHeight: CARD_H,
+      assets: this.assets,
+    });
     this.card.scale.set(PREVIEW_SCALE);
     this.preview.addChild(this.card);
 
@@ -107,8 +115,8 @@ export class SkinTunerScreen extends Container implements Screen {
   layout(viewWidth: number, viewHeight: number): void {
     this.panel.x = spacing.md;
     this.panel.y = spacing.md;
-    const previewW = CARD_WIDTH * PREVIEW_SCALE;
-    const previewH = CARD_HEIGHT * PREVIEW_SCALE;
+    const previewW = CARD_W * PREVIEW_SCALE;
+    const previewH = CARD_H * PREVIEW_SCALE;
     const availableX = viewWidth - PANEL_WIDTH - spacing.md * 2;
     this.preview.x = Math.round(spacing.md + PANEL_WIDTH + (availableX - previewW) / 2);
     this.preview.y = Math.round((viewHeight - previewH) / 2);
@@ -154,6 +162,21 @@ export class SkinTunerScreen extends Container implements Screen {
     rollBtn.y = y.value;
     panel.addChild(rollBtn);
     y.value += 30 + spacing.sm;
+
+    const noSkinBtn = new Button({
+      label: this.skinsActive ? "NO-SKIN PRESET" : "[NO-SKIN PRESET]",
+      width: cycleWidth,
+      height: 26,
+      onActivate: () => {
+        this.skinsActive = !this.skinsActive;
+        noSkinBtn.setLabel(this.skinsActive ? "NO-SKIN PRESET" : "[NO-SKIN PRESET]");
+        this.applyAll();
+      },
+    });
+    noSkinBtn.x = spacing.lg;
+    noSkinBtn.y = y.value;
+    panel.addChild(noSkinBtn);
+    y.value += 26 + spacing.sm;
 
     const resetBtn = new Button({
       label: "RESET TUNABLES",
@@ -446,10 +469,11 @@ export class SkinTunerScreen extends Container implements Screen {
 
   private applyAll(): void {
     this.card.setTunables(this.tunables);
-    this.card.apply(this.spec, this.axes);
+    this.card.applySkin(this.skinsActive ? this.spec : null, this.axes);
   }
 
   private onTick(_ticker: Ticker): void {
+    if (!this.skinsActive) return;
     if (!this.axes.motion || !this.axes.finish) return;
     const t = performance.now() / 1000;
     this.card.tick(t);

@@ -1,7 +1,7 @@
-import { ColorMatrixFilter, Container, type Filter, Sprite, TilingSprite } from "pixi.js";
+import { ColorMatrixFilter, Container, type Filter, TilingSprite } from "pixi.js";
 import { createFoilFilter, type FoilController } from "./renderers/foilFilter.js";
 import type { Finish, Motion, SkinSpec } from "./spec.js";
-import { CARD_HEIGHT, CARD_WIDTH, PATTERN_TILE, type SkinAssets } from "./textures.js";
+import { PATTERN_TILE, type SkinAssets } from "./textures.js";
 import { defaultTunables, type Tunables } from "./tunables.js";
 
 export interface Axes {
@@ -11,41 +11,49 @@ export interface Axes {
   motion: boolean;
 }
 
-export class SkinCard extends Container {
-  static readonly width = CARD_WIDTH;
-  static readonly height = CARD_HEIGHT;
+const ALL_AXES: Axes = { pattern: true, tint: true, finish: true, motion: true };
 
-  private readonly assets: SkinAssets;
-  private readonly content: Container;
-  private readonly bg: Sprite;
+export interface SkinnedCardOptions {
+  /** The base card primitive to wrap. SkinnedCard does not own its lifecycle. */
+  base: Container;
+  /** Local-space size of the base, used to size the pattern overlay. */
+  baseWidth: number;
+  baseHeight: number;
+  assets: SkinAssets;
+}
+
+/**
+ * Wraps a base card Container (typically `CardView`) with cosmetic effects:
+ * tint, finish (foil/chrome/holographic), motion, and pattern overlay.
+ *
+ * `applySkin(null)` removes all effects so the wrapper renders identically to
+ * a bare base. This is the "no skin = default look" axiom.
+ */
+export class SkinnedCard extends Container {
+  private readonly base: Container;
   private readonly pattern: TilingSprite;
-  private readonly decoration: Sprite;
   private readonly tintFilter: ColorMatrixFilter;
   private readonly foil: FoilController;
+  private readonly assets: SkinAssets;
   private spec: SkinSpec | null = null;
-  private axes: Axes = { pattern: true, tint: true, finish: true, motion: true };
+  private axes: Axes = { ...ALL_AXES };
   private tunables: Tunables = defaultTunables;
 
-  constructor(assets: SkinAssets) {
+  constructor(options: SkinnedCardOptions) {
     super();
-    this.assets = assets;
-    this.content = new Container();
-    this.addChild(this.content);
+    this.base = options.base;
+    this.assets = options.assets;
+    this.addChild(this.base);
 
-    this.bg = new Sprite(assets.cardSurface);
-    this.content.addChild(this.bg);
-
-    const fallback = assets.patterns[0];
-    if (!fallback) throw new Error("SkinCard: assets.patterns is empty");
+    const fallback = options.assets.patterns[0];
+    if (!fallback) throw new Error("SkinnedCard: assets.patterns is empty");
     this.pattern = new TilingSprite({
       texture: fallback,
-      width: CARD_WIDTH,
-      height: CARD_HEIGHT,
+      width: options.baseWidth,
+      height: options.baseHeight,
     });
-    this.content.addChild(this.pattern);
-
-    this.decoration = new Sprite(assets.cardDecoration);
-    this.addChild(this.decoration);
+    this.pattern.visible = false;
+    this.addChild(this.pattern);
 
     this.tintFilter = new ColorMatrixFilter();
     this.foil = createFoilFilter();
@@ -55,12 +63,18 @@ export class SkinCard extends Container {
   setTunables(tunables: Tunables): void {
     this.tunables = tunables;
     this.foil.setTunables(tunables.foil, tunables.motion);
-    if (this.spec) this.apply(this.spec, this.axes);
+    if (this.spec) this.applySkin(this.spec, this.axes);
   }
 
-  apply(spec: SkinSpec, axes: Axes): void {
+  applySkin(spec: SkinSpec | null, axes: Axes = ALL_AXES): void {
     this.spec = spec;
-    this.axes = axes;
+    this.axes = { ...axes };
+
+    if (!spec) {
+      this.pattern.visible = false;
+      this.base.filters = [];
+      return;
+    }
 
     if (axes.pattern) {
       this.pattern.visible = true;
@@ -98,7 +112,7 @@ export class SkinCard extends Container {
       filters.push(this.foil.filter);
     }
 
-    this.content.filters = filters;
+    this.base.filters = filters;
   }
 
   tick(timeSeconds: number): void {
