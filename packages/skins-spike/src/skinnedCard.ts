@@ -68,11 +68,21 @@ export class SkinnedCard extends Container {
     const fallback = options.assets.patterns[0];
     if (!fallback) throw new Error("SkinnedCard: assets.patterns is empty");
 
-    this.patternCtrl = createPatternMesh(fallback, options.baseWidth, options.baseHeight);
+    this.patternCtrl = createPatternMesh(
+      fallback,
+      options.assets.scratchMap,
+      options.baseWidth,
+      options.baseHeight,
+    );
     this.patternCtrl.view.visible = false;
     this.skinTarget.addChild(this.patternCtrl.view);
 
-    this.foilCtrl = createFoilMesh(fallback, options.baseWidth, options.baseHeight);
+    this.foilCtrl = createFoilMesh(
+      fallback,
+      options.assets.scratchMap,
+      options.baseWidth,
+      options.baseHeight,
+    );
     this.foilCtrl.view.visible = false;
     this.skinTarget.addChild(this.foilCtrl.view);
 
@@ -88,8 +98,7 @@ export class SkinnedCard extends Container {
 
   private applyFoilTunables(): void {
     this.foilCtrl.setTunables({
-      foilStrength: this.tunables.foil.foilStrength,
-      chromeStrength: this.tunables.foil.chromeStrength,
+      metalStrength: this.tunables.foil.metalStrength,
       holoStrength: this.tunables.foil.holographicStrength,
     });
     const cell = Math.max(1, this.tunables.foil.cellSize);
@@ -195,12 +204,14 @@ function finishToFloat(finish: Finish): number {
   switch (finish) {
     case "matte":
       return 0;
-    case "foil":
+    case "silver":
       return 1;
-    case "chrome":
+    case "gold":
       return 2;
-    case "holographic":
+    case "bronze":
       return 3;
+    case "holographic":
+      return 4;
   }
 }
 

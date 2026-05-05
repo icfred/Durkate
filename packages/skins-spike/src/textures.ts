@@ -1,6 +1,7 @@
 import { Graphics, Rectangle, type Renderer, type Texture } from "pixi.js";
 import { generateProceduralPatterns } from "./proceduralPatterns.js";
 import type { PatternBundle } from "./renderers/patternMesh.js";
+import { generateScratchMap } from "./scratchMap.js";
 
 export const CARD_WIDTH = 96;
 export const CARD_HEIGHT = 144;
@@ -10,26 +11,22 @@ export const PATTERN_TILE = 24;
 export interface SkinAssets {
   cardSurface: Texture;
   cardDecoration: Texture;
-  /**
-   * One PatternBundle per pattern slot. Each bundle ships three textures:
-   * `color` (palette per cell, no baked lighting), `height` (used by the
-   * shader for per-pixel normal), and `gloss` (specular highlight strength).
-   * The pattern shader composes all three at draw time so lighting can
-   * animate with motion mode and highlights catch on metallic pixels only.
-   */
   patterns: PatternBundle[];
+  /**
+   * Single-channel wear-threshold map shared across all cards. Each pixel
+   * holds a wear threshold (0–1) — at runtime, pixels with threshold ≤
+   * uWear show wear (revealed in the shader). See scratchMap.ts.
+   */
+  scratchMap: Texture;
 }
 
 export function createSkinAssets(_renderer: Renderer): SkinAssets {
-  // Phase 2: every pattern slot is a procedural bundle. Bitmap motifs are
-  // gone — they didn't carry height/gloss data and would have rendered as
-  // flat unlit overlays under the new pattern shader. Eight recipes give
-  // a varied set of jewel/marble/circuit/labyrinth looks per palette.
   const patterns = generateProceduralPatterns(_renderer);
   return {
     cardSurface: makeCardSurface(_renderer),
     cardDecoration: makeCardDecoration(_renderer),
     patterns,
+    scratchMap: generateScratchMap(0xa11ce5),
   };
 }
 

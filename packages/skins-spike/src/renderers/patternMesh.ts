@@ -42,6 +42,7 @@ out vec4 finalColor;
 uniform sampler2D uColorMap;
 uniform sampler2D uHeightMap;
 uniform sampler2D uGlossMap;
+uniform sampler2D uScratchMap;
 
 uniform vec2 uTileScale;
 uniform vec2 uTileOffset;
@@ -54,14 +55,9 @@ uniform float uCornerRadius;
 // parts of the height map catch the static light when the card is
 // tilted, and drives the Fresnel rim glow.
 uniform vec2 uViewTilt;
-// 0 = factory-new, 1 = battle-scarred. Desaturates and adds scratch
-// noise. Same control on both pattern and foil so the whole surface
-// ages together.
+// 0 = factory-new, 1 = battle-scarred. Drives the scratch map's
+// threshold — pixels with threshold ≤ uWear show wear.
 uniform float uWear;
-
-float hashWear(vec2 p) {
-  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
-}
 
 float roundedRectSdf(vec2 px, vec2 size, float r) {
   vec2 q = abs(px - size * 0.5) - (size * 0.5 - r);
@@ -115,50 +111,25 @@ void main() {
 
   vec3 finalRGB = color * lit + highlight;
 
-  // Wear: multi-layer card aging. Real cards don't degrade uniformly —
-  // corners go first as white card stock shows through, scratches run
-  // in directional lines, dirt collects in low-relief valleys, and
-  // colours fade overall.
+  // Wear: scratch-map driven. Each pixel of uScratchMap holds a wear
+  // threshold; once uWear ≥ threshold, that pixel shows wear (mixed
+  // toward the card-stock cream). The map is procedurally generated
+  // with edge ramps, smudges, long curved scratches, short scuffs,
+  // and point chips — so wear has structure rather than being a
+  // uniform noise overlay.
   if (uWear > 0.001) {
-    vec3 stock = vec3(0.94, 0.91, 0.86); // cream card-stock material
+    vec3 stock = vec3(0.94, 0.91, 0.86);
+    float wearThreshold = texture(uScratchMap, vUV).r;
+    float scratchAmount = smoothstep(wearThreshold - 0.06, wearThreshold + 0.02, uWear);
 
-    // Edge proximity. Distance to nearest edge identifies near-edge
-    // pixels; max() of x/y edge distances identifies CORNER pixels
-    // (both close to an edge), where wear is worst.
-    vec2 toEdge = min(px, uCardSize - px);
-    float edgeDist = min(toEdge.x, toEdge.y);
-    float edgeProx = pow(1.0 - smoothstep(0.0, 14.0, edgeDist), 1.8);
-    float cornerProx = pow(1.0 - smoothstep(0.0, 11.0, max(toEdge.x, toEdge.y)), 2.0);
-    float edgeWear = clamp(edgeProx + cornerProx * 0.6, 0.0, 1.0);
+    // Wear reveals card-stock cream where the colored layer rubs off.
+    finalRGB = mix(finalRGB, stock * 1.05, scratchAmount * 0.7);
 
-    // Edge whitening: coloured ink rubs to card stock near edges.
-    finalRGB = mix(finalRGB, stock, edgeWear * uWear * 0.85);
-
-    // Directional scratches. Hash cells stretched along a +15° axis
-    // give long thin scratch lines (1.5px wide × 26px long). A second
-    // pass at -25° cross-hatches at high wear. The threshold formula
-    // 0.99 - wear*K means at wear=0 essentially no cells qualify, so
-    // scratches actually onset cleanly above zero rather than always
-    // peeking through.
-    mat2 rotA = mat2(0.97, 0.26, -0.26, 0.97);
-    mat2 rotB = mat2(0.91, -0.42, 0.42, 0.91);
-    vec2 sa = rotA * px;
-    float ha = hashWear(floor(vec2(sa.x / 1.5, sa.y / 26.0)));
-    float scrA = step(0.99 - uWear * 0.15, ha);
-    vec2 sb = rotB * px;
-    float hb = hashWear(floor(vec2(sb.x / 1.5, sb.y / 32.0)));
-    float scrB = step(0.99 - uWear * 0.10, hb);
-    float scratch = max(scrA, scrB);
-
-    // Scratches expose card stock — slightly brighter than the colour
-    // because the scratched area is bare material catching the light.
-    finalRGB = mix(finalRGB, stock * 1.05, scratch * uWear * 0.55);
-
-    // Dirt accumulation in low-relief areas: valleys (1 - height)
-    // darken as grime collects.
+    // Dirt in valleys: low-relief areas darken as grime collects with
+    // overall wear.
     finalRGB *= 1.0 - (1.0 - height) * uWear * 0.25;
 
-    // Global colour fade.
+    // Global desaturation as colour fades.
     float wlum = dot(finalRGB, vec3(0.299, 0.587, 0.114));
     finalRGB = mix(finalRGB, vec3(wlum) * 0.92, uWear * 0.2);
   }
@@ -198,6 +169,7 @@ export interface PatternMeshController {
 
 export function createPatternMesh(
   bundle: PatternBundle,
+  scratchMap: Texture,
   cardWidth: number,
   cardHeight: number,
 ): PatternMeshController {
@@ -230,6 +202,8 @@ export function createPatternMesh(
       uHeightSampler: bundle.height.source.style,
       uGlossMap: bundle.gloss.source,
       uGlossSampler: bundle.gloss.source.style,
+      uScratchMap: scratchMap.source,
+      uScratchSampler: scratchMap.source.style,
     },
   });
 

@@ -40,6 +40,6 @@ describe("decode", () => {
     expect(spec.pattern.scale).toBeLessThan(2.21);
     expect(spec.tint.hue).toBeGreaterThanOrEqual(-1);
     expect(spec.tint.hue).toBeLessThan(1);
-    expect(["matte", "foil", "chrome", "holographic"]).toContain(spec.finish);
+    expect(["matte", "silver", "gold", "bronze", "holographic"]).toContain(spec.finish);
   });
 });

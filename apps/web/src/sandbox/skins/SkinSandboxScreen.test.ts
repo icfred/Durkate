@@ -12,6 +12,7 @@ function mockAssets(): SkinAssets {
       height: Texture.EMPTY,
       gloss: Texture.EMPTY,
     })),
+    scratchMap: Texture.EMPTY,
   };
 }
 

@@ -39,7 +39,7 @@ const TILT_LERP = 0.18;
 
 const PANEL_WIDTH = 380;
 const PREVIEW_SCALE = 4;
-const FINISHES: readonly Finish[] = ["matte", "foil", "chrome", "holographic"];
+const FINISHES: readonly Finish[] = ["matte", "silver", "gold", "bronze", "holographic"];
 const CYCLE_WIDTH = 140;
 
 const PREVIEW_CARD: Card = { suit: "spades", rank: 14 };
@@ -476,29 +476,15 @@ export class SkinTunerScreen extends Container implements Screen {
       },
     });
     y.value += this.addNumber(panel, y.value, rowWidth, {
-      label: "FOIL STR",
+      label: "METAL STR",
       min: 0,
       max: 1,
       step: 0.01,
-      read: () => this.tunables.foil.foilStrength,
+      read: () => this.tunables.foil.metalStrength,
       write: (v) => {
         this.tunables = {
           ...this.tunables,
-          foil: { ...this.tunables.foil, foilStrength: v },
-        };
-        this.card.setTunables(this.tunables);
-      },
-    });
-    y.value += this.addNumber(panel, y.value, rowWidth, {
-      label: "CHROME STR",
-      min: 0,
-      max: 1,
-      step: 0.01,
-      read: () => this.tunables.foil.chromeStrength,
-      write: (v) => {
-        this.tunables = {
-          ...this.tunables,
-          foil: { ...this.tunables.foil, chromeStrength: v },
+          foil: { ...this.tunables.foil, metalStrength: v },
         };
         this.card.setTunables(this.tunables);
       },

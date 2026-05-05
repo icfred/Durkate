@@ -1,7 +1,7 @@
 import { fnv1a, mulberry32 } from "./rng.js";
 import { defaultTunables, type SpecRanges } from "./tunables.js";
 
-export type Finish = "matte" | "foil" | "chrome" | "holographic";
+export type Finish = "matte" | "silver" | "gold" | "bronze" | "holographic";
 
 export const PATTERN_VARIANTS = 8;
 
@@ -11,7 +11,7 @@ export interface SkinSpec {
   finish: Finish;
 }
 
-const FINISHES: readonly Finish[] = ["matte", "foil", "chrome", "holographic"];
+const FINISHES: readonly Finish[] = ["matte", "silver", "gold", "bronze", "holographic"];
 
 export function decode(code: string, ranges: SpecRanges = defaultTunables.spec): SkinSpec {
   const rand = mulberry32(fnv1a(code));

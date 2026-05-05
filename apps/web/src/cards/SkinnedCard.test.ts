@@ -12,6 +12,7 @@ function mockAssets(): SkinAssets {
       height: Texture.EMPTY,
       gloss: Texture.EMPTY,
     })),
+    scratchMap: Texture.EMPTY,
   };
 }
 
@@ -46,7 +47,7 @@ describe("SkinnedCard", () => {
 
   it("applies each finish variant without throwing", () => {
     const { card } = makeWrapper();
-    const finishes: readonly Finish[] = ["matte", "foil", "chrome", "holographic"];
+    const finishes: readonly Finish[] = ["matte", "silver", "gold", "bronze", "holographic"];
     const baseSpec = decode("000000000000");
     for (const finish of finishes) {
       expect(() => card.applySkin({ ...baseSpec, finish })).not.toThrow();

@@ -11,8 +11,13 @@ export interface PatternRender {
 }
 
 export interface FoilTunables {
-  foilStrength: number;
-  chromeStrength: number;
+  /**
+   * Stamp opacity for silver / gold / bronze metallic finishes. At 1.0
+   * the foil fully replaces the pattern in glossy regions; lower values
+   * let the pattern bleed through.
+   */
+  metalStrength: number;
+  /** Same idea for the holographic rainbow finish. */
   holographicStrength: number;
   /**
    * Size of one pixel-art cell in card-local units. The shader's pixel grid
@@ -48,12 +53,7 @@ export const defaultTunables: Tunables = {
     brightness: [0.75, 1.25],
   },
   foil: {
-    // These are alpha multipliers for normal-blend stamping. At 1.0 the
-    // foil/holo fully replaces the pattern in glossy regions; lower
-    // values let the pattern bleed through. Chrome covers the entire
-    // card so its strength controls how opaque the metal layer is.
-    foilStrength: 0.95,
-    chromeStrength: 0.95,
+    metalStrength: 0.95,
     holographicStrength: 0.95,
     cellSize: 4,
   },
