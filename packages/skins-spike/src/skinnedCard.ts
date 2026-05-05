@@ -1,4 +1,4 @@
-import { ColorMatrixFilter, Container, type Filter, Sprite, Texture } from "pixi.js";
+import { ColorMatrixFilter, Container, type Filter, Graphics } from "pixi.js";
 import { PROC_TILE_PX } from "./proceduralPatterns.js";
 import { createFoilFilter, type FoilController } from "./renderers/foilFilter.js";
 import { createPatternFilter, type PatternFilterController } from "./renderers/patternFilter.js";
@@ -41,7 +41,7 @@ export interface SkinnedCardOptions {
 export class SkinnedCard extends Container {
   private readonly base: Container;
   private readonly skinTarget: Container;
-  private readonly patternSprite: Sprite;
+  private readonly patternHost: Graphics;
   private readonly patternCtrl: PatternFilterController;
   private readonly tintFilter: ColorMatrixFilter;
   private readonly foil: FoilController;
@@ -65,17 +65,21 @@ export class SkinnedCard extends Container {
     const fallback = options.assets.patterns[0];
     if (!fallback) throw new Error("SkinnedCard: assets.patterns is empty");
 
-    // Placeholder sprite the pattern filter renders into. Texture.WHITE is
-    // a 1×1 white pixel; the filter ignores uTexture and reads the bundle
-    // textures directly.
-    this.patternSprite = new Sprite({ texture: Texture.WHITE });
-    this.patternSprite.width = options.baseWidth;
-    this.patternSprite.height = options.baseHeight;
-    this.patternSprite.visible = false;
-    this.skinTarget.addChild(this.patternSprite);
+    // The pattern filter renders into this Graphics. Drawing a rounded-rect
+    // matching the bg's geometry means the filter framebuffer's alpha
+    // channel exactly traces the card silhouette — including under skew,
+    // since Pixi renders the displayobject WITH its parent transforms
+    // applied. The pattern shader masks itself by sampling uTexture.a, so
+    // it stays inside the card boundary regardless of tilt.
+    this.patternHost = new Graphics();
+    this.patternHost
+      .roundRect(0, 0, options.baseWidth, options.baseHeight, 4)
+      .fill({ color: 0xffffff });
+    this.patternHost.visible = false;
+    this.skinTarget.addChild(this.patternHost);
 
     this.patternCtrl = createPatternFilter(fallback);
-    this.patternSprite.filters = [this.patternCtrl.filter];
+    this.patternHost.filters = [this.patternCtrl.filter];
 
     this.tintFilter = new ColorMatrixFilter();
     this.foil = createFoilFilter();
@@ -100,13 +104,13 @@ export class SkinnedCard extends Container {
     this.axes = { ...axes };
 
     if (!spec) {
-      this.patternSprite.visible = false;
+      this.patternHost.visible = false;
       this.skinTarget.filters = [];
       return;
     }
 
     if (axes.pattern) {
-      this.patternSprite.visible = true;
+      this.patternHost.visible = true;
       const idx = spec.pattern.index % this.assets.patterns.length;
       const bundle = this.assets.patterns[idx] ?? this.assets.patterns[0];
       if (bundle && idx !== this.currentBundleIndex) {
@@ -115,7 +119,7 @@ export class SkinnedCard extends Container {
       }
       this.refreshPatternLook(0);
     } else {
-      this.patternSprite.visible = false;
+      this.patternHost.visible = false;
     }
 
     const filters: Filter[] = [];
@@ -163,11 +167,6 @@ export class SkinnedCard extends Container {
       overlayAlpha: this.tunables.pattern.overlayAlpha,
       bumpScale: 2.0,
       texelSize: 1 / PROC_TILE_PX,
-      cardWidth: this.baseWidth,
-      cardHeight: this.baseHeight,
-      // Matches CardView.redraw's roundRect(0, 0, CARD_W, CARD_H, 4) so the
-      // pattern's silhouette tracks the bg's rounded corners exactly.
-      cornerRadius: 4,
     });
   }
 
