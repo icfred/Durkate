@@ -72,6 +72,7 @@ export function createConnectionController(
         disconnects,
         thinkingSeats: msg.thinkingSeats ?? [],
         eliminated: msg.eliminated ?? [],
+        pendingClose: msg.pendingClose ?? null,
       });
     },
     onStatus: (status, info) => {

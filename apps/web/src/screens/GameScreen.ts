@@ -1,5 +1,5 @@
 import { type Action, beats, type Card, type Event, type TablePair } from "@durak/engine";
-import type { DisconnectState, SeatIndex, Snapshot } from "@durak/protocol";
+import type { DisconnectState, PendingCloseState, SeatIndex, Snapshot } from "@durak/protocol";
 import { color, FocusManager, spacing, typography } from "@durak/ui";
 import { Container, Graphics, Text, Ticker } from "pixi.js";
 import {
@@ -292,6 +292,9 @@ export class GameScreen extends Container implements Screen {
   private readonly disconnectBanner: Container;
   private readonly disconnectBannerBg: Graphics;
   private readonly disconnectBannerText: Text;
+  private readonly closeBanner: Container;
+  private readonly closeBannerBg: Graphics;
+  private readonly closeBannerText: Text;
   private readonly opponentLayer: Container;
   private readonly tableRow: Container;
   private readonly leftStack: Container;
@@ -403,6 +406,25 @@ export class GameScreen extends Container implements Screen {
     this.disconnectBanner.addChild(this.disconnectBannerBg);
     this.disconnectBanner.addChild(this.disconnectBannerText);
     this.addChild(this.disconnectBanner);
+
+    this.closeBanner = new Container();
+    this.closeBanner.label = "close-banner";
+    this.closeBanner.visible = false;
+    this.closeBannerBg = new Graphics();
+    this.closeBannerText = new Text({
+      text: "",
+      style: {
+        fontFamily: typography.family,
+        fontSize: typography.size.sm,
+        fontWeight: typography.weight.bold,
+        fill: color.text,
+        letterSpacing: typography.letterSpacing.wide,
+      },
+    });
+    this.closeBannerText.label = "close-banner-text";
+    this.closeBanner.addChild(this.closeBannerBg);
+    this.closeBanner.addChild(this.closeBannerText);
+    this.addChild(this.closeBanner);
 
     this.opponentLayer = new Container();
     this.tableRow = new Container();
@@ -576,7 +598,38 @@ export class GameScreen extends Container implements Screen {
     this.room = room;
     this.refreshOpponentSlotState();
     this.renderDisconnectBanner();
+    this.renderCloseBanner();
+    this.renderKeyHintIfReady();
     this.layoutSections();
+  }
+
+  private renderKeyHintIfReady(): void {
+    if (this.snapshot)
+      this.keyHint.text = keyHintFor(this.snapshot, this.room?.pendingClose ?? null);
+  }
+
+  private renderCloseBanner(): void {
+    const pending = this.room?.pendingClose ?? null;
+    if (!pending) {
+      this.closeBanner.visible = false;
+      return;
+    }
+    const remainingMs = Math.max(0, pending.closesAt - this.now());
+    const remaining = (remainingMs / 1000).toFixed(1);
+    const verb = pending.kind === "END_ROUND" ? "Round closing" : "Pile collected";
+    this.closeBannerText.text = `${verb} in ${remaining}s…`;
+    const padX = spacing.md;
+    const padY = spacing.sm;
+    const w = Math.round(this.closeBannerText.width + padX * 2);
+    const h = Math.round(this.closeBannerText.height + padY * 2);
+    this.closeBannerBg
+      .clear()
+      .roundRect(0, 0, w, h, 4)
+      .fill({ color: color.bgRaised })
+      .stroke({ color: color.accent, width: 2, alignment: 0 });
+    this.closeBannerText.x = padX;
+    this.closeBannerText.y = padY;
+    this.closeBanner.visible = true;
   }
 
   private renderDisconnectBanner(): void {
@@ -665,6 +718,10 @@ export class GameScreen extends Container implements Screen {
 
     if ((this.room?.disconnects?.length ?? 0) > 0 || this.room?.disconnect) {
       this.renderDisconnectBanner();
+    }
+    if (this.room?.pendingClose) {
+      this.renderCloseBanner();
+      this.layoutSections();
     }
   }
 
@@ -934,7 +991,7 @@ export class GameScreen extends Container implements Screen {
   }
 
   private renderKeyHint(snapshot: Snapshot): void {
-    this.keyHint.text = keyHintFor(snapshot);
+    this.keyHint.text = keyHintFor(snapshot, this.room?.pendingClose ?? null);
   }
 
   private layoutSections(): void {
@@ -988,6 +1045,16 @@ export class GameScreen extends Container implements Screen {
       const dw = this.disconnectBanner.width;
       this.disconnectBanner.x = Math.round((this.viewWidth - dw) / 2);
       this.disconnectBanner.y = SECTION_PADDING;
+    }
+
+    if (this.closeBanner.visible) {
+      const cw = this.closeBanner.width;
+      this.closeBanner.x = Math.round((this.viewWidth - cw) / 2);
+      // Sit just below the disconnect banner if both are showing, else
+      // pin to the top edge.
+      this.closeBanner.y = this.disconnectBanner.visible
+        ? this.disconnectBanner.y + this.disconnectBanner.height + spacing.xs
+        : SECTION_PADDING;
     }
   }
 
@@ -1278,6 +1345,15 @@ export class GameScreen extends Container implements Screen {
     if (!this.snapshot) return;
     if (this.isSpectating(this.snapshot)) return;
     const key = event.key.toLowerCase();
+    const pending = this.room?.pendingClose ?? null;
+    if (pending && (key === "p" || key === " ")) {
+      // P (or Space) to opt out of the throw-in window.
+      event.preventDefault();
+      if (this.snapshot.seat !== this.snapshot.defender) {
+        this.submitAction({ type: "PASS", by: this.snapshot.seat });
+      }
+      return;
+    }
     if (key === "t") {
       event.preventDefault();
       this.submitAction({ type: "TAKE_PILE", by: this.snapshot.seat });
@@ -1335,9 +1411,18 @@ function turnLabelFor(snapshot: Snapshot): string {
   return "Opponent's turn";
 }
 
-function keyHintFor(snapshot: Snapshot): string {
+function keyHintFor(snapshot: Snapshot, pendingClose: PendingCloseState | null = null): string {
   const { seat, attacker, defender, table } = snapshot;
   const muteHint = "M: mute";
+  // During the pending-close window every non-defender can throw in
+  // (matching rank) or pass. The window collapses when every active
+  // non-defender has passed; the round resolution is already queued.
+  if (pendingClose && seat !== defender) {
+    if (hasLegalThrowIn(snapshot)) {
+      return `Arrow keys: select  •  Enter: throw in  •  P: pass  •  ${muteHint}`;
+    }
+    return `P: pass  •  ${muteHint}`;
+  }
   if (seat === defender) {
     if (hasLegalDefense(snapshot)) {
       return `Arrow keys: select  •  Enter: defend  •  T: take pile  •  ${muteHint}`;

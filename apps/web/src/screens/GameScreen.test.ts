@@ -374,6 +374,7 @@ describe("GameScreen", () => {
         disconnects: [{ seat: 1, forfeitAt: 1_000_000 + 12_000 }],
         thinkingSeats: [],
         eliminated: [],
+        pendingClose: null,
       });
     }
     expect(banner?.visible).toBe(true);
@@ -388,6 +389,7 @@ describe("GameScreen", () => {
         disconnects: [],
         thinkingSeats: [],
         eliminated: [],
+        pendingClose: null,
       });
     }
     expect(banner?.visible).toBe(false);
@@ -424,6 +426,7 @@ describe("GameScreen", () => {
         disconnects: [],
         thinkingSeats: [1],
         eliminated: [],
+        pendingClose: null,
       });
     }
     expect(label?.visible).toBe(true);
@@ -437,6 +440,7 @@ describe("GameScreen", () => {
         disconnects: [],
         thinkingSeats: [],
         eliminated: [],
+        pendingClose: null,
       });
     }
     expect(label?.visible).toBe(false);
@@ -539,6 +543,7 @@ describe("GameScreen N-player layout", () => {
         disconnects: [],
         thinkingSeats: [],
         eliminated: [2],
+        pendingClose: null,
       });
     }
     expect(findByLabel(screen, "eliminated-2")?.visible).toBe(true);
@@ -976,6 +981,101 @@ describe("GameScreen animations", () => {
 
     emitEvents([{ type: "TALON_DRAWN", by: 0, cards: [{ suit: "spades", rank: 7 }] }]);
     expect(moveToMock).toHaveBeenCalled();
+
+    screen.dispose();
+  });
+
+  it("renders the close-window countdown banner from room.pendingClose", () => {
+    type RoomListener = (room: import("../store.js").RoomMembership | null) => void;
+    const listeners: RoomListener[] = [];
+    const snapshot = loadFixture("fresh");
+    const screen = new GameScreen({
+      snapshot,
+      submitAction: vi.fn(),
+      subscribeRoom: (listener) => {
+        listeners.push(listener);
+        return () => {
+          const idx = listeners.indexOf(listener);
+          if (idx >= 0) listeners.splice(idx, 1);
+        };
+      },
+      now: () => 1_000_000,
+    });
+    screen.layout(1024, 720);
+
+    const banner = findByLabel(screen, "close-banner");
+    expect(banner?.visible).toBe(false);
+
+    for (const listener of listeners) {
+      listener({
+        seats: [{ name: "you" }, { name: "B1" }, { name: "B2" }, { name: "B3" }],
+        you: 0,
+        rematchRequested: [],
+        disconnect: null,
+        disconnects: [],
+        thinkingSeats: [],
+        eliminated: [],
+        pendingClose: { kind: "END_ROUND", closesAt: 1_000_000 + 2_400, passed: [] },
+      });
+    }
+    expect(banner?.visible).toBe(true);
+    const text = findByLabel(screen, "close-banner-text") as Text | undefined;
+    expect(text?.text).toContain("Round closing in");
+    expect(text?.text).toContain("2.4s");
+
+    for (const listener of listeners) {
+      listener({
+        seats: [{ name: "you" }, { name: "B1" }, { name: "B2" }, { name: "B3" }],
+        you: 0,
+        rematchRequested: [],
+        disconnect: null,
+        disconnects: [],
+        thinkingSeats: [],
+        eliminated: [],
+        pendingClose: null,
+      });
+    }
+    expect(banner?.visible).toBe(false);
+
+    screen.dispose();
+  });
+
+  it("submits PASS when 'P' is pressed during the close window", () => {
+    type RoomListener = (room: import("../store.js").RoomMembership | null) => void;
+    const listeners: RoomListener[] = [];
+    const submit = vi.fn();
+    const snapshot = loadFixture("fresh");
+    const screen = new GameScreen({
+      snapshot,
+      submitAction: submit,
+      subscribeRoom: (listener) => {
+        listeners.push(listener);
+        return () => {
+          const idx = listeners.indexOf(listener);
+          if (idx >= 0) listeners.splice(idx, 1);
+        };
+      },
+    });
+    screen.layout(1024, 720);
+
+    // Without pendingClose, P does nothing.
+    window.dispatchEvent(press("p"));
+    expect(submit).not.toHaveBeenCalled();
+
+    for (const listener of listeners) {
+      listener({
+        seats: [{ name: "you" }, { name: "B1" }, { name: "B2" }, { name: "B3" }],
+        you: snapshot.you.seat,
+        rematchRequested: [],
+        disconnect: null,
+        disconnects: [],
+        thinkingSeats: [],
+        eliminated: [],
+        pendingClose: { kind: "END_ROUND", closesAt: Date.now() + 2_500, passed: [] },
+      });
+    }
+    window.dispatchEvent(press("p"));
+    expect(submit).toHaveBeenCalledWith({ type: "PASS", by: snapshot.you.seat });
 
     screen.dispose();
   });

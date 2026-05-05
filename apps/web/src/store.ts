@@ -3,6 +3,7 @@ import type {
   BotDifficulty,
   ClientMessage,
   DisconnectState,
+  PendingCloseState,
   RoomSeat,
   SeatIndex,
   Snapshot,
@@ -64,6 +65,8 @@ export interface RoomMembership {
   thinkingSeats: SeatIndex[];
   /** Seats eliminated this game (hand emptied + talon exhausted, or forfeited). */
   eliminated: SeatIndex[];
+  /** Pending throw-in close window (ADR-0011), null when not in a window. */
+  pendingClose: PendingCloseState | null;
 }
 
 export type RoomCreationState =

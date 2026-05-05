@@ -74,6 +74,14 @@ describe("clientMessageSchema round-trip", () => {
     expect(clientMessageSchema.parse(msg)).toEqual(msg);
   });
 
+  it("accepts SubmitAction with PASS", () => {
+    const msg: SubmitAction = {
+      type: "SubmitAction",
+      action: { type: "PASS", by: 2 },
+    };
+    expect(clientMessageSchema.parse(msg)).toEqual(msg);
+  });
+
   it("accepts RequestRematch", () => {
     const msg: RequestRematch = { type: "RequestRematch" };
     expect(clientMessageSchema.parse(msg)).toEqual(msg);
@@ -177,6 +185,7 @@ describe("serverMessageSchema round-trip", () => {
           defender: 0,
         },
         { type: "TALON_DRAWN", by: 0, cards: [ACE_OF_SPADES] },
+        { type: "PLAYER_PASSED", by: 2 },
         { type: "GAME_OVER", durak: 1 },
         { type: "GAME_OVER", durak: null },
       ],
@@ -220,6 +229,30 @@ describe("serverMessageSchema round-trip", () => {
       you: 0,
       rematchRequested: [],
       disconnect: null,
+    };
+    expect(serverMessageSchema.parse(msg)).toEqual(msg);
+  });
+
+  it("accepts RoomState with pendingClose", () => {
+    const msg: RoomStateMessage = {
+      type: "RoomState",
+      roomId: "ABCD",
+      seats: [{ name: "fred" }, { name: "alice" }, { name: "bob" }, { name: "carl" }],
+      you: 0,
+      rematchRequested: [],
+      pendingClose: { kind: "END_ROUND", closesAt: 1234567890, passed: [2] },
+    };
+    expect(serverMessageSchema.parse(msg)).toEqual(msg);
+  });
+
+  it("accepts RoomState with pendingClose: null", () => {
+    const msg: RoomStateMessage = {
+      type: "RoomState",
+      roomId: "ABCD",
+      seats: [{ name: "fred" }, { name: "alice" }],
+      you: 0,
+      rematchRequested: [],
+      pendingClose: null,
     };
     expect(serverMessageSchema.parse(msg)).toEqual(msg);
   });

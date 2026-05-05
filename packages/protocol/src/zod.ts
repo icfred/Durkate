@@ -37,6 +37,7 @@ const actionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("THROW_IN"), by: seatSchema, card: cardSchema }),
   z.object({ type: z.literal("TAKE_PILE"), by: seatSchema }),
   z.object({ type: z.literal("END_ROUND"), by: seatSchema }),
+  z.object({ type: z.literal("PASS"), by: seatSchema }),
   z.object({ type: z.literal("TIMEOUT"), by: seatSchema }),
 ]);
 
@@ -132,6 +133,10 @@ const eventSchema = z.discriminatedUnion("type", [
     seat: seatSchema,
   }),
   z.object({
+    type: z.literal("PLAYER_PASSED"),
+    by: seatSchema,
+  }),
+  z.object({
     type: z.literal("GAME_OVER"),
     durak: z.number().int().nonnegative().nullable(),
   }),
@@ -158,6 +163,12 @@ const disconnectStateSchema = z.object({
   forfeitAt: z.number(),
 });
 
+const pendingCloseStateSchema = z.object({
+  kind: z.enum(["END_ROUND", "TAKE_PILE"]),
+  closesAt: z.number(),
+  passed: z.array(seatSchema),
+});
+
 export const roomStateMessageSchema = z.object({
   type: z.literal("RoomState"),
   roomId: z.string(),
@@ -168,6 +179,7 @@ export const roomStateMessageSchema = z.object({
   disconnects: z.array(disconnectStateSchema).optional(),
   thinkingSeats: z.array(seatSchema).optional(),
   eliminated: z.array(seatSchema).optional(),
+  pendingClose: pendingCloseStateSchema.nullable().optional(),
 });
 
 export const serverMessageSchema = z.discriminatedUnion("type", [

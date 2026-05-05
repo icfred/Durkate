@@ -120,6 +120,15 @@ Talon replenishment, timeouts, and game-over (DUR-9):
   in draw order) and `GAME_OVER { durak }` (always last in the events
   list of the transition that ends the game).
 
+FFA throw-in window (DUR-54, see ADR-0011):
+
+- `PASS { by }` is a pure observer action. The engine emits a
+  `PLAYER_PASSED { by }` event and returns the state unchanged. Defender
+  rejects with `DEFENDER_CANNOT_PASS`; eliminated seat rejects with
+  `ELIMINATED_CANNOT_PASS`; out-of-round phase rejects with
+  `WRONG_PHASE`. The host (worker) uses PASS to drive the close-window
+  pacing — engine itself does not pace anything.
+
 N-player FFA rules (DUR-51, see ADR-0010):
 
 - Supported player counts: `2..6`. Throw-in: any non-defender. Rotation

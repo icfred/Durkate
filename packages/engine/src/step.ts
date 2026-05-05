@@ -10,6 +10,7 @@ export type Action =
   | { type: "THROW_IN"; by: number; card: Card }
   | { type: "TAKE_PILE"; by: number }
   | { type: "END_ROUND"; by: number }
+  | { type: "PASS"; by: number }
   | { type: "TIMEOUT"; by: number };
 
 export type RejectReason =
@@ -18,6 +19,8 @@ export type RejectReason =
   | "NOT_ATTACKER"
   | "NOT_DEFENDER"
   | "DEFENDER_CANNOT_ATTACK"
+  | "DEFENDER_CANNOT_PASS"
+  | "ELIMINATED_CANNOT_PASS"
   | "CARD_NOT_IN_HAND"
   | "TABLE_NOT_EMPTY"
   | "TABLE_EMPTY"
@@ -54,6 +57,7 @@ export type Event =
     }
   | { type: "TALON_DRAWN"; by: number; cards: Card[] }
   | { type: "PLAYER_OUT"; seat: number }
+  | { type: "PLAYER_PASSED"; by: number }
   | { type: "GAME_OVER"; durak: number | null };
 
 export type StepResult =
@@ -77,6 +81,8 @@ export function step(state: State, action: Action): StepResult {
       return takePile(state, action);
     case "END_ROUND":
       return endRound(state, action);
+    case "PASS":
+      return pass(state, action);
     case "TIMEOUT":
       return timeout(state, action);
     default: {
@@ -275,6 +281,16 @@ function endRound(state: State, action: { type: "END_ROUND"; by: number }): Step
     type: "END_ROUND",
     discarded,
   });
+}
+
+function pass(state: State, action: { type: "PASS"; by: number }): StepResult {
+  if (state.phase !== "in-round") return { ok: false, reason: "WRONG_PHASE" };
+  if (!isValidSeat(state, action.by)) return { ok: false, reason: "INVALID_SEAT" };
+  if (action.by === state.defender) return { ok: false, reason: "DEFENDER_CANNOT_PASS" };
+  if (eliminatedSeatsOf(state).has(action.by)) {
+    return { ok: false, reason: "ELIMINATED_CANNOT_PASS" };
+  }
+  return { ok: true, state, events: [{ type: "PLAYER_PASSED", by: action.by }] };
 }
 
 function timeout(state: State, action: { type: "TIMEOUT"; by: number }): StepResult {
