@@ -53,69 +53,105 @@ function makeCardDecoration(renderer: Renderer): Texture {
   });
 }
 
+// Pattern tiles are pixel-art. Every motif is built from integer-aligned
+// rectangles on a coarse cell grid (PATTERN_TILE = 24, cell = PIXEL = 3),
+// so the result reads as discrete pixels rather than smooth strokes.
+// No circles, no diagonals, no antialiased lines.
+const PIXEL = 3;
+function px(g: Graphics, cx: number, cy: number, color: number): void {
+  g.rect(cx * PIXEL, cy * PIXEL, PIXEL, PIXEL).fill({ color });
+}
+
 function makePatternTile(renderer: Renderer, index: number): Texture {
   const g = new Graphics();
   g.rect(0, 0, PATTERN_TILE, PATTERN_TILE).fill({ color: 0x000000, alpha: 0 });
   const ink = 0xffffff;
-  const t = PATTERN_TILE;
+  // Tile is an 8x8 cell grid (24 / 3). Coordinates below are cell indices.
   switch (index) {
     case 0: {
-      g.circle(t / 2, t / 2, 2).fill({ color: ink });
+      // Centered 2x2 dot.
+      px(g, 3, 3, ink);
+      px(g, 4, 3, ink);
+      px(g, 3, 4, ink);
+      px(g, 4, 4, ink);
       break;
     }
     case 1: {
-      g.moveTo(0, t).lineTo(t, 0).stroke({ color: ink, width: 1 });
-      g.moveTo(-t, 0).lineTo(0, t).stroke({ color: ink, width: 1 });
-      g.moveTo(t, t)
-        .lineTo(t * 2, 0)
-        .stroke({ color: ink, width: 1 });
+      // Stair-step diagonals (manual Bresenham, one pixel per cell).
+      for (let i = 0; i < 8; i++) px(g, i, 7 - i, ink);
+      for (let i = 0; i < 8; i++) px(g, (i + 4) % 8, 7 - i, ink);
       break;
     }
     case 2: {
-      g.moveTo(0, 0).lineTo(t, 0).stroke({ color: ink, width: 1 });
-      g.moveTo(0, 0).lineTo(0, t).stroke({ color: ink, width: 1 });
+      // Corner L: top row + left column.
+      for (let i = 0; i < 8; i++) px(g, i, 0, ink);
+      for (let i = 0; i < 8; i++) px(g, 0, i, ink);
       break;
     }
     case 3: {
-      const c = t / 2;
-      g.moveTo(c - 3, c)
-        .lineTo(c + 3, c)
-        .stroke({ color: ink, width: 1 });
-      g.moveTo(c, c - 3)
-        .lineTo(c, c + 3)
-        .stroke({ color: ink, width: 1 });
+      // Plus sign at center.
+      px(g, 3, 2, ink);
+      px(g, 4, 2, ink);
+      px(g, 3, 5, ink);
+      px(g, 4, 5, ink);
+      px(g, 2, 3, ink);
+      px(g, 2, 4, ink);
+      px(g, 5, 3, ink);
+      px(g, 5, 4, ink);
+      px(g, 3, 3, ink);
+      px(g, 4, 3, ink);
+      px(g, 3, 4, ink);
+      px(g, 4, 4, ink);
       break;
     }
     case 4: {
-      const c = t / 2;
-      g.moveTo(c, c - 4)
-        .lineTo(c + 4, c)
-        .lineTo(c, c + 4)
-        .lineTo(c - 4, c)
-        .closePath()
-        .stroke({ color: ink, width: 1 });
+      // Hollow diamond outline (8-cell diamond).
+      const d: [number, number][] = [
+        [3, 1],
+        [4, 1],
+        [2, 2],
+        [5, 2],
+        [1, 3],
+        [6, 3],
+        [1, 4],
+        [6, 4],
+        [2, 5],
+        [5, 5],
+        [3, 6],
+        [4, 6],
+      ];
+      for (const [x, y] of d) px(g, x, y, ink);
       break;
     }
     case 5: {
-      g.moveTo(0, t / 2);
-      for (let x = 0; x <= t; x += 2) {
-        const wy = t / 2 + Math.sin((x / t) * Math.PI * 2) * 3;
-        g.lineTo(x, wy);
-      }
-      g.stroke({ color: ink, width: 1 });
+      // Stepped wave: two rows of dashes offset.
+      for (let i = 0; i < 8; i += 2) px(g, i, 3, ink);
+      for (let i = 1; i < 8; i += 2) px(g, i, 4, ink);
       break;
     }
     case 6: {
-      g.circle(t / 2, t / 2, 3).stroke({ color: ink, width: 1 });
-      g.circle(0, 0, 3).stroke({ color: ink, width: 1 });
-      g.circle(t, 0, 3).stroke({ color: ink, width: 1 });
-      g.circle(0, t, 3).stroke({ color: ink, width: 1 });
-      g.circle(t, t, 3).stroke({ color: ink, width: 1 });
+      // Center 2x2 + four corner 2x2s (scattered dots).
+      const blocks: [number, number][] = [
+        [3, 3],
+        [0, 0],
+        [6, 0],
+        [0, 6],
+        [6, 6],
+      ];
+      for (const [bx, by] of blocks) {
+        px(g, bx, by, ink);
+        px(g, bx + 1, by, ink);
+        px(g, bx, by + 1, ink);
+        px(g, bx + 1, by + 1, ink);
+      }
       break;
     }
     default: {
-      g.moveTo(0, 0).lineTo(t, t).stroke({ color: ink, width: 1 });
-      g.moveTo(0, t).lineTo(t, 0).stroke({ color: ink, width: 1 });
+      // X: two diagonals.
+      for (let i = 0; i < 8; i++) {
+        px(g, i, i, ink);
+        px(g, i, 7 - i, ink);
+      }
       break;
     }
   }

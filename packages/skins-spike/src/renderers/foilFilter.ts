@@ -1,6 +1,12 @@
 import { defaultFilterVert, Filter } from "pixi.js";
 import { defaultTunables, type FoilTunables, type MotionTunables } from "../tunables.js";
 
+// Pixel-art aesthetic: every spatial sample is snapped to a coarse grid
+// (uPixelGrid cells across the card) and every hue is quantized to a small
+// number of bands (HUE_STEPS). Smooth gauss / smoothstep highlights are
+// replaced with hard `step` thresholds. The result is a chunky shimmer that
+// matches the rest of the game's pixel-art typography rather than the
+// modern smooth-gradient digital look the spike originally shipped.
 const fragment = `
 in vec2 vTextureCoord;
 out vec4 finalColor;
@@ -21,7 +27,17 @@ uniform float uPulseSpeed;
 uniform float uPulseAmount;
 uniform float uDriftSpeed;
 
+// Fixed pixel grid for the cosmetic layer. The in-game card is 60x88 logical
+// units; 15x22 cells ≈ 4-unit blocks, which matches the pixel-art glyphs and
+// patterns. Kept as a const (not a uniform) because it never varies.
+const vec2 PIXEL_GRID = vec2(15.0, 22.0);
+const float HUE_STEPS = 6.0;
+const float TIME_QUANT = 8.0;  // animation snaps to ~8 frames/sec
+
 vec3 huePalette(float h) {
+  // Quantize to HUE_STEPS bands so the rainbow reads as discrete pixel-art
+  // colors instead of a smooth ramp.
+  h = floor(h * HUE_STEPS) / HUE_STEPS;
   return clamp(vec3(
     abs(h * 6.0 - 3.0) - 1.0,
     2.0 - abs(h * 6.0 - 2.0),
@@ -33,10 +49,6 @@ float hash21(vec2 p) {
   return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
 }
 
-float gauss(float x, float sharpness) {
-  return exp(-x * x * sharpness);
-}
-
 void main() {
   vec4 base = texture(uTexture, vTextureCoord);
   if (uFinish < 0.5 || base.a < 0.001) {
@@ -44,60 +56,67 @@ void main() {
     return;
   }
 
+  // Snap the spatial sample to the pixel grid. Every glsl reference to
+  // pixelUv below produces colour blocks aligned to integer cells rather
+  // than smooth gradients.
+  vec2 pixelUv = floor(vTextureCoord * PIXEL_GRID) / PIXEL_GRID;
+  float quantTime = floor(uTime * TIME_QUANT) / TIME_QUANT;
+
   float motionPulse = 0.0;
   if (uMotion > 0.5 && uMotion < 1.5) {
-    float band = fract(vTextureCoord.x + vTextureCoord.y * 0.5 + uTime * uShimmerSpeed + uSeed);
+    float band = fract(pixelUv.x + pixelUv.y * 0.5 + quantTime * uShimmerSpeed + uSeed);
     float w = max(uShimmerWidth, 0.001);
-    motionPulse = (smoothstep(0.5 - w, 0.5, band) - smoothstep(0.5, 0.5 + w, band)) * 0.45;
+    // Hard step instead of smoothstep — pixel-art band, no soft falloff.
+    motionPulse = step(0.5 - w, band) * step(band, 0.5 + w) * 0.45;
   } else if (uMotion > 1.5 && uMotion < 2.5) {
-    motionPulse = (0.5 + 0.5 * sin(uTime * uPulseSpeed + uSeed * 6.28318)) * uPulseAmount;
+    motionPulse = (0.5 + 0.5 * sin(quantTime * uPulseSpeed + uSeed * 6.28318)) * uPulseAmount;
   }
 
-  float driftT = (uMotion > 2.5) ? uTime * uDriftSpeed : 0.0;
+  float driftT = (uMotion > 2.5) ? quantTime * uDriftSpeed : 0.0;
 
   vec3 sheen = vec3(0.0);
   float strength = 0.0;
 
   if (uFinish < 1.5) {
-    // FOIL: angled iridescent ramp with a moving specular highlight band.
-    // The ramp gives the rainbow base, the gaussian band sells it as foil.
-    float diag = vTextureCoord.x * 1.6 + vTextureCoord.y * 0.5;
-    float perturb = sin(vTextureCoord.x * 17.0 + vTextureCoord.y * 13.0) * 0.05;
-    float h = fract(diag + driftT + uSeed + perturb);
+    // FOIL: chunky diagonal hue band. The ramp is quantized to HUE_STEPS;
+    // the highlight is a hard step rather than a gaussian.
+    float diag = pixelUv.x * 1.6 + pixelUv.y * 0.5;
+    float h = fract(diag + driftT + uSeed);
     vec3 rainbow = huePalette(h);
 
-    float bandPos = fract(diag * 0.7 + uTime * 0.22 + uSeed);
-    float spec = gauss((bandPos - 0.5) * 2.6, 8.0);
+    float bandPos = fract(diag * 0.7 + quantTime * 0.22 + uSeed);
+    float spec = step(0.42, bandPos) * step(bandPos, 0.58);
 
-    sheen = rainbow * 0.85 + vec3(spec) * 0.6;
+    sheen = rainbow * 0.85 + vec3(spec) * 0.55;
     strength = uFoilStrength;
   } else if (uFinish < 2.5) {
-    // CHROME: vertical horizon-style gradient + a sweeping specular stripe.
-    // Reads as a curved metal surface reflecting a sky / floor.
-    float horizon = 1.0 - abs(vTextureCoord.y - 0.5) * 2.0;
-    horizon = pow(max(horizon, 0.0), 0.6);
-    vec3 sky = mix(vec3(0.32, 0.42, 0.58), vec3(0.95, 0.97, 1.0), horizon);
-    sky = mix(sky, vec3(1.0, 0.86, 0.68), pow(max(1.0 - horizon, 0.0), 3.0) * 0.55);
+    // CHROME: stepped vertical band gradient + a hard sweeping highlight
+    // column. Reads as a sheet of brushed pixel-metal.
+    float horizon = 1.0 - abs(pixelUv.y - 0.5) * 2.0;
+    horizon = floor(max(horizon, 0.0) * 4.0) / 4.0;
+    vec3 sky = mix(vec3(0.32, 0.42, 0.58), vec3(0.92, 0.94, 0.98), horizon);
+    sky = mix(sky, vec3(0.95, 0.82, 0.62), step(0.7, 1.0 - horizon) * 0.4);
 
-    float sweepX = 0.5 + 0.42 * sin(uTime * 0.35 + uSeed * 6.28318);
-    float sweep = gauss((vTextureCoord.x - sweepX) * 2.8, 9.0);
+    float sweepX = floor((0.5 + 0.42 * sin(quantTime * 0.35 + uSeed * 6.28318)) * PIXEL_GRID.x) / PIXEL_GRID.x;
+    float sweep = step(abs(pixelUv.x - sweepX) * PIXEL_GRID.x, 1.5);
 
-    sheen = sky + vec3(sweep) * 0.5;
+    sheen = sky + vec3(sweep) * 0.45;
     strength = uChromeStrength;
   } else {
-    // HOLOGRAPHIC: layered iridescent ramps in different directions plus
-    // glitter speckle that drifts with time. Multiple ramps interfere into
-    // the angular hue shift you get on real holo stickers.
-    float r1 = fract(vTextureCoord.x * 1.4 + driftT + uSeed);
-    float r2 = fract(vTextureCoord.y * 1.8 - driftT * 0.6 + uSeed * 0.3);
-    float r3 = fract((vTextureCoord.x + vTextureCoord.y) * 0.95 + driftT * 1.5 + uSeed * 0.7);
+    // HOLOGRAPHIC: three quantized hue ramps interfering, plus chunky
+    // sparkle squares aligned to the same pixel grid (no sub-pixel
+    // glitter — every sparkle is a full grid cell that pops on/off in
+    // sync with quantTime).
+    float r1 = fract(pixelUv.x * 1.4 + driftT + uSeed);
+    float r2 = fract(pixelUv.y * 1.8 - driftT * 0.6 + uSeed * 0.3);
+    float r3 = fract((pixelUv.x + pixelUv.y) * 0.95 + driftT * 1.5 + uSeed * 0.7);
     vec3 holo = (huePalette(r1) + huePalette(r2) + huePalette(r3)) * 0.42;
 
-    vec2 grid = floor(vTextureCoord * 90.0);
-    float twinkle = floor(uTime * 4.0 + uSeed * 17.0);
-    float sparkle = step(0.985, hash21(grid + vec2(twinkle, twinkle * 1.3)));
+    vec2 grid = floor(pixelUv * PIXEL_GRID);
+    float twinkle = floor(quantTime * 4.0 + uSeed * 17.0);
+    float sparkle = step(0.97, hash21(grid + vec2(twinkle, twinkle * 1.3)));
 
-    sheen = holo + vec3(sparkle) * 0.95;
+    sheen = holo + vec3(sparkle) * 0.85;
     strength = uHoloStrength;
   }
 
