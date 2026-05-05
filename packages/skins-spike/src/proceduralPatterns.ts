@@ -1,5 +1,5 @@
 import { type Renderer, Texture } from "pixi.js";
-import type { PatternBundle } from "./renderers/patternFilter.js";
+import type { PatternBundle } from "./renderers/patternMesh.js";
 
 // Phase 2 procedural pattern bundles. Each generator emits THREE textures:
 //

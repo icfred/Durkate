@@ -1,6 +1,6 @@
 import { Graphics, Rectangle, type Renderer, type Texture } from "pixi.js";
 import { generateProceduralPatterns } from "./proceduralPatterns.js";
-import type { PatternBundle } from "./renderers/patternFilter.js";
+import type { PatternBundle } from "./renderers/patternMesh.js";
 
 export const CARD_WIDTH = 96;
 export const CARD_HEIGHT = 144;

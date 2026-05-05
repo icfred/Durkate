@@ -1,7 +1,7 @@
-import { ColorMatrixFilter, Container, type Filter, Graphics } from "pixi.js";
+import { ColorMatrixFilter, Container, type Filter } from "pixi.js";
 import { PROC_TILE_PX } from "./proceduralPatterns.js";
 import { createFoilFilter, type FoilController } from "./renderers/foilFilter.js";
-import { createPatternFilter, type PatternFilterController } from "./renderers/patternFilter.js";
+import { createPatternMesh, type PatternMeshController } from "./renderers/patternMesh.js";
 import type { Finish, Motion, SkinSpec } from "./spec.js";
 import { PATTERN_TILE, type SkinAssets } from "./textures.js";
 import { defaultTunables, type Tunables } from "./tunables.js";
@@ -26,14 +26,14 @@ export interface SkinnedCardOptions {
 
 /**
  * Wraps a base card Container (typically `CardView`) with cosmetic effects:
- * pattern overlay (color + height + gloss bundle, lit per-pixel by a custom
- * shader), tint (color matrix), finish (foil/chrome/holographic), and
- * motion (animates light direction + foil shimmer).
+ * pattern overlay (color + height + gloss bundle, lit per-pixel by a Mesh
+ * with a custom shader), tint (color matrix), finish (foil/chrome/
+ * holographic), and motion (animates light direction + foil shimmer).
  *
- * Pattern is rendered via a placeholder Sprite covering the card area with
- * a custom filter that samples the pattern bundle's three textures and
- * does its own tiling math + per-pixel lighting. The Sprite's underlying
- * texture (Texture.WHITE) is ignored by the shader.
+ * The pattern is a Mesh — a quad with a custom GLSL program that does its
+ * own tile-UV math and per-pixel lighting in mesh-local space. Mesh (not
+ * filter) so tile UVs shear with the card under tilt, the way a real
+ * printed pattern would.
  *
  * `applySkin(null)` removes all effects so the wrapper renders identically
  * to a bare base. This is the "no skin = default look" axiom.
@@ -41,8 +41,7 @@ export interface SkinnedCardOptions {
 export class SkinnedCard extends Container {
   private readonly base: Container;
   private readonly skinTarget: Container;
-  private readonly patternHost: Graphics;
-  private readonly patternCtrl: PatternFilterController;
+  private readonly patternCtrl: PatternMeshController;
   private readonly tintFilter: ColorMatrixFilter;
   private readonly foil: FoilController;
   private readonly assets: SkinAssets;
@@ -65,21 +64,14 @@ export class SkinnedCard extends Container {
     const fallback = options.assets.patterns[0];
     if (!fallback) throw new Error("SkinnedCard: assets.patterns is empty");
 
-    // The pattern filter renders into this Graphics. Drawing a rounded-rect
-    // matching the bg's geometry means the filter framebuffer's alpha
-    // channel exactly traces the card silhouette — including under skew,
-    // since Pixi renders the displayobject WITH its parent transforms
-    // applied. The pattern shader masks itself by sampling uTexture.a, so
-    // it stays inside the card boundary regardless of tilt.
-    this.patternHost = new Graphics();
-    this.patternHost
-      .roundRect(0, 0, options.baseWidth, options.baseHeight, 4)
-      .fill({ color: 0xffffff });
-    this.patternHost.visible = false;
-    this.skinTarget.addChild(this.patternHost);
-
-    this.patternCtrl = createPatternFilter(fallback);
-    this.patternHost.filters = [this.patternCtrl.filter];
+    // Pattern Mesh: covers the card area with a quad whose vertex shader
+    // applies the parent transform chain to local positions. Tile-UV math
+    // happens in fragment in mesh-local space, so the pattern shears with
+    // the card during tilt. The shader's rounded-rect SDF clips alpha to
+    // the card silhouette.
+    this.patternCtrl = createPatternMesh(fallback, options.baseWidth, options.baseHeight);
+    this.patternCtrl.view.visible = false;
+    this.skinTarget.addChild(this.patternCtrl.view);
 
     this.tintFilter = new ColorMatrixFilter();
     this.foil = createFoilFilter();
@@ -104,13 +96,13 @@ export class SkinnedCard extends Container {
     this.axes = { ...axes };
 
     if (!spec) {
-      this.patternHost.visible = false;
+      this.patternCtrl.view.visible = false;
       this.skinTarget.filters = [];
       return;
     }
 
     if (axes.pattern) {
-      this.patternHost.visible = true;
+      this.patternCtrl.view.visible = true;
       const idx = spec.pattern.index % this.assets.patterns.length;
       const bundle = this.assets.patterns[idx] ?? this.assets.patterns[0];
       if (bundle && idx !== this.currentBundleIndex) {
@@ -119,7 +111,7 @@ export class SkinnedCard extends Container {
       }
       this.refreshPatternLook(0);
     } else {
-      this.patternHost.visible = false;
+      this.patternCtrl.view.visible = false;
     }
 
     const filters: Filter[] = [];
