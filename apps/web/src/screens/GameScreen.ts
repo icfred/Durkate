@@ -925,15 +925,16 @@ export class GameScreen extends Container implements Screen {
   }
 
   private renderTable(snapshot: Snapshot): void {
+    const startX = tableStartX(snapshot.table.length);
     const pairColumnWidth = CARD_W + HAND_GAP;
     snapshot.table.forEach((pair: TablePair, i: number) => {
       const attackView = new CardView(pair.attack);
-      attackView.x = i * pairColumnWidth;
+      attackView.x = startX + i * pairColumnWidth;
       attackView.y = 0;
       this.tableRow.addChild(attackView);
       if (pair.defense) {
         const defenseView = new CardView(pair.defense);
-        defenseView.x = i * pairColumnWidth + Math.round(CARD_W * 0.25);
+        defenseView.x = startX + i * pairColumnWidth + Math.round(CARD_W * 0.25);
         defenseView.y = Math.round(CARD_H * 0.4);
         this.tableRow.addChild(defenseView);
       }
@@ -1067,8 +1068,11 @@ export class GameScreen extends Container implements Screen {
       this.viewHeight / 2 - CARD_H / 2 - this.turnLabel.height - spacing.sm,
     );
 
-    const tableW = this.tableRow.width;
-    this.tableRow.x = Math.round((this.viewWidth - tableW) / 2);
+    // Anchor the table at the screen's horizontal centre and lay out cards
+    // symmetrically inside the row (see tableStartX). This keeps every card's
+    // on-screen position stable as the table grows or shrinks during play —
+    // adding a card no longer shifts the cards already on the table.
+    this.tableRow.x = Math.round(this.viewWidth / 2);
     this.tableRow.y = Math.round(this.viewHeight / 2 - CARD_H / 2);
 
     this.leftStack.x = SECTION_PADDING;
@@ -1293,17 +1297,18 @@ export class GameScreen extends Container implements Screen {
   }
 
   private spawnTableGhosts(snapshot: Snapshot): Container[] {
+    const startX = tableStartX(snapshot.table.length);
     const pairColumnWidth = CARD_W + HAND_GAP;
     const ghosts: Container[] = [];
     snapshot.table.forEach((pair: TablePair, i: number) => {
       const a = new CardView(pair.attack);
-      a.x = this.tableRow.x + i * pairColumnWidth;
+      a.x = this.tableRow.x + startX + i * pairColumnWidth;
       a.y = this.tableRow.y;
       this.animLayer.addChild(a);
       ghosts.push(a);
       if (pair.defense) {
         const d = new CardView(pair.defense);
-        d.x = this.tableRow.x + i * pairColumnWidth + Math.round(CARD_W * 0.25);
+        d.x = this.tableRow.x + startX + i * pairColumnWidth + Math.round(CARD_W * 0.25);
         d.y = this.tableRow.y + Math.round(CARD_H * 0.4);
         this.animLayer.addChild(d);
         ghosts.push(d);
@@ -1441,25 +1446,18 @@ function turnLabelFor(snapshot: Snapshot): string {
     if (hasUnbeaten) return "Your turn — defend";
     return "Opponent's turn";
   }
-  if (seat === attacker) {
-    if (table.length === 0) return "Your turn — attack";
-    return "Your turn — throw in or pass";
+  if (table.length === 0) {
+    return seat === attacker ? "Your turn — attack" : "Opponent's turn";
   }
+  // Any non-defender can throw in once a round is in progress.
+  if (hasLegalThrowIn(snapshot)) return "Your turn — throw in or pass";
+  if (seat === attacker) return "Your turn — throw in or pass";
   return "Opponent's turn";
 }
 
 function keyHintFor(snapshot: Snapshot): string {
   const { seat, attacker, defender, table } = snapshot;
   const muteHint = "M: mute";
-  if (seat === attacker) {
-    if (table.length === 0) {
-      return `Arrow keys: select  •  Enter: attack  •  ${muteHint}`;
-    }
-    if (hasLegalThrowIn(snapshot)) {
-      return `Arrow keys: select  •  Enter: throw in  •  E: end round  •  ${muteHint}`;
-    }
-    return `E: end round  •  ${muteHint}`;
-  }
   if (seat === defender) {
     if (hasLegalDefense(snapshot)) {
       return `Arrow keys: select  •  Enter: defend  •  T: take pile  •  ${muteHint}`;
@@ -1468,6 +1466,20 @@ function keyHintFor(snapshot: Snapshot): string {
       return `T: take pile  •  ${muteHint}`;
     }
     return muteHint;
+  }
+  if (seat === attacker && table.length === 0) {
+    return `Arrow keys: select  •  Enter: attack  •  ${muteHint}`;
+  }
+  if (table.length > 0 && hasLegalThrowIn(snapshot)) {
+    // Only the attacker can call END_ROUND; other non-defenders can only
+    // throw in or wait.
+    if (seat === attacker) {
+      return `Arrow keys: select  •  Enter: throw in  •  E: end round  •  ${muteHint}`;
+    }
+    return `Arrow keys: select  •  Enter: throw in  •  ${muteHint}`;
+  }
+  if (seat === attacker) {
+    return `E: end round  •  ${muteHint}`;
   }
   return muteHint;
 }
@@ -1482,16 +1494,29 @@ function legalPlay(snapshot: Snapshot, card: Card): Action | null {
     if (!beats(card, target.attack, snapshot.trumpSuit)) return null;
     return { type: "DEFEND", by: seat, card, target: targetIndex };
   }
-  if (seat === attacker) {
-    if (table.length === 0) {
-      return { type: "ATTACK", by: seat, card };
-    }
+  if (seat === attacker && table.length === 0) {
+    return { type: "ATTACK", by: seat, card };
+  }
+  // THROW_IN is open to any non-defender (including non-attacker seats in FFA)
+  // as long as the card's rank is already on the table. Engine enforces the
+  // hand-cap constraint server-side.
+  if (table.length > 0) {
     const ranks = ranksOnTable(table);
     if (ranks.has(card.rank)) {
       return { type: "THROW_IN", by: seat, card };
     }
   }
   return null;
+}
+
+// X offset (relative to a screen-centered tableRow pivot) of the leftmost
+// pair so the row of pairs is symmetric around 0. CARD_W is the pair-column
+// width baseline; defense cards sit at a small offset within the column.
+function tableStartX(pairCount: number): number {
+  if (pairCount <= 0) return 0;
+  const pairColumnWidth = CARD_W + HAND_GAP;
+  const totalW = pairCount * pairColumnWidth - HAND_GAP;
+  return -Math.round(totalW / 2);
 }
 
 export { keyHintFor, legalPlay, turnLabelFor };
