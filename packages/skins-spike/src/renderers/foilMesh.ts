@@ -35,6 +35,7 @@ in vec2 vUV;
 out vec4 finalColor;
 
 uniform sampler2D uGlossMap;
+uniform sampler2D uHeightMap;
 
 uniform float uFinish;
 uniform float uSeed;
@@ -48,14 +49,14 @@ uniform vec2 uTileOffset;
 uniform vec2 uCardSize;
 uniform float uCornerRadius;
 uniform vec2 uPixelGrid;
-// (skewX, skewY) of the card. Drives every animated aspect of the
-// finish — rainbow phase, sweep position, sparkle pattern, brightness.
 uniform vec2 uViewTilt;
 
-const float HUE_STEPS = 6.0;
-
+// Smooth full-rainbow hue palette. Per-pixel quantization comes from the
+// uPixelGrid sampling above — colors are uniform within each grid cell —
+// so we don't need to also posterize the hue ramp itself, and removing
+// that quantization gives much richer color transitions across the card.
 vec3 huePalette(float h) {
-  h = floor(h * HUE_STEPS) / HUE_STEPS;
+  h = fract(h);
   return clamp(vec3(
     abs(h * 6.0 - 3.0) - 1.0,
     2.0 - abs(h * 6.0 - 2.0),
@@ -78,17 +79,12 @@ void main() {
   if (sdf > 0.5) discard;
   if (uFinish < 0.5) discard;
 
-  // Pixel-art UV (card-local — pixel grid shears with the card).
   vec2 pixelUv = floor(vUV * uPixelGrid) / uPixelGrid;
 
-  // Gloss modulation — same texture the pattern shader uses for its
-  // specular, so the two stay harmonised: glossy pixels light up
-  // brightly under finish, matte pixels stay muted.
   vec2 tileUV = fract(vUV * uTileScale + uTileOffset);
   float gloss = texture(uGlossMap, tileUV).r;
+  float height = texture(uHeightMap, tileUV).r;
 
-  // Tilt drives every animated phase. At rest (uViewTilt = 0) the
-  // finish is fully static.
   float tiltHueShift = uViewTilt.x * 1.4 + uViewTilt.y * 1.1;
   float tiltMag = length(uViewTilt);
 
@@ -96,23 +92,35 @@ void main() {
   float strength = 0.0;
 
   if (uFinish < 1.5) {
-    // FOIL: chunky diagonal hue band + a static highlight sliver. The
-    // hue offset is pure tilt-driven, so the rainbow rolls only when
-    // the card turns.
-    float diag = pixelUv.x * 1.6 + pixelUv.y * 0.5;
-    float h = fract(diag + tiltHueShift + uSeed);
+    // FOIL: two interfering diagonal hue bands plus a soft Fresnel-y
+    // highlight strip. Height-modulated hue means bumps in the pattern
+    // catch different rainbow colors than the valleys, giving the
+    // foil a sense of surface relief instead of a flat overlay.
+    float band1 = pixelUv.x * 1.6 + pixelUv.y * 0.5;
+    float band2 = pixelUv.y * 2.0 - pixelUv.x * 0.4;
+    float h = fract(mix(band1, band2, height * 0.6) + tiltHueShift + uSeed);
     vec3 rainbow = huePalette(h);
 
-    float bandPos = fract(diag * 0.7 + tiltHueShift * 0.6 + uSeed);
-    float spec = step(0.42, bandPos) * step(bandPos, 0.58);
+    // Soft horizontal highlight strip whose center tracks the tilt —
+    // smooth gaussian rather than the old hard step band so it reads
+    // as a glow rather than a stripe.
+    float highlightCenter = 0.5 + uViewTilt.y * 1.6;
+    float highlightDist = abs(pixelUv.y - highlightCenter);
+    float highlight = exp(-highlightDist * highlightDist * 18.0);
 
-    sheen = rainbow * 0.95 + vec3(spec) * 0.7;
-    strength = uFoilStrength;
+    // Sub-band gloss term: bumps glint with extra brightness on the
+    // hue band's peaks. Less of a "stripe", more of a "this surface
+    // is reflecting from many angles".
+    float subband = 0.5 + 0.5 * sin((band1 + tiltHueShift * 2.0) * 6.28318);
+    float subbandIntensity = pow(subband, 4.0) * height;
+
+    sheen = rainbow * (0.6 + 0.4 * height)
+          + vec3(highlight) * 0.5
+          + vec3(subbandIntensity) * 0.6;
+    strength = uFoilStrength * (0.7 + 0.3 * height);
   } else if (uFinish < 2.5) {
-    // CHROME: stepped vertical gradient with a horizontal sweep
-    // highlight whose position tracks the card's horizontal tilt.
-    // Centered when flat, slides toward whichever edge is leaning
-    // forward — same way real polished chrome catches a window.
+    // CHROME: stepped vertical gradient + tilt-tracking sweep highlight.
+    // Unchanged — looks great as is.
     float horizon = 1.0 - abs(pixelUv.y - 0.5) * 2.0;
     horizon = floor(max(horizon, 0.0) * 4.0) / 4.0;
     vec3 sky = mix(vec3(0.32, 0.42, 0.58), vec3(0.92, 0.94, 0.98), horizon);
@@ -125,26 +133,34 @@ void main() {
     sheen = sky + vec3(sweep) * 0.6;
     strength = uChromeStrength;
   } else {
-    // HOLOGRAPHIC: three quantized hue ramps + grid-aligned sparkle.
-    // Tilt phase is added uniformly to all three so the rainbow
-    // rotates as one when the card turns. Sparkle pattern shifts
-    // discretely with tilt rather than animating over time — gives
-    // the impression of catching new glints as you move the card.
+    // HOLOGRAPHIC: three smooth rainbow rotations, max-blended so the
+    // most-saturated channel wins (additive blend turned the old version
+    // muddy in overlap regions). Plus a height-modulated 4th ramp for
+    // surface relief, plus pinpoint Gaussian sparkles instead of the
+    // old binary step dots.
     float r1 = fract(pixelUv.x * 1.4 + tiltHueShift + uSeed);
     float r2 = fract(pixelUv.y * 1.8 + tiltHueShift * 0.7 + uSeed * 0.3);
     float r3 = fract((pixelUv.x + pixelUv.y) * 0.95 + tiltHueShift * 1.3 + uSeed * 0.7);
-    vec3 holo = (huePalette(r1) + huePalette(r2) + huePalette(r3)) * 0.5;
+    float r4 = fract(height * 2.5 + tiltHueShift * 1.8 + uSeed * 1.1);
 
+    vec3 c1 = huePalette(r1);
+    vec3 c2 = huePalette(r2);
+    vec3 c3 = huePalette(r3);
+    vec3 c4 = huePalette(r4);
+    vec3 holo = max(max(c1, c2), max(c3, c4));
+
+    // Soft pinpoint sparkle: hash gives a per-cell value, raise the
+    // top fraction to a sharp peak via pow() so glints look like
+    // metallic flakes rather than ascii dots.
     vec2 grid = floor(pixelUv * uPixelGrid);
     float tiltPhase = floor(uViewTilt.x * 12.0 + uViewTilt.y * 9.0 + uSeed * 17.0);
-    float sparkle = step(0.93, hash21(grid + vec2(tiltPhase, tiltPhase * 1.3)));
+    float sparkleHash = hash21(grid + vec2(tiltPhase, tiltPhase * 1.3));
+    float sparkle = pow(max(0.0, sparkleHash - 0.82) * 5.55, 2.0);
 
-    sheen = holo + vec3(sparkle);
-    strength = uHoloStrength;
+    sheen = holo * (0.7 + 0.3 * height) + vec3(sparkle) * (0.6 + 0.4 * gloss);
+    strength = uHoloStrength * (0.8 + 0.2 * gloss);
   }
 
-  // Tilt-magnitude brightness boost: real shiny finishes catch
-  // significantly more light at glancing angles.
   strength *= 1.0 + tiltMag * 4.0;
   strength *= 0.25 + 0.75 * gloss;
 
@@ -215,6 +231,8 @@ export function createFoilMesh(
       foilUniforms: uniforms,
       uGlossMap: bundle.gloss.source,
       uGlossSampler: bundle.gloss.source.style,
+      uHeightMap: bundle.height.source,
+      uHeightSampler: bundle.height.source.style,
     },
   });
 
@@ -228,6 +246,8 @@ export function createFoilMesh(
     setBundle(next) {
       shader.resources.uGlossMap = next.gloss.source;
       shader.resources.uGlossSampler = next.gloss.source.style;
+      shader.resources.uHeightMap = next.height.source;
+      shader.resources.uHeightSampler = next.height.source.style;
     },
     setLook(opts) {
       u.uFinish = opts.finish;
