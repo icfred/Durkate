@@ -920,15 +920,38 @@ export class Room extends DurableObject<Env> {
       this.botFanOut.clear();
       return;
     }
-    const action: Action =
-      this.pendingClose.kind === "END_ROUND"
-        ? { type: "END_ROUND", by: this.pendingCloseBy ?? 0 }
-        : { type: "TAKE_PILE", by: this.pendingCloseBy ?? 0 };
+    const kind = this.pendingClose.kind;
+    const closeBy = this.pendingCloseBy ?? 0;
     this.pendingClose = null;
     this.pendingCloseBy = null;
     this.botFanOut.clear();
     this.alarms.cancel("close-window");
-    this.applyToEngine(action);
+
+    // If the original action was END_ROUND but throw-ins added undefended
+    // attacks during the window, applying END_ROUND now would be rejected
+    // by the engine (ATTACKS_UNDEFENDED in step.ts), the state would not
+    // advance, and the defender bot would never be scheduled — game stuck.
+    // The window's purpose is moot: the round didn't end, the defender
+    // simply has new cards to face. Skip the apply and wake the active
+    // actor (the defender) so play continues.
+    //
+    // TAKE_PILE never has this problem: the engine accepts it regardless
+    // of new throw-ins (defender just picks up everything), so we let it
+    // flow through applyToEngine unchanged.
+    if (
+      kind === "END_ROUND" &&
+      this.engineState.phase === "in-round" &&
+      this.engineState.table.some((p) => !p.defense)
+    ) {
+      this.cancelTurnTimer();
+      this.advancePastEliminatedActor();
+      this.armBotTurnIfNeeded();
+      this.scheduleTurnTimer();
+      this.broadcastRoomState();
+      return;
+    }
+
+    this.applyToEngine({ type: kind, by: closeBy });
     // Clear pendingClose from broadcast view in case applyToEngine returns
     // mid-game (still in-round): RoomState was already broadcast inside
     // applyToEngine via armBotTurnIfNeeded paths, but we want a fresh one
