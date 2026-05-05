@@ -1,18 +1,21 @@
-import {
-  type Axes,
-  CARD_HEIGHT,
-  CARD_WIDTH,
-  decode,
-  rollCode,
-  type SkinAssets,
-  SkinCard,
-} from "@durak/skins-spike";
+import type { Card } from "@durak/engine";
+import { type Axes, decode, rollCode, type SkinAssets, SkinnedCard } from "@durak/skins-spike";
 import { Button, color, FocusManager, spacing, stroke, typography } from "@durak/ui";
 import { Container, Graphics, Text, type Ticker, type TickerCallback } from "pixi.js";
+import { CARD_H, CARD_W, CardView } from "../../cards/CardView.js";
 import type { Screen } from "../../screens/types.js";
 
 const COUNT_OPTIONS: readonly number[] = [36, 72, 144];
 const SEED = 0xc0ffee;
+
+const SAMPLE_SUITS = ["spades", "hearts", "diamonds", "clubs"] as const;
+const SAMPLE_RANKS = [6, 7, 8, 9, 10, 11, 12, 13, 14] as const;
+
+function sampleCard(i: number): Card {
+  const suit = SAMPLE_SUITS[i % SAMPLE_SUITS.length] ?? "spades";
+  const rank = SAMPLE_RANKS[Math.floor(i / SAMPLE_SUITS.length) % SAMPLE_RANKS.length] ?? 6;
+  return { suit, rank };
+}
 
 interface AxisToggleOptions {
   label: string;
@@ -97,7 +100,7 @@ export class SkinSandboxScreen extends Container implements Screen {
   private readonly grid: Container;
   private readonly toolbar: Container;
   private readonly fpsLabel: Text;
-  private readonly cards: SkinCard[] = [];
+  private readonly cards: SkinnedCard[] = [];
   private readonly codes: string[] = [];
   private readonly axes: Axes = { pattern: true, tint: true, finish: true, motion: true };
   private readonly focus = new FocusManager();
@@ -107,6 +110,7 @@ export class SkinSandboxScreen extends Container implements Screen {
   private fpsFrames = 0;
   private fpsAccumMs = 0;
   private viewWidth = 0;
+  private skinsActive = true;
 
   constructor(options: SkinSandboxScreenOptions) {
     super();
@@ -189,6 +193,21 @@ export class SkinSandboxScreen extends Container implements Screen {
       return btn;
     });
 
+    const noSkinBtn = new Button({
+      label: this.skinsActive ? "NO-SKIN PRESET" : "[NO-SKIN PRESET]",
+      width: 200,
+      height: 36,
+      onActivate: () => {
+        this.skinsActive = !this.skinsActive;
+        noSkinBtn.setLabel(this.skinsActive ? "NO-SKIN PRESET" : "[NO-SKIN PRESET]");
+        this.applyAll();
+      },
+    });
+    noSkinBtn.x = 180 + COUNT_OPTIONS.length * 60 + 20;
+    noSkinBtn.y = 0;
+    this.toolbar.addChild(noSkinBtn);
+    this.focus.register(noSkinBtn);
+
     const axisRow = new Container();
     axisRow.y = 44;
     this.toolbar.addChild(axisRow);
@@ -233,7 +252,14 @@ export class SkinSandboxScreen extends Container implements Screen {
 
   private ensureCards(): void {
     while (this.cards.length < this.codes.length) {
-      const card = new SkinCard(this.assets);
+      const idx = this.cards.length;
+      const base = new CardView(sampleCard(idx));
+      const card = new SkinnedCard({
+        base,
+        baseWidth: CARD_W,
+        baseHeight: CARD_H,
+        assets: this.assets,
+      });
       this.cards.push(card);
       this.grid.addChild(card);
     }
@@ -250,7 +276,7 @@ export class SkinSandboxScreen extends Container implements Screen {
       const code = this.codes[i];
       const card = this.cards[i];
       if (!code || !card) continue;
-      card.apply(decode(code), this.axes);
+      card.applySkin(this.skinsActive ? decode(code) : null, this.axes);
     }
     this.fpsLabel.text = `FPS --  CARDS ${this.cards.length}`;
   }
@@ -261,7 +287,7 @@ export class SkinSandboxScreen extends Container implements Screen {
     const left = spacing.lg;
     const top = spacing.md + 44 + 32 + spacing.lg;
     const usableWidth = this.viewWidth - left * 2;
-    const cols = Math.max(1, Math.floor((usableWidth + gap) / (CARD_WIDTH + gap)));
+    const cols = Math.max(1, Math.floor((usableWidth + gap) / (CARD_W + gap)));
     this.grid.x = left;
     this.grid.y = top;
     for (let i = 0; i < this.cards.length; i += 1) {
@@ -269,8 +295,8 @@ export class SkinSandboxScreen extends Container implements Screen {
       if (!card) continue;
       const col = i % cols;
       const row = Math.floor(i / cols);
-      card.x = col * (CARD_WIDTH + gap);
-      card.y = row * (CARD_HEIGHT + gap);
+      card.x = col * (CARD_W + gap);
+      card.y = row * (CARD_H + gap);
     }
   }
 
@@ -284,7 +310,7 @@ export class SkinSandboxScreen extends Container implements Screen {
       this.fpsAccumMs = 0;
       this.layoutFps();
     }
-    if (this.axes.motion && this.axes.finish) {
+    if (this.skinsActive && this.axes.motion && this.axes.finish) {
       const t = performance.now() / 1000;
       for (const card of this.cards) card.tick(t);
     }
