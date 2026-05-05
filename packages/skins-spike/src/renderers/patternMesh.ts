@@ -1,4 +1,4 @@
-import { GlProgram, Mesh, MeshGeometry, Shader, type Texture, UniformGroup } from "pixi.js";
+import { GlProgram, Mesh, MeshGeometry, Shader, Texture, UniformGroup } from "pixi.js";
 
 // Pattern bundle: pure structural data, no colors. The palette comes from
 // a separately-selected Colorway, set on the mesh via setColorway. This
@@ -46,10 +46,12 @@ uniform sampler2D uRegionMap;
 uniform sampler2D uFinishMask;
 uniform sampler2D uScratchMap;
 
-// Colorway palette: 8 RGBA colors. The pattern's regionId per pixel
-// indexes into this. Storing as vec4 (alpha unused) avoids std140
-// padding pitfalls that vec3 arrays trigger in some drivers.
-uniform vec4 uPalette[8];
+// Colorway palette as a 1×8 RGBA texture. Sampling at (region+0.5)/8
+// hits the centre of each texel. We use a texture rather than a
+// uniform array because Pixi v8's UBO-backed uniform arrays don't
+// always upload reliably (we hit cases where the cards rendered
+// invisibly with no error). Sampling is rock solid.
+uniform sampler2D uPaletteMap;
 
 uniform vec2 uTileScale;
 uniform vec2 uTileOffset;
@@ -75,11 +77,12 @@ void main() {
   vec2 tileUV = fract(vUV * uTileScale + uTileOffset);
 
   // Region lookup: regionMap encodes 0..7 as 0..255 in even steps;
-  // round(r * 7) recovers the integer region ID. Then look up the
-  // colorway's palette at that region.
+  // round(r * 7) recovers the region as a float in [0, 7]. Sample
+  // uPaletteMap at (region + 0.5) / 8 to hit the centre of the
+  // texel for that region.
   float regionR = texture(uRegionMap, tileUV).r;
-  int region = int(clamp(floor(regionR * 7.0 + 0.5), 0.0, 7.0));
-  vec3 color = uPalette[region].rgb;
+  float regionF = clamp(floor(regionR * 7.0 + 0.5), 0.0, 7.0);
+  vec3 color = texture(uPaletteMap, vec2((regionF + 0.5) / 8.0, 0.5)).rgb;
 
   float finishMask = texture(uFinishMask, tileUV).r;
 
@@ -140,7 +143,6 @@ interface PatternMeshUniforms {
   uCornerRadius: number;
   uViewTilt: Float32Array;
   uWear: number;
-  uPalette: Float32Array;
 }
 
 export interface PatternMeshController {
@@ -185,12 +187,11 @@ export function createPatternMesh(
     uCornerRadius: { value: 4, type: "f32" },
     uViewTilt: { value: new Float32Array([0, 0]), type: "vec2<f32>" },
     uWear: { value: 0, type: "f32" },
-    // 8 vec4 palette colors = 32 floats. Pixi v8's UniformGroup uses
-    // `type + size` to declare arrays rather than the wgsl array<…> form.
-    // Defaults to magenta so a missing setColorway() call is visually
-    // obvious during testing.
-    uPalette: { value: defaultPalette(), type: "vec4<f32>", size: 8 },
   });
+
+  // Colorway palette as a 1×8 RGBA texture. Owned by the controller so
+  // setColorway can rebuild it without affecting other meshes.
+  let paletteTex = createPaletteTexture(defaultPalette());
 
   const shader = new Shader({
     glProgram,
@@ -204,6 +205,8 @@ export function createPatternMesh(
       uFinishMaskSampler: bundle.finishMask.source.style,
       uScratchMap: scratchMap.source,
       uScratchSampler: scratchMap.source.style,
+      uPaletteMap: paletteTex.source,
+      uPaletteSampler: paletteTex.source.style,
     },
   });
 
@@ -221,13 +224,9 @@ export function createPatternMesh(
       shader.resources.uFinishMaskSampler = next.finishMask.source.style;
     },
     setColorway(palette) {
-      for (let i = 0; i < 8; i++) {
-        const c = palette[i] ?? 0xffffff;
-        u.uPalette[i * 4] = ((c >> 16) & 0xff) / 255;
-        u.uPalette[i * 4 + 1] = ((c >> 8) & 0xff) / 255;
-        u.uPalette[i * 4 + 2] = (c & 0xff) / 255;
-        u.uPalette[i * 4 + 3] = 1;
-      }
+      paletteTex = createPaletteTexture(palette);
+      shader.resources.uPaletteMap = paletteTex.source;
+      shader.resources.uPaletteSampler = paletteTex.source.style;
     },
     setLook(opts) {
       u.uTileScale[0] = opts.tileScaleX;
@@ -244,17 +243,36 @@ export function createPatternMesh(
   };
 }
 
-function defaultPalette(): Float32Array {
-  // Pure magenta in every slot — visually loud so a missing colorway
-  // bind is impossible to miss in dev.
-  const buf = new Float32Array(32);
+function createPaletteTexture(palette: readonly number[]): Texture {
+  // jsdom (used by vitest) doesn't ship a real canvas, so we fall back
+  // to Texture.EMPTY when ImageData isn't available. Tests don't render,
+  // they just construct the mesh, so a stand-in is fine.
+  const canvas = document.createElement("canvas");
+  canvas.width = 8;
+  canvas.height = 1;
+  const ctx = canvas.getContext("2d");
+  if (!ctx || typeof ctx.createImageData !== "function") return Texture.EMPTY;
+  const img = ctx.createImageData(8, 1);
   for (let i = 0; i < 8; i++) {
-    buf[i * 4] = 1;
-    buf[i * 4 + 1] = 0;
-    buf[i * 4 + 2] = 1;
-    buf[i * 4 + 3] = 1;
+    const c = palette[i] ?? 0xffffff;
+    img.data[i * 4] = (c >> 16) & 0xff;
+    img.data[i * 4 + 1] = (c >> 8) & 0xff;
+    img.data[i * 4 + 2] = c & 0xff;
+    img.data[i * 4 + 3] = 255;
   }
-  return buf;
+  ctx.putImageData(img, 0, 0);
+  const tex = Texture.from(canvas);
+  // Nearest sampling so the discrete region IDs land cleanly on the
+  // intended palette colour rather than blending across neighbours.
+  tex.source.scaleMode = "nearest";
+  return tex;
+}
+
+function defaultPalette(): readonly number[] {
+  // Magenta everywhere. A missing setColorway call is impossible to miss
+  // in dev — every card paints loud pink instead of going silently
+  // invisible like an array-uniform upload failure does.
+  return [0xff00ff, 0xff00ff, 0xff00ff, 0xff00ff, 0xff00ff, 0xff00ff, 0xff00ff, 0xff00ff];
 }
 
 export type { Texture };
