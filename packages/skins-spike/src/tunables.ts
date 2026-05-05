@@ -41,9 +41,13 @@ export const defaultTunables: Tunables = {
     brightness: [0.75, 1.25],
   },
   foil: {
-    foilStrength: 0.45,
-    chromeStrength: 0.6,
-    holographicStrength: 0.75,
+    // These are alpha multipliers for normal-blend stamping. At 1.0 the
+    // foil/holo fully replaces the pattern in glossy regions; lower
+    // values let the pattern bleed through. Chrome covers the entire
+    // card so its strength controls how opaque the metal layer is.
+    foilStrength: 0.95,
+    chromeStrength: 0.95,
+    holographicStrength: 0.95,
     cellSize: 4,
   },
 };

@@ -1,18 +1,26 @@
 import { GlProgram, Mesh, MeshGeometry, Shader, UniformGroup } from "pixi.js";
 import type { PatternBundle } from "./patternMesh.js";
 
-// Foil Mesh: renders the finish (foil/chrome/holographic) on top of the
-// pattern Mesh via screen-blend. Like the pattern Mesh, it runs in
-// mesh-local space so its pixel grid + hue band + chrome sweep all shear
-// with the card during tilt.
+// Foil Mesh: renders the finish on top of the pattern Mesh. Composition
+// model differs by finish:
 //
-// All effect phases are tilt-driven, never time-driven. The "motion"
-// of a real shiny card is its response to viewing angle — turning a
-// foil card cycles the diffraction colors, sliding chrome shifts where
-// the sweep highlight catches. We mirror that exactly: at rest the
-// finish is static, tilting it makes the rainbow roll. Removing the
-// time-based shimmer/pulse/drift sweeps lets the tilt response read
-// cleanly.
+//   - Foil & Holographic — STAMPED via gloss gate. Alpha = 0 where the
+//     pattern's gloss map is matte, alpha → 1 where gloss is high. The
+//     pattern shows through unchanged in matte regions; in glossy
+//     regions the foil/holo effect REPLACES the pattern color (normal
+//     alpha blend). Mirrors how real foil-stamped cards work — the
+//     rainbow appears only on the stamped elements, the rest is
+//     ordinary ink.
+//
+//   - Chrome — FULL-COVERAGE. Alpha = 1 across the card; the chrome
+//     gradient replaces the pattern entirely. The pattern's height map
+//     is sampled and used to emboss the chrome (bumps brighten, valleys
+//     darken) so the pattern's relief is still visible through the
+//     metal surface.
+//
+// All effect phases are tilt-driven, never time-driven. Turning a foil
+// card cycles the diffraction colors, sliding chrome shifts where the
+// sweep highlight catches.
 
 const vertex = `
 in vec2 aPosition;
@@ -92,52 +100,56 @@ void main() {
   float strength = 0.0;
 
   if (uFinish < 1.5) {
-    // FOIL: two interfering diagonal hue bands plus a soft Fresnel-y
-    // highlight strip. Height-modulated hue means bumps in the pattern
-    // catch different rainbow colors than the valleys, giving the
-    // foil a sense of surface relief instead of a flat overlay.
+    // FOIL — STAMPED. Alpha gates by gloss; in glossy areas the foil
+    // replaces the pattern color, in matte areas the pattern shows
+    // through unchanged. Two interfering diagonal hue bands blended by
+    // height give the rainbow surface relief.
     float band1 = pixelUv.x * 1.6 + pixelUv.y * 0.5;
     float band2 = pixelUv.y * 2.0 - pixelUv.x * 0.4;
     float h = fract(mix(band1, band2, height * 0.6) + tiltHueShift + uSeed);
     vec3 rainbow = huePalette(h);
 
-    // Soft horizontal highlight strip whose center tracks the tilt —
-    // smooth gaussian rather than the old hard step band so it reads
-    // as a glow rather than a stripe.
     float highlightCenter = 0.5 + uViewTilt.y * 1.6;
     float highlightDist = abs(pixelUv.y - highlightCenter);
     float highlight = exp(-highlightDist * highlightDist * 18.0);
 
-    // Sub-band gloss term: bumps glint with extra brightness on the
-    // hue band's peaks. Less of a "stripe", more of a "this surface
-    // is reflecting from many angles".
     float subband = 0.5 + 0.5 * sin((band1 + tiltHueShift * 2.0) * 6.28318);
     float subbandIntensity = pow(subband, 4.0) * height;
 
     sheen = rainbow * (0.6 + 0.4 * height)
           + vec3(highlight) * 0.5
           + vec3(subbandIntensity) * 0.6;
-    strength = uFoilStrength * (0.7 + 0.3 * height);
+
+    // Gloss gate: 0 below 0.35, ramps to 1 above 0.78. Anything matte
+    // is fully transparent → pattern shows through.
+    float coverage = smoothstep(0.35, 0.78, gloss);
+    strength = coverage * uFoilStrength;
   } else if (uFinish < 2.5) {
-    // CHROME: stepped vertical gradient + tilt-tracking sweep highlight.
-    // Unchanged — looks great as is.
+    // CHROME — FULL COVERAGE. Vertical metallic gradient + sweep
+    // highlight + height-based embossing so the pattern's relief
+    // shows through the chrome surface.
     float horizon = 1.0 - abs(pixelUv.y - 0.5) * 2.0;
     horizon = floor(max(horizon, 0.0) * 4.0) / 4.0;
     vec3 sky = mix(vec3(0.32, 0.42, 0.58), vec3(0.92, 0.94, 0.98), horizon);
     sky = mix(sky, vec3(0.95, 0.82, 0.62), step(0.7, 1.0 - horizon) * 0.4);
 
+    // Sweep: single column wide regardless of pixel grid size. The old
+    // 1.5-cell threshold made the sweep get visibly thicker at coarse
+    // pixel cells; 0.5 keeps it to exactly one cell.
     float sweepBase = clamp(0.5 + uViewTilt.x * 2.5, 0.0, 1.0);
     float sweepX = floor(sweepBase * uPixelGrid.x) / uPixelGrid.x;
-    float sweep = step(abs(pixelUv.x - sweepX) * uPixelGrid.x, 1.5);
+    float sweep = step(abs(pixelUv.x - sweepX) * uPixelGrid.x, 0.5);
 
-    sheen = sky + vec3(sweep) * 0.6;
+    // Embossing — pattern's bumps brighten the chrome, valleys darken.
+    // Multiplicative so it preserves the gradient's hue/temperature.
+    float emboss = 0.65 + 0.55 * height;
+
+    sheen = (sky + vec3(sweep) * 0.7) * emboss;
     strength = uChromeStrength;
   } else {
-    // HOLOGRAPHIC: three smooth rainbow rotations, max-blended so the
-    // most-saturated channel wins (additive blend turned the old version
-    // muddy in overlap regions). Plus a height-modulated 4th ramp for
-    // surface relief, plus pinpoint Gaussian sparkles instead of the
-    // old binary step dots.
+    // HOLOGRAPHIC — STAMPED, like foil. Three smooth rainbow ramps
+    // max-blended (most-saturated wins), plus a height-driven 4th
+    // ramp for surface relief, plus Gaussian sparkles.
     float r1 = fract(pixelUv.x * 1.4 + tiltHueShift + uSeed);
     float r2 = fract(pixelUv.y * 1.8 + tiltHueShift * 0.7 + uSeed * 0.3);
     float r3 = fract((pixelUv.x + pixelUv.y) * 0.95 + tiltHueShift * 1.3 + uSeed * 0.7);
@@ -149,21 +161,27 @@ void main() {
     vec3 c4 = huePalette(r4);
     vec3 holo = max(max(c1, c2), max(c3, c4));
 
-    // Soft pinpoint sparkle: hash gives a per-cell value, raise the
-    // top fraction to a sharp peak via pow() so glints look like
-    // metallic flakes rather than ascii dots.
     vec2 grid = floor(pixelUv * uPixelGrid);
     float tiltPhase = floor(uViewTilt.x * 12.0 + uViewTilt.y * 9.0 + uSeed * 17.0);
     float sparkleHash = hash21(grid + vec2(tiltPhase, tiltPhase * 1.3));
     float sparkle = pow(max(0.0, sparkleHash - 0.82) * 5.55, 2.0);
 
-    sheen = holo * (0.7 + 0.3 * height) + vec3(sparkle) * (0.6 + 0.4 * gloss);
-    strength = uHoloStrength * (0.8 + 0.2 * gloss);
+    sheen = holo * (0.7 + 0.3 * height) + vec3(sparkle);
+
+    // Same gloss gate as foil — holographic stamps onto the glossy
+    // pattern elements, leaves matte ones alone.
+    float coverage = smoothstep(0.35, 0.78, gloss);
+    strength = coverage * uHoloStrength;
   }
 
-  strength *= 1.0 + tiltMag * 4.0;
-  strength *= 0.25 + 0.75 * gloss;
+  // Tilt-magnitude brightness boost: shiny finishes catch significantly
+  // more light at glancing angles. Applied universally so chrome,
+  // foil, and holo all flare slightly when turned.
+  strength *= 1.0 + tiltMag * 1.6;
+  strength = clamp(strength, 0.0, 1.0);
 
+  // Premultiplied alpha output — Pixi's normal blend mode handles
+  // alpha-replacement compositing of the foil over the pattern.
   finalColor = vec4(sheen * strength, strength);
 }
 `;
@@ -237,7 +255,10 @@ export function createFoilMesh(
   });
 
   const mesh = new Mesh<MeshGeometry, Shader>({ geometry, shader });
-  mesh.blendMode = "screen";
+  // Normal blend (was "screen"): alpha gates how much of the foil
+  // replaces the pattern. With strength near 1 in glossy stamped
+  // regions and 0 elsewhere, foil cleanly stamps over the pattern.
+  mesh.blendMode = "normal";
 
   const u = uniforms.uniforms as FoilMeshUniforms;
 
