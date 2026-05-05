@@ -38,7 +38,7 @@ const fragment = `
 in vec2 vUV;
 out vec4 finalColor;
 
-uniform sampler2D uGlossMap;
+uniform sampler2D uFinishMask;
 uniform sampler2D uHeightMap;
 uniform sampler2D uScratchMap;
 
@@ -83,7 +83,7 @@ void main() {
   vec2 pixelUv = floor(vUV * uPixelGrid) / uPixelGrid;
 
   vec2 tileUV = fract(vUV * uTileScale + uTileOffset);
-  float gloss = texture(uGlossMap, tileUV).r;
+  float finishMask = texture(uFinishMask, tileUV).r;
   float height = texture(uHeightMap, tileUV).r;
 
   float tiltMag = length(uViewTilt);
@@ -97,7 +97,7 @@ void main() {
   // meant the pattern's varied colours were mostly hidden under foil.
   // Tightening to 0.55-0.88 means stamps land just on the brightest
   // peaks; the rest of the pattern stays visible as the colour layer.
-  float coverage = smoothstep(0.55, 0.88, gloss);
+  float coverage = smoothstep(0.55, 0.88, finishMask);
 
   if (uFinish < 3.5) {
     // METALLIC: Silver (1) / Gold (2) / Bronze (3). Each has its own
@@ -250,8 +250,8 @@ export function createFoilMesh(
     glProgram,
     resources: {
       foilUniforms: uniforms,
-      uGlossMap: bundle.gloss.source,
-      uGlossSampler: bundle.gloss.source.style,
+      uFinishMask: bundle.finishMask.source,
+      uFinishMaskSampler: bundle.finishMask.source.style,
       uHeightMap: bundle.height.source,
       uHeightSampler: bundle.height.source.style,
       uScratchMap: scratchMap.source,
@@ -267,8 +267,8 @@ export function createFoilMesh(
   return {
     view: mesh,
     setBundle(next) {
-      shader.resources.uGlossMap = next.gloss.source;
-      shader.resources.uGlossSampler = next.gloss.source.style;
+      shader.resources.uFinishMask = next.finishMask.source;
+      shader.resources.uFinishMaskSampler = next.finishMask.source.style;
       shader.resources.uHeightMap = next.height.source;
       shader.resources.uHeightSampler = next.height.source.style;
     },

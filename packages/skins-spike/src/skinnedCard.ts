@@ -125,6 +125,13 @@ export class SkinnedCard extends Container {
       this.currentBundleIndex = idx;
     }
 
+    // Colorway: applied every applySkin since spec.colorway can change
+    // independently of the pattern shape. setColorway just rewrites the
+    // palette uniform — cheap.
+    const cwIdx = spec.colorway % this.assets.colorways.length;
+    const colorway = this.assets.colorways[cwIdx] ?? this.assets.colorways[0];
+    if (colorway) this.patternCtrl.setColorway(colorway.palette);
+
     if (axes.pattern) {
       this.patternCtrl.view.visible = true;
       this.refreshPatternLook();

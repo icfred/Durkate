@@ -1,4 +1,5 @@
 import { Graphics, Rectangle, type Renderer, type Texture } from "pixi.js";
+import { COLORWAYS, type Colorway } from "./colorway.js";
 import { generateProceduralPatterns } from "./proceduralPatterns.js";
 import type { PatternBundle } from "./renderers/patternMesh.js";
 import { generateScratchMap } from "./scratchMap.js";
@@ -11,12 +12,13 @@ export const PATTERN_TILE = 24;
 export interface SkinAssets {
   cardSurface: Texture;
   cardDecoration: Texture;
-  patterns: PatternBundle[];
   /**
-   * Single-channel wear-threshold map shared across all cards. Each pixel
-   * holds a wear threshold (0–1) — at runtime, pixels with threshold ≤
-   * uWear show wear (revealed in the shader). See scratchMap.ts.
+   * Pattern shapes only — no colors. The shader looks up colors via
+   * `colorways[spec.colorway].palette[regionId]` at draw time.
    */
+  patterns: PatternBundle[];
+  /** Available palettes; the spec's `colorway` field indexes into this. */
+  colorways: readonly Colorway[];
   scratchMap: Texture;
 }
 
@@ -26,6 +28,7 @@ export function createSkinAssets(_renderer: Renderer): SkinAssets {
     cardSurface: makeCardSurface(_renderer),
     cardDecoration: makeCardDecoration(_renderer),
     patterns,
+    colorways: COLORWAYS,
     scratchMap: generateScratchMap(0xa11ce5),
   };
 }

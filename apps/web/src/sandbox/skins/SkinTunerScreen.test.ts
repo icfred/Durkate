@@ -8,10 +8,11 @@ function mockAssets(): SkinAssets {
     cardSurface: Texture.EMPTY,
     cardDecoration: Texture.EMPTY,
     patterns: Array.from({ length: 4 }, () => ({
-      color: Texture.EMPTY,
       height: Texture.EMPTY,
-      gloss: Texture.EMPTY,
+      regionId: Texture.EMPTY,
+      finishMask: Texture.EMPTY,
     })),
+    colorways: [{ name: "test", palette: [0, 0, 0, 0, 0, 0, 0, 0] }],
     scratchMap: Texture.EMPTY,
   };
 }

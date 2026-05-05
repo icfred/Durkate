@@ -1,6 +1,7 @@
 import type { Card } from "@durak/engine";
 import {
   type Axes,
+  COLORWAYS,
   decode,
   defaultTunables,
   type Finish,
@@ -40,6 +41,7 @@ const TILT_LERP = 0.18;
 const PANEL_WIDTH = 380;
 const PREVIEW_SCALE = 4;
 const FINISHES: readonly Finish[] = ["matte", "silver", "gold", "bronze", "holographic"];
+const COLORWAY_LABELS: readonly string[] = COLORWAYS.map((c) => c.name.toUpperCase());
 const CYCLE_WIDTH = 140;
 
 const PREVIEW_CARD: Card = { suit: "spades", rank: 14 };
@@ -424,6 +426,19 @@ export class SkinTunerScreen extends Container implements Screen {
           pattern: { ...this.tunables.pattern, tileSize: v },
         };
         this.card.setTunables(this.tunables);
+      },
+    });
+    y.value += spacing.sm;
+
+    sectionHeader({ panel, y, label: "COLORWAY" });
+    y.value += this.addCycle<string>(panel, y.value, rowWidth, {
+      label: "PALETTE",
+      options: COLORWAY_LABELS,
+      read: () => COLORWAY_LABELS[this.spec.colorway] ?? COLORWAY_LABELS[0] ?? "OCEAN",
+      write: (v) => {
+        const idx = COLORWAY_LABELS.indexOf(v);
+        this.spec = { ...this.spec, colorway: Math.max(0, idx) };
+        this.applyAll();
       },
     });
     y.value += spacing.sm;

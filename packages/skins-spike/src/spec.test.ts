@@ -41,5 +41,7 @@ describe("decode", () => {
     expect(spec.tint.hue).toBeGreaterThanOrEqual(-1);
     expect(spec.tint.hue).toBeLessThan(1);
     expect(["matte", "silver", "gold", "bronze", "holographic"]).toContain(spec.finish);
+    expect(spec.colorway).toBeGreaterThanOrEqual(0);
+    expect(spec.colorway).toBeLessThan(6);
   });
 });

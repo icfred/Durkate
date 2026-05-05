@@ -1,55 +1,37 @@
 import { type Renderer, Texture } from "pixi.js";
 import type { PatternBundle } from "./renderers/patternMesh.js";
 
-// Phase 2 procedural pattern bundles. Each generator emits THREE textures:
+// Procedural pattern shapes. Each generator emits THREE single-channel
+// textures (no colors):
 //
-//   - color: flat per-cell palette colors. Lighting is no longer baked
-//     into the color buffer — that runs in the shader at draw time so
-//     light direction can animate with motion mode.
-//   - height: per-pixel surface elevation, drives the per-pixel normal
-//     used by the shader's Lambert + specular lighting.
-//   - gloss: per-pixel "shine" factor, modulates specular highlight
-//     strength and exponent so highlights catch on metallic pixels.
+//   - height:     surface elevation per pixel
+//   - regionId:   integer region index 0..7, encoded so the shader can
+//                 recover via int(round(r * 7)). Sampled with NEAREST.
+//   - finishMask: stencil for the metallic/holographic stamping
 //
-// All three textures are 48×48, sample nearest, and seam at all four
-// edges (the shader uses fract() to tile, and generators design motifs
-// that wrap losslessly).
+// Colors come from a Colorway picked at runtime (see colorway.ts) — the
+// pattern shader does the palette lookup per-pixel using regionId. This
+// means one shape × N colorways × M finishes = N*M visual results from
+// a single set of textures.
 
 export const PROC_TILE_PX = 48;
 const N = PROC_TILE_PX;
 
-type Palette = readonly number[];
-
-const PALETTES: Record<string, Palette> = {
-  ocean: [0x0b1d2a, 0x1a4c6e, 0x2d8aa8, 0x6cd4ff, 0xffd166],
-  copper: [0x1a0f08, 0x6e3a1c, 0xb86a32, 0xeaa75e, 0xfff1d0],
-  forest: [0x0f1a14, 0x2a4a2e, 0x5b8c3e, 0xa3c46b, 0xe8e0a8],
-  cyber: [0x07021a, 0x2a0a4a, 0x6b1aa8, 0xff37c8, 0x42f5b8],
-  ember: [0x1a0606, 0x4a1818, 0xb83232, 0xff8a5e, 0xffe7a8],
-  aurora: [0x0a0820, 0x1a3060, 0x3878d8, 0x9adef8, 0xffe8a0],
-};
-
 // ---- Pixel helpers --------------------------------------------------------
-
-function setColor(buf: Uint8ClampedArray, x: number, y: number, color: number, alpha = 255): void {
-  const i = (y * N + x) * 4;
-  buf[i] = (color >> 16) & 0xff;
-  buf[i + 1] = (color >> 8) & 0xff;
-  buf[i + 2] = color & 0xff;
-  buf[i + 3] = alpha;
-}
 
 function setHeight(buf: Uint8Array, x: number, y: number, h: number): void {
   buf[y * N + x] = Math.max(0, Math.min(255, Math.round(h * 255)));
 }
 
-function setGloss(buf: Uint8Array, x: number, y: number, g: number): void {
-  buf[y * N + x] = Math.max(0, Math.min(255, Math.round(g * 255)));
+function setFinishMask(buf: Uint8Array, x: number, y: number, m: number): void {
+  buf[y * N + x] = Math.max(0, Math.min(255, Math.round(m * 255)));
 }
 
-function paletteAt(palette: Palette, t: number): number {
-  const idx = Math.max(0, Math.min(palette.length - 1, Math.floor(t * palette.length)));
-  return palette[idx] ?? 0xffffff;
+function setRegion(buf: Uint8Array, x: number, y: number, region: number): void {
+  // Encode 0..7 as 0..255 in even steps. Decode in shader as
+  // int(round(r * 7.0)).
+  const clamped = Math.max(0, Math.min(7, region | 0));
+  buf[y * N + x] = Math.round((clamped / 7) * 255);
 }
 
 function hash2(x: number, y: number, seed: number): number {
@@ -119,38 +101,24 @@ function uploadGrayscale(buf: Uint8Array): Texture {
   return tex;
 }
 
-function uploadColor(buf: Uint8ClampedArray): Texture {
-  const canvas = document.createElement("canvas");
-  canvas.width = N;
-  canvas.height = N;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("proceduralPatterns: 2d canvas context unavailable");
-  const img = ctx.createImageData(N, N);
-  img.data.set(buf);
-  ctx.putImageData(img, 0, 0);
-  const tex = Texture.from(canvas);
-  tex.source.scaleMode = "nearest";
-  return tex;
-}
-
 function makeBundle(
-  paint: (color: Uint8ClampedArray, height: Uint8Array, gloss: Uint8Array) => void,
+  paint: (height: Uint8Array, regionId: Uint8Array, finishMask: Uint8Array) => void,
 ): PatternBundle {
-  const colorBuf = new Uint8ClampedArray(N * N * 4);
   const heightBuf = new Uint8Array(N * N);
-  const glossBuf = new Uint8Array(N * N);
-  paint(colorBuf, heightBuf, glossBuf);
+  const regionBuf = new Uint8Array(N * N);
+  const finishMaskBuf = new Uint8Array(N * N);
+  paint(heightBuf, regionBuf, finishMaskBuf);
   return {
-    color: uploadColor(colorBuf),
     height: uploadGrayscale(heightBuf),
-    gloss: uploadGrayscale(glossBuf),
+    regionId: uploadGrayscale(regionBuf),
+    finishMask: uploadGrayscale(finishMaskBuf),
   };
 }
 
-// ---- Generators -----------------------------------------------------------
+// ---- Shape generators -----------------------------------------------------
 
-function voronoiBundle(seed: number, palette: Palette): PatternBundle {
-  return makeBundle((color, height, gloss) => {
+function voronoiBundle(seed: number): PatternBundle {
+  return makeBundle((height, regionId, finishMask) => {
     const cells = 6;
     const cellSize = N / cells;
     const wrap = (n: number) => ((n % cells) + cells) % cells;
@@ -187,25 +155,22 @@ function voronoiBundle(seed: number, palette: Palette): PatternBundle {
             }
           }
         }
-        const tCol = hash2(bestId, bestId * 13, seed + 99);
-        setColor(color, x, y, paletteAt(palette, tCol));
+        const region = Math.floor(hash2(bestId, bestId * 13, seed + 99) * 8);
+        setRegion(regionId, x, y, region);
         const edge = Math.sqrt(secondBest) - Math.sqrt(best);
         const h = Math.min(1, edge / (cellSize * 0.6));
         setHeight(height, x, y, h);
-        // Gloss: high near cell centres (faceted gem highlights), zero
-        // along borders. Per-cell jitter gives variety so not every shard
-        // glints equally.
         const cellGloss = 0.4 + 0.6 * hash2(bestId, bestId * 7, seed + 211);
-        setGloss(gloss, x, y, h * cellGloss);
+        setFinishMask(finishMask, x, y, h * cellGloss);
       }
     }
   });
 }
 
-function fbmMarbleBundle(seed: number, palette: Palette): PatternBundle {
-  return makeBundle((color, height, gloss) => {
+function fbmMarbleBundle(seed: number): PatternBundle {
+  return makeBundle((height, regionId, finishMask) => {
     const period = 4;
-    const bands = palette.length;
+    const bands = 8;
     for (let y = 0; y < N; y++) {
       for (let x = 0; x < N; x++) {
         const u = (x / N) * period;
@@ -213,29 +178,25 @@ function fbmMarbleBundle(seed: number, palette: Palette): PatternBundle {
         const n = tileFbm(u, v, period, seed, 4);
         let m = 0.5 + 0.5 * Math.sin((u + v) * 1.4 + n * 6.28);
         m = Math.max(0, Math.min(1, (m - 0.5) * 1.4 + 0.5));
-        const band = Math.floor(m * bands) / bands;
-        setColor(color, x, y, paletteAt(palette, band));
+        const region = Math.min(bands - 1, Math.floor(m * bands));
+        setRegion(regionId, x, y, region);
         setHeight(height, x, y, n);
-        // Gloss: only the "vein peaks" (high m values) look polished;
-        // dark valleys read as matte stone.
-        setGloss(gloss, x, y, m * m);
+        setFinishMask(finishMask, x, y, m * m);
       }
     }
   });
 }
 
-function truchetBundle(seed: number, palette: Palette): PatternBundle {
-  return makeBundle((color, height, gloss) => {
+function truchetBundle(seed: number): PatternBundle {
+  return makeBundle((height, regionId, finishMask) => {
     const cells = 4;
     const cellSize = N / cells;
-    const bg = paletteAt(palette, 0.0);
-    const arc = paletteAt(palette, 0.85);
-    const inner = paletteAt(palette, 0.55);
+    // Background fill — region 0, no relief, no finish.
     for (let y = 0; y < N; y++) {
       for (let x = 0; x < N; x++) {
-        setColor(color, x, y, bg);
+        setRegion(regionId, x, y, 0);
         setHeight(height, x, y, 0);
-        setGloss(gloss, x, y, 0);
+        setFinishMask(finishMask, x, y, 0);
       }
     }
     for (let cy = 0; cy < cells; cy++) {
@@ -253,12 +214,13 @@ function truchetBundle(seed: number, palette: Palette): PatternBundle {
             const d1 = Math.hypot(px - ax, py - ay);
             const d2 = Math.hypot(px - bx2, py - by2);
             const e = Math.min(Math.abs(d1 - r), Math.abs(d2 - r));
-            if (e < 0.6) setColor(color, ox + px, oy + py, arc);
-            else if (e < 1.6) setColor(color, ox + px, oy + py, inner);
+            // Region: 5 (highlight ring) on the arc band, 3 (mid) for the
+            // wider halo, 0 (background) elsewhere.
+            if (e < 0.6) setRegion(regionId, ox + px, oy + py, 5);
+            else if (e < 1.6) setRegion(regionId, ox + px, oy + py, 3);
             const ridge = Math.exp(-(e * e) / 2.5);
             setHeight(height, ox + px, oy + py, ridge);
-            // Gloss: arcs are polished metal, background matte.
-            setGloss(gloss, ox + px, oy + py, ridge);
+            setFinishMask(finishMask, ox + px, oy + py, ridge);
           }
         }
       }
@@ -266,18 +228,15 @@ function truchetBundle(seed: number, palette: Palette): PatternBundle {
   });
 }
 
-function mazeBundle(seed: number, palette: Palette): PatternBundle {
-  return makeBundle((color, height, gloss) => {
+function mazeBundle(seed: number): PatternBundle {
+  return makeBundle((height, regionId, finishMask) => {
     const cells = 8;
     const cellSize = N / cells;
-    const floor = paletteAt(palette, 0.0);
-    const wallMid = paletteAt(palette, 0.7);
-    const wallTop = paletteAt(palette, 0.95);
     for (let y = 0; y < N; y++) {
       for (let x = 0; x < N; x++) {
-        setColor(color, x, y, floor);
+        setRegion(regionId, x, y, 0); // floor
         setHeight(height, x, y, 0);
-        setGloss(gloss, x, y, 0);
+        setFinishMask(finishMask, x, y, 0);
       }
     }
     const knockNorth: boolean[] = [];
@@ -300,10 +259,11 @@ function mazeBundle(seed: number, palette: Palette): PatternBundle {
             for (let j = 0; j < t; j++) {
               const px = x0 + i;
               const py = y0 + cellSize - 1 - j;
-              setColor(color, px, py, j === 0 ? wallTop : wallMid);
+              // Region 7 for the wall top edge (uses palette[7]),
+              // region 5 for the wall body.
+              setRegion(regionId, px, py, j === 0 ? 7 : 5);
               setHeight(height, px, py, 1);
-              // Gloss: walls polished, top edge highest.
-              setGloss(gloss, px, py, j === 0 ? 0.85 : 0.5);
+              setFinishMask(finishMask, px, py, j === 0 ? 0.85 : 0.5);
             }
           }
         }
@@ -312,9 +272,9 @@ function mazeBundle(seed: number, palette: Palette): PatternBundle {
             for (let j = 0; j < t; j++) {
               const px = x0 + cellSize - 1 - j;
               const py = y0 + i;
-              setColor(color, px, py, j === 0 ? wallTop : wallMid);
+              setRegion(regionId, px, py, j === 0 ? 7 : 5);
               setHeight(height, px, py, 1);
-              setGloss(gloss, px, py, j === 0 ? 0.85 : 0.5);
+              setFinishMask(finishMask, px, py, j === 0 ? 0.85 : 0.5);
             }
           }
         }
@@ -328,21 +288,20 @@ function mazeBundle(seed: number, palette: Palette): PatternBundle {
 interface ProceduralRecipe {
   name: string;
   seed: number;
-  generator: (seed: number, palette: Palette) => PatternBundle;
-  palette: Palette;
+  generator: (seed: number) => PatternBundle;
 }
 
 const RECIPES: readonly ProceduralRecipe[] = [
-  { name: "voronoi-ocean", seed: 0xa17c, generator: voronoiBundle, palette: PALETTES.ocean ?? [] },
-  { name: "fbm-copper", seed: 0xb29d, generator: fbmMarbleBundle, palette: PALETTES.copper ?? [] },
-  { name: "truchet-cyber", seed: 0xc34e, generator: truchetBundle, palette: PALETTES.cyber ?? [] },
-  { name: "maze-forest", seed: 0xd45f, generator: mazeBundle, palette: PALETTES.forest ?? [] },
-  { name: "voronoi-cyber", seed: 0x217a, generator: voronoiBundle, palette: PALETTES.cyber ?? [] },
-  { name: "fbm-aurora", seed: 0x32b8, generator: fbmMarbleBundle, palette: PALETTES.aurora ?? [] },
-  { name: "truchet-ember", seed: 0x43c1, generator: truchetBundle, palette: PALETTES.ember ?? [] },
-  { name: "maze-copper", seed: 0x54d9, generator: mazeBundle, palette: PALETTES.copper ?? [] },
+  { name: "voronoi-a", seed: 0xa17c, generator: voronoiBundle },
+  { name: "fbm-a", seed: 0xb29d, generator: fbmMarbleBundle },
+  { name: "truchet-a", seed: 0xc34e, generator: truchetBundle },
+  { name: "maze-a", seed: 0xd45f, generator: mazeBundle },
+  { name: "voronoi-b", seed: 0x217a, generator: voronoiBundle },
+  { name: "fbm-b", seed: 0x32b8, generator: fbmMarbleBundle },
+  { name: "truchet-b", seed: 0x43c1, generator: truchetBundle },
+  { name: "maze-b", seed: 0x54d9, generator: mazeBundle },
 ];
 
 export function generateProceduralPatterns(_renderer: Renderer): PatternBundle[] {
-  return RECIPES.map((r) => r.generator(r.seed, r.palette));
+  return RECIPES.map((r) => r.generator(r.seed));
 }

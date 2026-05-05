@@ -1,23 +1,25 @@
 import { GlProgram, Mesh, MeshGeometry, Shader, type Texture, UniformGroup } from "pixi.js";
 
+// Pattern bundle: pure structural data, no colors. The palette comes from
+// a separately-selected Colorway, set on the mesh via setColorway. This
+// lets the same pattern shape be re-skinned with any colorway, and lets
+// COLORWAY exist as its own axis in the spec.
 export interface PatternBundle {
-  color: Texture;
+  /** Surface elevation. R = 0..1. Drives Lambert lighting + Fresnel rim. */
   height: Texture;
-  gloss: Texture;
+  /**
+   * Per-pixel region ID, encoded as round((id / 7) * 255) so the shader
+   * can recover via int(round(r * 7.0)). 8 regions max. Sample with
+   * NEAREST filter — region IDs must not interpolate across boundaries.
+   */
+  regionId: Texture;
+  /**
+   * Where the metallic/holographic finish stamps. R = 0..1; the foil
+   * shader gloss-gates by this. Renamed from "gloss" to clarify intent
+   * — it's a stencil for the finish, not a PBR property.
+   */
+  finishMask: Texture;
 }
-
-// Pattern Mesh: a quad covering the card area with a custom shader that
-// samples the bundle's color/height/gloss textures and lights them
-// per-pixel. The vertex shader projects local positions through the parent
-// transform chain, so tile-UV math runs in mesh-local space and the
-// pattern shears with the card during tilt.
-//
-// No time-based animation: lighting is fully static at rest. The only
-// "motion" comes from the card's tilt itself — rotating the card rotates
-// the surface normal, which changes how light catches the bumps and
-// fires the Fresnel rim. That's the natural way real cards feel alive,
-// and removing the always-on shimmer/pulse/drift tracks lets the tilt
-// response read clearly.
 
 const vertex = `
 in vec2 aPosition;
@@ -39,10 +41,15 @@ const fragment = `
 in vec2 vUV;
 out vec4 finalColor;
 
-uniform sampler2D uColorMap;
 uniform sampler2D uHeightMap;
-uniform sampler2D uGlossMap;
+uniform sampler2D uRegionMap;
+uniform sampler2D uFinishMask;
 uniform sampler2D uScratchMap;
+
+// Colorway palette: 8 RGBA colors. The pattern's regionId per pixel
+// indexes into this. Storing as vec4 (alpha unused) avoids std140
+// padding pitfalls that vec3 arrays trigger in some drivers.
+uniform vec4 uPalette[8];
 
 uniform vec2 uTileScale;
 uniform vec2 uTileOffset;
@@ -51,12 +58,7 @@ uniform float uBumpScale;
 uniform float uTexelSize;
 uniform vec2 uCardSize;
 uniform float uCornerRadius;
-// (skewX, skewY) of the card. Rotates the surface normal so different
-// parts of the height map catch the static light when the card is
-// tilted, and drives the Fresnel rim glow.
 uniform vec2 uViewTilt;
-// 0 = factory-new, 1 = battle-scarred. Drives the scratch map's
-// threshold — pixels with threshold ≤ uWear show wear.
 uniform float uWear;
 
 float roundedRectSdf(vec2 px, vec2 size, float r) {
@@ -71,8 +73,15 @@ void main() {
   float maskA = clamp(0.5 - sdf, 0.0, 1.0);
 
   vec2 tileUV = fract(vUV * uTileScale + uTileOffset);
-  vec3 color = texture(uColorMap, tileUV).rgb;
-  float gloss = texture(uGlossMap, tileUV).r;
+
+  // Region lookup: regionMap encodes 0..7 as 0..255 in even steps;
+  // round(r * 7) recovers the integer region ID. Then look up the
+  // colorway's palette at that region.
+  float regionR = texture(uRegionMap, tileUV).r;
+  int region = int(clamp(floor(regionR * 7.0 + 0.5), 0.0, 7.0));
+  vec3 color = uPalette[region].rgb;
+
+  float finishMask = texture(uFinishMask, tileUV).r;
 
   float hL = texture(uHeightMap, fract(tileUV - vec2(uTexelSize, 0.0))).r;
   float hR = texture(uHeightMap, fract(tileUV + vec2(uTexelSize, 0.0))).r;
@@ -84,13 +93,9 @@ void main() {
     1.0
   ));
 
-  // Tilt-rotated normal. Highlights slide across the pattern's bumps
-  // as the user turns the card.
   vec3 tiltVec = vec3(uViewTilt.y, -uViewTilt.x, 0.0) * 2.5;
   vec3 normal = normalize(baseNormal + tiltVec);
 
-  // Fixed top-left light direction. All "motion" comes from the
-  // tilt-rotated normal interacting with this static light.
   vec3 lightDir = normalize(vec3(-0.5, -0.5, 0.7));
 
   float lambert = max(0.0, dot(normal, lightDir));
@@ -99,37 +104,24 @@ void main() {
 
   vec3 viewDir = vec3(0.0, 0.0, 1.0);
   vec3 halfway = normalize(lightDir + viewDir);
-  float specPower = mix(8.0, 48.0, gloss);
+  float specPower = mix(8.0, 48.0, finishMask);
   float spec = pow(max(0.0, dot(normal, halfway)), specPower);
-  vec3 highlight = vec3(spec * gloss);
+  vec3 highlight = vec3(spec * finishMask);
 
-  // Fresnel rim: surfaces glance brighter at grazing angles. The
-  // tilt-rotated normal makes high-elevation pixels glow when the card
-  // is held off-axis — the single biggest 3D-feel cue.
   float fresnel = pow(1.0 - max(0.0, dot(normal, viewDir)), 3.0);
-  highlight += vec3(fresnel) * (0.35 + 0.65 * gloss);
+  highlight += vec3(fresnel) * (0.35 + 0.65 * finishMask);
 
+  float height = texture(uHeightMap, tileUV).r;
   vec3 finalRGB = color * lit + highlight;
 
-  // Wear: scratch-map driven. Each pixel of uScratchMap holds a wear
-  // threshold; once uWear ≥ threshold, that pixel shows wear (mixed
-  // toward the card-stock cream). The map is procedurally generated
-  // with edge ramps, smudges, long curved scratches, short scuffs,
-  // and point chips — so wear has structure rather than being a
-  // uniform noise overlay.
+  // Wear: scratch-map driven. Same pipeline as before — only the
+  // texture sampling for color changed.
   if (uWear > 0.001) {
     vec3 stock = vec3(0.94, 0.91, 0.86);
     float wearThreshold = texture(uScratchMap, vUV).r;
     float scratchAmount = smoothstep(wearThreshold - 0.06, wearThreshold + 0.02, uWear);
-
-    // Wear reveals card-stock cream where the colored layer rubs off.
     finalRGB = mix(finalRGB, stock * 1.05, scratchAmount * 0.7);
-
-    // Dirt in valleys: low-relief areas darken as grime collects with
-    // overall wear.
     finalRGB *= 1.0 - (1.0 - height) * uWear * 0.25;
-
-    // Global desaturation as colour fades.
     float wlum = dot(finalRGB, vec3(0.299, 0.587, 0.114));
     finalRGB = mix(finalRGB, vec3(wlum) * 0.92, uWear * 0.2);
   }
@@ -148,11 +140,14 @@ interface PatternMeshUniforms {
   uCornerRadius: number;
   uViewTilt: Float32Array;
   uWear: number;
+  uPalette: Float32Array;
 }
 
 export interface PatternMeshController {
   view: Mesh<MeshGeometry, Shader>;
   setBundle(bundle: PatternBundle): void;
+  /** Replace the active colorway. Pass an array of 8 packed RGB ints. */
+  setColorway(palette: readonly number[]): void;
   setLook(opts: {
     tileScaleX: number;
     tileScaleY: number;
@@ -190,18 +185,23 @@ export function createPatternMesh(
     uCornerRadius: { value: 4, type: "f32" },
     uViewTilt: { value: new Float32Array([0, 0]), type: "vec2<f32>" },
     uWear: { value: 0, type: "f32" },
+    // 8 vec4 palette colors = 32 floats. Pixi v8's UniformGroup uses
+    // `type + size` to declare arrays rather than the wgsl array<…> form.
+    // Defaults to magenta so a missing setColorway() call is visually
+    // obvious during testing.
+    uPalette: { value: defaultPalette(), type: "vec4<f32>", size: 8 },
   });
 
   const shader = new Shader({
     glProgram,
     resources: {
       patternUniforms: uniforms,
-      uColorMap: bundle.color.source,
-      uColorSampler: bundle.color.source.style,
       uHeightMap: bundle.height.source,
       uHeightSampler: bundle.height.source.style,
-      uGlossMap: bundle.gloss.source,
-      uGlossSampler: bundle.gloss.source.style,
+      uRegionMap: bundle.regionId.source,
+      uRegionSampler: bundle.regionId.source.style,
+      uFinishMask: bundle.finishMask.source,
+      uFinishMaskSampler: bundle.finishMask.source.style,
       uScratchMap: scratchMap.source,
       uScratchSampler: scratchMap.source.style,
     },
@@ -213,12 +213,21 @@ export function createPatternMesh(
   return {
     view: mesh,
     setBundle(next) {
-      shader.resources.uColorMap = next.color.source;
-      shader.resources.uColorSampler = next.color.source.style;
       shader.resources.uHeightMap = next.height.source;
       shader.resources.uHeightSampler = next.height.source.style;
-      shader.resources.uGlossMap = next.gloss.source;
-      shader.resources.uGlossSampler = next.gloss.source.style;
+      shader.resources.uRegionMap = next.regionId.source;
+      shader.resources.uRegionSampler = next.regionId.source.style;
+      shader.resources.uFinishMask = next.finishMask.source;
+      shader.resources.uFinishMaskSampler = next.finishMask.source.style;
+    },
+    setColorway(palette) {
+      for (let i = 0; i < 8; i++) {
+        const c = palette[i] ?? 0xffffff;
+        u.uPalette[i * 4] = ((c >> 16) & 0xff) / 255;
+        u.uPalette[i * 4 + 1] = ((c >> 8) & 0xff) / 255;
+        u.uPalette[i * 4 + 2] = (c & 0xff) / 255;
+        u.uPalette[i * 4 + 3] = 1;
+      }
     },
     setLook(opts) {
       u.uTileScale[0] = opts.tileScaleX;
@@ -233,6 +242,19 @@ export function createPatternMesh(
       u.uWear = opts.wear;
     },
   };
+}
+
+function defaultPalette(): Float32Array {
+  // Pure magenta in every slot — visually loud so a missing colorway
+  // bind is impossible to miss in dev.
+  const buf = new Float32Array(32);
+  for (let i = 0; i < 8; i++) {
+    buf[i * 4] = 1;
+    buf[i * 4 + 1] = 0;
+    buf[i * 4 + 2] = 1;
+    buf[i * 4 + 3] = 1;
+  }
+  return buf;
 }
 
 export type { Texture };
