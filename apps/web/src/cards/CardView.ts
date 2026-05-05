@@ -78,11 +78,17 @@ export class CardView extends Container implements Focusable {
 
     const fill =
       card && !faceDown ? (isRedSuit(card.suit) ? color.danger : color.text) : color.text;
-    // Dark stroke gives the glyphs a hard outline so they read against any
-    // backdrop (foil / holographic / chrome). Without this the antialiased
-    // edges bleed the skin's bright pixels through the rim and the glyph
-    // appears filtered even though it's rendered above the skin layer.
-    const stroke = { color: color.bg, width: 3, alpha: 1, alignment: 0 };
+    // Dark stroke gives the glyphs a hard contour so they read against any
+    // backdrop (foil / holographic / chrome). `join: "round"` is essential —
+    // the default miter joins produce sharp spikes at acute angles (the
+    // apex of "A" was the obvious offender).
+    const stroke = {
+      color: color.bg,
+      width: 2,
+      alignment: 0.5,
+      join: "round" as const,
+      miterLimit: 2,
+    };
     this.cornerText = new Text({
       text: card && !faceDown ? cardLabel(card) : "",
       style: {
@@ -101,7 +107,7 @@ export class CardView extends Container implements Focusable {
         fontSize: typography.size.xl,
         fontWeight: typography.weight.bold,
         fill,
-        stroke: { ...stroke, width: 4 },
+        stroke: { ...stroke, width: 3 },
       },
     });
     this.glyphLayer.addChild(this.cornerText);
