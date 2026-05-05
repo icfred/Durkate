@@ -45,7 +45,7 @@ export interface Tunables {
 export const defaultTunables: Tunables = {
   cardWidth: 96,
   cardHeight: 144,
-  pattern: { tileSize: 24, overlayAlpha: 0.55 },
+  pattern: { tileSize: 24, overlayAlpha: 1.0 },
   spec: {
     patternScale: [0.6, 2.2],
     hue: [-1, 1],

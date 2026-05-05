@@ -54,6 +54,12 @@ export class CardView extends Container implements Focusable {
   private readonly borderLayer: Graphics;
   private readonly glyphLayer: Container;
   private readonly bg: Graphics;
+  // Backing plates that sit under the corner and centre glyphs, drawn
+  // by glyphLayer so they're never reached by SkinnedCard's pattern /
+  // foil meshes. Provide a known-contrast backdrop for the rank and
+  // suit so they stay readable on noisy patterns.
+  private readonly cornerPlate: Graphics;
+  private readonly centerPlate: Graphics;
   private readonly cornerText: Text;
   private readonly centerText: Text;
   private focused = false;
@@ -116,6 +122,11 @@ export class CardView extends Container implements Focusable {
         stroke: { ...stroke, width: 3 },
       },
     });
+    // Plates first so glyphs draw on top.
+    this.cornerPlate = new Graphics();
+    this.glyphLayer.addChild(this.cornerPlate);
+    this.centerPlate = new Graphics();
+    this.glyphLayer.addChild(this.centerPlate);
     this.glyphLayer.addChild(this.cornerText);
     this.glyphLayer.addChild(this.centerText);
 
@@ -162,11 +173,37 @@ export class CardView extends Container implements Focusable {
       .clear()
       .roundRect(0, 0, CARD_W, CARD_H, 4)
       .stroke({ color: border, width: borderWidth, alignment: 0 });
+    this.cornerPlate.clear();
+    this.centerPlate.clear();
     if (isFace) {
       this.cornerText.x = 6;
       this.cornerText.y = 4;
       this.centerText.x = Math.round((CARD_W - this.centerText.width) / 2);
       this.centerText.y = Math.round((CARD_H - this.centerText.height) / 2);
+
+      // Plates: dark, semi-transparent rounded rects sized just larger
+      // than each glyph's bounding box. Alpha is low enough that the
+      // pattern still bleeds through (so the plates feel inset rather
+      // than slapped on), but the contrast is reliable.
+      const plateColor = color.bg;
+      const cornerPad = 2;
+      this.cornerPlate
+        .roundRect(
+          this.cornerText.x - cornerPad,
+          this.cornerText.y - cornerPad,
+          this.cornerText.width + cornerPad * 2,
+          this.cornerText.height + cornerPad * 1.5,
+          2,
+        )
+        .fill({ color: plateColor, alpha: 0.55 });
+
+      // Centre plate: a circle behind the suit glyph rather than a
+      // rect, since the suit shape is round-ish and a circle reads
+      // less like a label and more like a recessed seal.
+      const cx = CARD_W / 2;
+      const cy = CARD_H / 2;
+      const radius = Math.max(this.centerText.width, this.centerText.height) * 0.65;
+      this.centerPlate.circle(cx, cy, radius).fill({ color: plateColor, alpha: 0.5 });
     }
   }
 }

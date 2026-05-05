@@ -117,13 +117,17 @@ void main() {
   float height = texture(uHeightMap, tileUV).r;
   vec3 finalRGB = color * lit + highlight;
 
-  // Wear: scratch-map driven. Same pipeline as before — only the
-  // texture sampling for color changed.
+  // Wear: scratch-map driven. The "stock" colour the pattern wears
+  // toward is the colorway's palette[0], which by convention is the
+  // card background — the dark substrate the pattern was painted on.
+  // Slightly darkened so chips read as recessed material rather than
+  // matching the BG exactly (which would make scratches invisible on
+  // patterns whose background is also palette[0]).
   if (uWear > 0.001) {
-    vec3 stock = vec3(0.94, 0.91, 0.86);
+    vec3 stock = uPalette[0].rgb * 0.55;
     float wearThreshold = texture(uScratchMap, vUV).r;
     float scratchAmount = smoothstep(wearThreshold - 0.06, wearThreshold + 0.02, uWear);
-    finalRGB = mix(finalRGB, stock * 1.05, scratchAmount * 0.7);
+    finalRGB = mix(finalRGB, stock, scratchAmount * 0.8);
     finalRGB *= 1.0 - (1.0 - height) * uWear * 0.25;
     float wlum = dot(finalRGB, vec3(0.299, 0.587, 0.114));
     finalRGB = mix(finalRGB, vec3(wlum) * 0.92, uWear * 0.2);
