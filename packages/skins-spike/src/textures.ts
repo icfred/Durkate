@@ -1,5 +1,6 @@
 import { Graphics, Rectangle, type Renderer, type Texture } from "pixi.js";
 import { generateProceduralPatterns } from "./proceduralPatterns.js";
+import type { PatternBundle } from "./renderers/patternFilter.js";
 
 export const CARD_WIDTH = 96;
 export const CARD_HEIGHT = 144;
@@ -9,22 +10,25 @@ export const PATTERN_TILE = 24;
 export interface SkinAssets {
   cardSurface: Texture;
   cardDecoration: Texture;
-  patterns: Texture[];
+  /**
+   * One PatternBundle per pattern slot. Each bundle ships three textures:
+   * `color` (palette per cell, no baked lighting), `height` (used by the
+   * shader for per-pixel normal), and `gloss` (specular highlight strength).
+   * The pattern shader composes all three at draw time so lighting can
+   * animate with motion mode and highlights catch on metallic pixels only.
+   */
+  patterns: PatternBundle[];
 }
 
-export function createSkinAssets(renderer: Renderer): SkinAssets {
-  // Pattern slots: P0-P3 are procedural (voronoi, fbm marble, truchet arcs,
-  // maze) — colored, organic, generated pixel-by-pixel from seeds. P4-P7
-  // are simple bitmap motifs kept as a baseline for direct comparison.
-  const procedural = generateProceduralPatterns(renderer);
-  const bitmap = [0, 1, 5, 6].map((i) => makePatternTile(renderer, i));
-  const patterns = [...procedural, ...bitmap];
-  // Nearest sampling for all patterns so they stay crisp when TilingSprite
-  // scales them up — pixel-art over the cream surface, not bilinear blur.
-  for (const tex of patterns) tex.source.scaleMode = "nearest";
+export function createSkinAssets(_renderer: Renderer): SkinAssets {
+  // Phase 2: every pattern slot is a procedural bundle. Bitmap motifs are
+  // gone — they didn't carry height/gloss data and would have rendered as
+  // flat unlit overlays under the new pattern shader. Eight recipes give
+  // a varied set of jewel/marble/circuit/labyrinth looks per palette.
+  const patterns = generateProceduralPatterns(_renderer);
   return {
-    cardSurface: makeCardSurface(renderer),
-    cardDecoration: makeCardDecoration(renderer),
+    cardSurface: makeCardSurface(_renderer),
+    cardDecoration: makeCardDecoration(_renderer),
     patterns,
   };
 }
@@ -60,139 +64,5 @@ function makeCardDecoration(renderer: Renderer): Texture {
   return renderer.generateTexture({
     target: g,
     frame: new Rectangle(0, 0, CARD_WIDTH, CARD_HEIGHT),
-  });
-}
-
-// Pattern tiles are pixel-art. Every motif is built from integer-aligned
-// rectangles on an 8x8 cell grid (PATTERN_TILE = 24, cell = PIXEL = 3px).
-// Each tile is hand-designed to seam at all four edges so it reads as an
-// infinite repeat rather than a tiled stamp.
-const PIXEL = 3;
-const TILE_CELLS = 8;
-
-function px(g: Graphics, cx: number, cy: number, color: number): void {
-  g.rect(cx * PIXEL, cy * PIXEL, PIXEL, PIXEL).fill({ color });
-}
-
-// Each pattern is an 8x8 ASCII bitmap. "#" = ink cell, anything else = empty.
-// Multi-line template string preserves the visual layout for hand-editing
-// (biome-format would otherwise collapse arrays of row strings to one line).
-function drawBitmap(g: Graphics, art: string, color: number): void {
-  const rows = art.split("\n").filter((r) => r.length > 0);
-  for (let y = 0; y < TILE_CELLS; y++) {
-    const row = rows[y] ?? "";
-    for (let x = 0; x < TILE_CELLS; x++) {
-      if (row[x] === "#") px(g, x, y, color);
-    }
-  }
-}
-
-// 0: Polka dots — 2x2 dots on a 4-cell stride.
-const PAT_DOTS = `
-##..##..
-##..##..
-........
-........
-##..##..
-##..##..
-........
-........`;
-
-// 1: Diagonal stripes — 1px wide, stride 4. Tiles seamlessly.
-const PAT_STRIPES = `
-#...#...
-.#...#..
-..#...#.
-...#...#
-#...#...
-.#...#..
-..#...#.
-...#...#`;
-
-// 2: Bricks — running bond. Mortar is the ink.
-const PAT_BRICKS = `
-....#...
-....#...
-....#...
-########
-#.......
-#.......
-#.......
-########`;
-
-// 3: Diamond grid — two diamonds per tile, offset for a denser feel.
-const PAT_DIAMONDS = `
-.#......
-#.#.....
-.#......
-........
-.....#..
-....#.#.
-.....#..
-........`;
-
-// 4: Houndstooth — classic 4x4 motif tiled 2x.
-const PAT_HOUNDSTOOTH = `
-##..##..
-#...#...
-...#...#
-..##..##
-##..##..
-#...#...
-...#...#
-..##..##`;
-
-// 5: Checkerboard — 2x2 cells.
-const PAT_CHECKER = `
-##..##..
-##..##..
-..##..##
-..##..##
-##..##..
-##..##..
-..##..##
-..##..##`;
-
-// 6: Confetti — eight scattered single-cell dots, no two adjacent.
-const PAT_CONFETTI = `
-#.......
-...#....
-......#.
-..#.....
-.....#..
-.#......
-....#...
-.......#`;
-
-// 7: Cross-hatch X — paired diagonals forming an X per tile.
-const PAT_HATCH = `
-#......#
-.#....#.
-..#..#..
-...##...
-...##...
-..#..#..
-.#....#.
-#......#`;
-
-const PATTERN_BITMAPS: readonly string[] = [
-  PAT_DOTS,
-  PAT_STRIPES,
-  PAT_BRICKS,
-  PAT_DIAMONDS,
-  PAT_HOUNDSTOOTH,
-  PAT_CHECKER,
-  PAT_CONFETTI,
-  PAT_HATCH,
-];
-
-function makePatternTile(renderer: Renderer, index: number): Texture {
-  const g = new Graphics();
-  g.rect(0, 0, PATTERN_TILE, PATTERN_TILE).fill({ color: 0x000000, alpha: 0 });
-  const bitmap = PATTERN_BITMAPS[index] ?? PATTERN_BITMAPS[PATTERN_BITMAPS.length - 1];
-  if (bitmap) drawBitmap(g, bitmap, 0xffffff);
-  return renderer.generateTexture({
-    target: g,
-    frame: new Rectangle(0, 0, PATTERN_TILE, PATTERN_TILE),
   });
 }

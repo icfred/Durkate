@@ -7,7 +7,11 @@ function mockAssets(): SkinAssets {
   return {
     cardSurface: Texture.EMPTY,
     cardDecoration: Texture.EMPTY,
-    patterns: [Texture.EMPTY, Texture.EMPTY, Texture.EMPTY, Texture.EMPTY],
+    patterns: Array.from({ length: 4 }, () => ({
+      color: Texture.EMPTY,
+      height: Texture.EMPTY,
+      gloss: Texture.EMPTY,
+    })),
   };
 }
 

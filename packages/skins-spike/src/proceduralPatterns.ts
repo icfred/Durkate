@@ -1,16 +1,19 @@
 import { type Renderer, Texture } from "pixi.js";
+import type { PatternBundle } from "./renderers/patternFilter.js";
 
-// Procedural pattern tiles. Each generator paints a TILE_PX × TILE_PX color
-// buffer AND a single-channel height buffer pixel-by-pixel from a
-// deterministic seed. After painting, a Sobel-on-height → Lambert lighting
-// pass modulates the color, baking depth into the final texture. Result is
-// a single RGBA texture uploaded via canvas → Texture.from() that drops
-// straight into the existing TilingSprite pipeline (no shader / SkinnedCard
-// changes needed for this phase).
+// Phase 2 procedural pattern bundles. Each generator emits THREE textures:
 //
-// Patterns are designed to seam at all four edges so TilingSprite repetition
-// reads as a continuous surface, not a stamp. The lighting pass also wraps
-// at edges so the bevel doesn't break the seam.
+//   - color: flat per-cell palette colors. Lighting is no longer baked
+//     into the color buffer — that runs in the shader at draw time so
+//     light direction can animate with motion mode.
+//   - height: per-pixel surface elevation, drives the per-pixel normal
+//     used by the shader's Lambert + specular lighting.
+//   - gloss: per-pixel "shine" factor, modulates specular highlight
+//     strength and exponent so highlights catch on metallic pixels.
+//
+// All three textures are 48×48, sample nearest, and seam at all four
+// edges (the shader uses fract() to tile, and generators design motifs
+// that wrap losslessly).
 
 export const PROC_TILE_PX = 48;
 const N = PROC_TILE_PX;
@@ -22,6 +25,8 @@ const PALETTES: Record<string, Palette> = {
   copper: [0x1a0f08, 0x6e3a1c, 0xb86a32, 0xeaa75e, 0xfff1d0],
   forest: [0x0f1a14, 0x2a4a2e, 0x5b8c3e, 0xa3c46b, 0xe8e0a8],
   cyber: [0x07021a, 0x2a0a4a, 0x6b1aa8, 0xff37c8, 0x42f5b8],
+  ember: [0x1a0606, 0x4a1818, 0xb83232, 0xff8a5e, 0xffe7a8],
+  aurora: [0x0a0820, 0x1a3060, 0x3878d8, 0x9adef8, 0xffe8a0],
 };
 
 // ---- Pixel helpers --------------------------------------------------------
@@ -38,12 +43,15 @@ function setHeight(buf: Uint8Array, x: number, y: number, h: number): void {
   buf[y * N + x] = Math.max(0, Math.min(255, Math.round(h * 255)));
 }
 
+function setGloss(buf: Uint8Array, x: number, y: number, g: number): void {
+  buf[y * N + x] = Math.max(0, Math.min(255, Math.round(g * 255)));
+}
+
 function paletteAt(palette: Palette, t: number): number {
   const idx = Math.max(0, Math.min(palette.length - 1, Math.floor(t * palette.length)));
   return palette[idx] ?? 0xffffff;
 }
 
-// Integer hash, returns [0, 1).
 function hash2(x: number, y: number, seed: number): number {
   let h = seed | 0;
   h = Math.imul(h ^ (x | 0), 0x85ebca6b);
@@ -89,80 +97,61 @@ function tileFbm(x: number, y: number, basePeriod: number, seed: number, octaves
   return total / norm;
 }
 
-// ---- Lighting pass --------------------------------------------------------
-
-// Light direction in tile space: x = right, y = down, z = out of screen.
-// A top-left light pointing into the surface has negative x/y and positive z.
-// Magnitudes pre-normalized to a unit vector.
-const LIGHT_X = -0.5;
-const LIGHT_Y = -0.5;
-const LIGHT_Z = 0.7;
-// How strongly height differences turn into normal slope. Larger = more
-// dramatic bevel; chosen so flat regions stay full-bright and sharp edges
-// drop into shadow without going black.
-const BUMP_SCALE = 2.0;
-// Ambient term — even fully-shadowed pixels keep this fraction of color so
-// the dark side of bevels still reads as patterned, not as a black hole.
-const AMBIENT = 0.35;
-
-function applyLighting(color: Uint8ClampedArray, height: Uint8Array, out: Uint8ClampedArray): void {
-  const wrap = (n: number) => ((n % N) + N) % N;
-  for (let y = 0; y < N; y++) {
-    const yL = wrap(y - 1) * N;
-    const yR = wrap(y + 1) * N;
-    const yC = y * N;
-    for (let x = 0; x < N; x++) {
-      const xL = wrap(x - 1);
-      const xR = wrap(x + 1);
-      const hL = (height[yC + xL] ?? 0) / 255;
-      const hR = (height[yC + xR] ?? 0) / 255;
-      const hT = (height[yL + x] ?? 0) / 255;
-      const hB = (height[yR + x] ?? 0) / 255;
-      const dx = (hR - hL) * BUMP_SCALE;
-      const dy = (hB - hT) * BUMP_SCALE;
-      // Normal points "up" out of the surface where slope is zero; tilts
-      // toward downhill direction otherwise. Pre-normalize.
-      const nx = -dx;
-      const ny = -dy;
-      const nz = 1;
-      const len = Math.hypot(nx, ny, nz);
-      const dot = (nx * LIGHT_X + ny * LIGHT_Y + nz * LIGHT_Z) / len;
-      const lit = AMBIENT + (1 - AMBIENT) * Math.max(0, dot);
-      const ci = (yC + x) * 4;
-      out[ci] = (color[ci] ?? 0) * lit;
-      out[ci + 1] = (color[ci + 1] ?? 0) * lit;
-      out[ci + 2] = (color[ci + 2] ?? 0) * lit;
-      out[ci + 3] = color[ci + 3] ?? 255;
-    }
-  }
-}
-
 // ---- Texture upload -------------------------------------------------------
 
-function makeTexture(painter: (color: Uint8ClampedArray, height: Uint8Array) => void): Texture {
+function uploadGrayscale(buf: Uint8Array): Texture {
   const canvas = document.createElement("canvas");
   canvas.width = N;
   canvas.height = N;
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("proceduralPatterns: 2d canvas context unavailable");
-  const colorBuf = new Uint8ClampedArray(N * N * 4);
-  const heightBuf = new Uint8Array(N * N);
-  painter(colorBuf, heightBuf);
-  const finalImg = ctx.createImageData(N, N);
-  applyLighting(colorBuf, heightBuf, finalImg.data);
-  ctx.putImageData(finalImg, 0, 0);
+  const img = ctx.createImageData(N, N);
+  for (let i = 0; i < N * N; i++) {
+    const v = buf[i] ?? 0;
+    img.data[i * 4] = v;
+    img.data[i * 4 + 1] = v;
+    img.data[i * 4 + 2] = v;
+    img.data[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
   const tex = Texture.from(canvas);
-  // Nearest sampling so the procedural pixels stay crisp when TilingSprite
-  // scales the tile up, instead of bilinear-blurring color transitions.
   tex.source.scaleMode = "nearest";
   return tex;
 }
 
+function uploadColor(buf: Uint8ClampedArray): Texture {
+  const canvas = document.createElement("canvas");
+  canvas.width = N;
+  canvas.height = N;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("proceduralPatterns: 2d canvas context unavailable");
+  const img = ctx.createImageData(N, N);
+  img.data.set(buf);
+  ctx.putImageData(img, 0, 0);
+  const tex = Texture.from(canvas);
+  tex.source.scaleMode = "nearest";
+  return tex;
+}
+
+function makeBundle(
+  paint: (color: Uint8ClampedArray, height: Uint8Array, gloss: Uint8Array) => void,
+): PatternBundle {
+  const colorBuf = new Uint8ClampedArray(N * N * 4);
+  const heightBuf = new Uint8Array(N * N);
+  const glossBuf = new Uint8Array(N * N);
+  paint(colorBuf, heightBuf, glossBuf);
+  return {
+    color: uploadColor(colorBuf),
+    height: uploadGrayscale(heightBuf),
+    gloss: uploadGrayscale(glossBuf),
+  };
+}
+
 // ---- Generators -----------------------------------------------------------
 
-function voronoiTexture(seed: number, palette: Palette): Texture {
-  return makeTexture((color, height) => {
-    const cells = 6; // 6×6 = 36 cells across the tile
+function voronoiBundle(seed: number, palette: Palette): PatternBundle {
+  return makeBundle((color, height, gloss) => {
+    const cells = 6;
     const cellSize = N / cells;
     const wrap = (n: number) => ((n % cells) + cells) % cells;
     const seedAt = (cx: number, cy: number) => {
@@ -200,19 +189,21 @@ function voronoiTexture(seed: number, palette: Palette): Texture {
         }
         const tCol = hash2(bestId, bestId * 13, seed + 99);
         setColor(color, x, y, paletteAt(palette, tCol));
-        // Height: edge distance, mapped 0..1. Cell centers are ~3-4 cellSize
-        // away from the second-nearest seed, edges are 0. Lambert lighting
-        // turns the edge falloff into a faceted shard look.
         const edge = Math.sqrt(secondBest) - Math.sqrt(best);
         const h = Math.min(1, edge / (cellSize * 0.6));
         setHeight(height, x, y, h);
+        // Gloss: high near cell centres (faceted gem highlights), zero
+        // along borders. Per-cell jitter gives variety so not every shard
+        // glints equally.
+        const cellGloss = 0.4 + 0.6 * hash2(bestId, bestId * 7, seed + 211);
+        setGloss(gloss, x, y, h * cellGloss);
       }
     }
   });
 }
 
-function fbmMarbleTexture(seed: number, palette: Palette): Texture {
-  return makeTexture((color, height) => {
+function fbmMarbleBundle(seed: number, palette: Palette): PatternBundle {
+  return makeBundle((color, height, gloss) => {
     const period = 4;
     const bands = palette.length;
     for (let y = 0; y < N; y++) {
@@ -224,26 +215,27 @@ function fbmMarbleTexture(seed: number, palette: Palette): Texture {
         m = Math.max(0, Math.min(1, (m - 0.5) * 1.4 + 0.5));
         const band = Math.floor(m * bands) / bands;
         setColor(color, x, y, paletteAt(palette, band));
-        // Height: the smooth fbm value (not the posterized band) so lighting
-        // reveals continuous flowing 3D contours under the banded color.
         setHeight(height, x, y, n);
+        // Gloss: only the "vein peaks" (high m values) look polished;
+        // dark valleys read as matte stone.
+        setGloss(gloss, x, y, m * m);
       }
     }
   });
 }
 
-function truchetTexture(seed: number, palette: Palette): Texture {
-  return makeTexture((color, height) => {
-    const cells = 4; // 4×4 = 16 truchet cells per tile
+function truchetBundle(seed: number, palette: Palette): PatternBundle {
+  return makeBundle((color, height, gloss) => {
+    const cells = 4;
     const cellSize = N / cells;
     const bg = paletteAt(palette, 0.0);
     const arc = paletteAt(palette, 0.85);
     const inner = paletteAt(palette, 0.55);
-    // Background fill — flat color, height 0.
     for (let y = 0; y < N; y++) {
       for (let x = 0; x < N; x++) {
         setColor(color, x, y, bg);
         setHeight(height, x, y, 0);
+        setGloss(gloss, x, y, 0);
       }
     }
     for (let cy = 0; cy < cells; cy++) {
@@ -261,15 +253,12 @@ function truchetTexture(seed: number, palette: Palette): Texture {
             const d1 = Math.hypot(px - ax, py - ay);
             const d2 = Math.hypot(px - bx2, py - by2);
             const e = Math.min(Math.abs(d1 - r), Math.abs(d2 - r));
-            // Color: arc band core vs inner halo vs background.
             if (e < 0.6) setColor(color, ox + px, oy + py, arc);
             else if (e < 1.6) setColor(color, ox + px, oy + py, inner);
-            // (else stays as bg from the initial fill above)
-            // Height: tubes — peak on the arc center, fall off with
-            // distance. Using a smooth gaussian-ish bump gives a rounded
-            // rather than ridged tube under lighting.
             const ridge = Math.exp(-(e * e) / 2.5);
             setHeight(height, ox + px, oy + py, ridge);
+            // Gloss: arcs are polished metal, background matte.
+            setGloss(gloss, ox + px, oy + py, ridge);
           }
         }
       }
@@ -277,18 +266,18 @@ function truchetTexture(seed: number, palette: Palette): Texture {
   });
 }
 
-function mazeTexture(seed: number, palette: Palette): Texture {
-  return makeTexture((color, height) => {
-    const cells = 8; // 8×8 maze cells
+function mazeBundle(seed: number, palette: Palette): PatternBundle {
+  return makeBundle((color, height, gloss) => {
+    const cells = 8;
     const cellSize = N / cells;
     const floor = paletteAt(palette, 0.0);
     const wallMid = paletteAt(palette, 0.7);
     const wallTop = paletteAt(palette, 0.95);
-    // Background.
     for (let y = 0; y < N; y++) {
       for (let x = 0; x < N; x++) {
         setColor(color, x, y, floor);
         setHeight(height, x, y, 0);
+        setGloss(gloss, x, y, 0);
       }
     }
     const knockNorth: boolean[] = [];
@@ -312,8 +301,9 @@ function mazeTexture(seed: number, palette: Palette): Texture {
               const px = x0 + i;
               const py = y0 + cellSize - 1 - j;
               setColor(color, px, py, j === 0 ? wallTop : wallMid);
-              // Height: solid wall ridge — tile-tall plateau.
               setHeight(height, px, py, 1);
+              // Gloss: walls polished, top edge highest.
+              setGloss(gloss, px, py, j === 0 ? 0.85 : 0.5);
             }
           }
         }
@@ -324,6 +314,7 @@ function mazeTexture(seed: number, palette: Palette): Texture {
               const py = y0 + i;
               setColor(color, px, py, j === 0 ? wallTop : wallMid);
               setHeight(height, px, py, 1);
+              setGloss(gloss, px, py, j === 0 ? 0.85 : 0.5);
             }
           }
         }
@@ -337,22 +328,21 @@ function mazeTexture(seed: number, palette: Palette): Texture {
 interface ProceduralRecipe {
   name: string;
   seed: number;
-  generator: (seed: number, palette: Palette) => Texture;
+  generator: (seed: number, palette: Palette) => PatternBundle;
   palette: Palette;
 }
 
 const RECIPES: readonly ProceduralRecipe[] = [
-  { name: "voronoi-ocean", seed: 0xa17c, generator: voronoiTexture, palette: PALETTES.ocean ?? [] },
-  { name: "fbm-copper", seed: 0xb29d, generator: fbmMarbleTexture, palette: PALETTES.copper ?? [] },
-  {
-    name: "truchet-cyber",
-    seed: 0xc34e,
-    generator: truchetTexture,
-    palette: PALETTES.cyber ?? [],
-  },
-  { name: "maze-forest", seed: 0xd45f, generator: mazeTexture, palette: PALETTES.forest ?? [] },
+  { name: "voronoi-ocean", seed: 0xa17c, generator: voronoiBundle, palette: PALETTES.ocean ?? [] },
+  { name: "fbm-copper", seed: 0xb29d, generator: fbmMarbleBundle, palette: PALETTES.copper ?? [] },
+  { name: "truchet-cyber", seed: 0xc34e, generator: truchetBundle, palette: PALETTES.cyber ?? [] },
+  { name: "maze-forest", seed: 0xd45f, generator: mazeBundle, palette: PALETTES.forest ?? [] },
+  { name: "voronoi-cyber", seed: 0x217a, generator: voronoiBundle, palette: PALETTES.cyber ?? [] },
+  { name: "fbm-aurora", seed: 0x32b8, generator: fbmMarbleBundle, palette: PALETTES.aurora ?? [] },
+  { name: "truchet-ember", seed: 0x43c1, generator: truchetBundle, palette: PALETTES.ember ?? [] },
+  { name: "maze-copper", seed: 0x54d9, generator: mazeBundle, palette: PALETTES.copper ?? [] },
 ];
 
-export function generateProceduralPatterns(_renderer: Renderer): Texture[] {
+export function generateProceduralPatterns(_renderer: Renderer): PatternBundle[] {
   return RECIPES.map((r) => r.generator(r.seed, r.palette));
 }

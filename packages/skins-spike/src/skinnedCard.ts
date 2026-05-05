@@ -1,5 +1,7 @@
-import { ColorMatrixFilter, Container, type Filter, TilingSprite } from "pixi.js";
+import { ColorMatrixFilter, Container, type Filter, Sprite, Texture } from "pixi.js";
+import { PROC_TILE_PX } from "./proceduralPatterns.js";
 import { createFoilFilter, type FoilController } from "./renderers/foilFilter.js";
+import { createPatternFilter, type PatternFilterController } from "./renderers/patternFilter.js";
 import type { Finish, Motion, SkinSpec } from "./spec.js";
 import { PATTERN_TILE, type SkinAssets } from "./textures.js";
 import { defaultTunables, type Tunables } from "./tunables.js";
@@ -24,19 +26,23 @@ export interface SkinnedCardOptions {
 
 /**
  * Wraps a base card Container (typically `CardView`) with cosmetic effects:
- * tint, finish (foil/chrome/holographic), motion, and pattern overlay.
+ * pattern overlay (color + height + gloss bundle, lit per-pixel by a custom
+ * shader), tint (color matrix), finish (foil/chrome/holographic), and
+ * motion (animates light direction + foil shimmer).
  *
- * `applySkin(null)` removes all effects so the wrapper renders identically to
- * a bare base. This is the "no skin = default look" axiom.
+ * Pattern is rendered via a placeholder Sprite covering the card area with
+ * a custom filter that samples the pattern bundle's three textures and
+ * does its own tiling math + per-pixel lighting. The Sprite's underlying
+ * texture (Texture.WHITE) is ignored by the shader.
+ *
+ * `applySkin(null)` removes all effects so the wrapper renders identically
+ * to a bare base. This is the "no skin = default look" axiom.
  */
 export class SkinnedCard extends Container {
   private readonly base: Container;
-  // The Container that cosmetic effects target. If `base` is a CardView (or
-  // anything that exposes a `skinLayer` field), filters and pattern overlay
-  // attach there — sitting *under* the rank/suit glyphs so the text stays
-  // legible. Falls back to `base` for non-CardView wrappers.
   private readonly skinTarget: Container;
-  private readonly pattern: TilingSprite;
+  private readonly patternSprite: Sprite;
+  private readonly patternCtrl: PatternFilterController;
   private readonly tintFilter: ColorMatrixFilter;
   private readonly foil: FoilController;
   private readonly assets: SkinAssets;
@@ -45,6 +51,7 @@ export class SkinnedCard extends Container {
   private spec: SkinSpec | null = null;
   private axes: Axes = { ...ALL_AXES };
   private tunables: Tunables = defaultTunables;
+  private currentBundleIndex = -1;
 
   constructor(options: SkinnedCardOptions) {
     super();
@@ -57,16 +64,18 @@ export class SkinnedCard extends Container {
 
     const fallback = options.assets.patterns[0];
     if (!fallback) throw new Error("SkinnedCard: assets.patterns is empty");
-    this.pattern = new TilingSprite({
-      texture: fallback,
-      width: options.baseWidth,
-      height: options.baseHeight,
-    });
-    this.pattern.visible = false;
-    // Pattern goes inside the skin target so it sits between the bg and the
-    // rank/suit glyphs. Adding it to `this` instead would put it above the
-    // glyphs and obscure them — the bug this layering rewrite fixes.
-    this.skinTarget.addChild(this.pattern);
+
+    // Placeholder sprite the pattern filter renders into. Texture.WHITE is
+    // a 1×1 white pixel; the filter ignores uTexture and reads the bundle
+    // textures directly.
+    this.patternSprite = new Sprite({ texture: Texture.WHITE });
+    this.patternSprite.width = options.baseWidth;
+    this.patternSprite.height = options.baseHeight;
+    this.patternSprite.visible = false;
+    this.skinTarget.addChild(this.patternSprite);
+
+    this.patternCtrl = createPatternFilter(fallback);
+    this.patternSprite.filters = [this.patternCtrl.filter];
 
     this.tintFilter = new ColorMatrixFilter();
     this.foil = createFoilFilter();
@@ -91,25 +100,22 @@ export class SkinnedCard extends Container {
     this.axes = { ...axes };
 
     if (!spec) {
-      this.pattern.visible = false;
+      this.patternSprite.visible = false;
       this.skinTarget.filters = [];
       return;
     }
 
     if (axes.pattern) {
-      this.pattern.visible = true;
-      const tex =
-        this.assets.patterns[spec.pattern.index % this.assets.patterns.length] ??
-        this.assets.patterns[0];
-      if (tex) this.pattern.texture = tex;
-      this.pattern.tileScale.set(spec.pattern.scale);
-      this.pattern.tilePosition.set(
-        spec.pattern.offsetX * PATTERN_TILE,
-        spec.pattern.offsetY * PATTERN_TILE,
-      );
-      this.pattern.alpha = this.tunables.pattern.overlayAlpha;
+      this.patternSprite.visible = true;
+      const idx = spec.pattern.index % this.assets.patterns.length;
+      const bundle = this.assets.patterns[idx] ?? this.assets.patterns[0];
+      if (bundle && idx !== this.currentBundleIndex) {
+        this.patternCtrl.setBundle(bundle);
+        this.currentBundleIndex = idx;
+      }
+      this.refreshPatternLook(0);
     } else {
-      this.pattern.visible = false;
+      this.patternSprite.visible = false;
     }
 
     const filters: Filter[] = [];
@@ -135,8 +141,35 @@ export class SkinnedCard extends Container {
     this.skinTarget.filters = filters;
   }
 
+  /**
+   * Updates the pattern shader uniforms — tile scale/offset, motion, and
+   * overlay alpha — based on the current spec + tunables. Called from
+   * `applySkin` (initial bind) and `tick` (motion animation).
+   */
+  private refreshPatternLook(time: number): void {
+    if (!this.spec) return;
+    const tileWorldSize = PATTERN_TILE * this.spec.pattern.scale;
+    const tilesAcross = this.baseWidth / tileWorldSize;
+    const tilesDown = this.baseHeight / tileWorldSize;
+    const motion =
+      this.axes.motion && this.spec.motion !== "none" ? motionToFloat(this.spec.motion) : 0;
+    this.patternCtrl.setLook({
+      time,
+      motion,
+      tileScaleX: tilesAcross,
+      tileScaleY: tilesDown,
+      tileOffsetX: this.spec.pattern.offsetX,
+      tileOffsetY: this.spec.pattern.offsetY,
+      overlayAlpha: this.tunables.pattern.overlayAlpha,
+      bumpScale: 2.0,
+      texelSize: 1 / PROC_TILE_PX,
+    });
+  }
+
   tick(timeSeconds: number): void {
     if (!this.spec) return;
+    // Pattern shader animates with motion mode regardless of finish.
+    if (this.axes.pattern) this.refreshPatternLook(timeSeconds);
     if (!this.axes.finish || this.spec.finish === "matte") return;
     if (!this.axes.motion || this.spec.motion === "none") return;
     this.foil.setLook(
