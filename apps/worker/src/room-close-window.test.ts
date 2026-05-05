@@ -377,6 +377,124 @@ describe("Room FFA throw-in window (close-window)", () => {
     ws.close();
   }, 15_000);
 
+  it("END_ROUND close-window: throw-ins making END_ROUND invalid wake up defender bot (DUR-55)", async () => {
+    // 4-player FFA: human at seat 0 (attacker), bots at seats 1, 2, 3.
+    // Setup: defended attack on the table, seat 0 ends the round → close
+    // window opens. Seat 2 (bot) has a rank-8 card to throw in. After
+    // fan-out the table has an undefended attack — the engine would
+    // reject END_ROUND with ATTACKS_UNDEFENDED. The room must skip the
+    // apply and route play back to the defender bot. (Regression: before
+    // the fix, applyToEngine returned ok:false and the defender bot was
+    // never scheduled, leaving the game stuck.)
+    const res = await postRooms({ playerCount: 4, botCount: 3 });
+    const body = (await res.json()) as CreateRoomResponse;
+    const stub = env.ROOMS.get(env.ROOMS.idFromName(body.roomId));
+
+    const ws = await openWs(body.roomId, body.hostToken);
+    await new Promise<void>((r) => setTimeout(r, 30));
+
+    const trump: Card = { suit: "hearts", rank: 11 };
+    const seedState = buildBaseInRound(4);
+    const injected: InRoundState = {
+      ...seedState,
+      hands: [
+        // seat 0: human attacker — any card; won't act after END_ROUND.
+        [{ suit: "diamonds", rank: 9 }],
+        // seat 1: bot defender — queen of trump beats any non-trump.
+        [{ suit: "hearts", rank: 12 }],
+        // seat 2: bot — rank-8 throw-in candidate (matches table rank 8).
+        [{ suit: "diamonds", rank: 8 }],
+        // seat 3: bot — no rank match, will pass.
+        [{ suit: "clubs", rank: 13 }],
+      ],
+      table: [
+        {
+          attack: { suit: "spades", rank: 8 },
+          defense: { suit: "spades", rank: 9 },
+        },
+      ],
+      attacker: 0,
+      defender: 1,
+      trumpSuit: trump.suit,
+      trumpCard: trump,
+      talon: [
+        { suit: "clubs", rank: 6 },
+        { suit: "clubs", rank: 7 },
+      ],
+    };
+    await runInDurableObject(stub, async (room: Room) => {
+      // Generous close window so bot fan-out fires before the close alarm.
+      room.testSetCloseWindowMs(60_000);
+      room.testSetThinkBounds({ min: 100, max: 100 });
+      // biome-ignore lint/suspicious/noExplicitAny: test seam injection.
+      (room as any).engineState = injected;
+    });
+
+    // Submit END_ROUND from the human attacker — opens the close window.
+    ws.send(
+      JSON.stringify({
+        type: "SubmitAction",
+        action: { type: "END_ROUND", by: 0 },
+      }),
+    );
+
+    let pending = null as ReturnType<Room["testPendingClose"]>;
+    for (let i = 0; i < 20 && pending === null; i++) {
+      await new Promise<void>((r) => setTimeout(r, 20));
+      pending = await runInDurableObject(stub, async (room: Room) => room.testPendingClose());
+    }
+    if (!pending) throw new Error("expected pendingClose after END_ROUND");
+    expect(pending.kind).toBe("END_ROUND");
+
+    // Fire bot fan-out: seat 2 throws diamonds-8, seat 3 passes.
+    await runInDurableObject(stub, async (room: Room) => {
+      await room.testFireAlarm(Date.now() + 1_000);
+    });
+
+    pending = await runInDurableObject(stub, async (room: Room) => room.testPendingClose());
+    if (!pending) throw new Error("pendingClose should still be set after THROW_IN");
+
+    // Engine state must now have an undefended attack from the throw-in,
+    // otherwise the test isn't exercising the bug condition.
+    const afterThrow = await runInDurableObject(stub, async (room: Room) =>
+      room.testCurrentState(),
+    );
+    if (!afterThrow || afterThrow.phase !== "in-round") throw new Error("state lost phase");
+    expect(afterThrow.table.length).toBe(2);
+    expect(afterThrow.table[1]?.defense).toBeUndefined();
+
+    // Fire close-window alarm. Without the fix this would attempt
+    // END_ROUND, get ATTACKS_UNDEFENDED, and silently strand the game.
+    await runInDurableObject(stub, async (room: Room) => {
+      await room.testFireAlarm(pending.closesAt + 100);
+    });
+
+    const cleared = await runInDurableObject(stub, async (room: Room) => room.testPendingClose());
+    expect(cleared).toBeNull();
+
+    // The defender bot must be scheduled to act on the undefended attack.
+    const deadlines = await runInDurableObject(stub, async (room: Room) => room.testDeadlines());
+    expect(deadlines["bot-think"]).toBeDefined();
+
+    // Fire bot-think generously: defender should beat the undefended D-8
+    // with H-12 (trump), or take the pile. The bug shape is "D-8 sits on
+    // the table forever undefended" — assert that scenario does NOT occur.
+    await runInDurableObject(stub, async (room: Room) => {
+      await room.testFireAlarm(Date.now() + 10_000);
+    });
+    const final = await runInDurableObject(stub, async (room: Room) => room.testCurrentState());
+    if (!final) throw new Error("final state lost");
+    if (final.phase === "in-round") {
+      const stuckOnD8 = final.table.some(
+        (p) => p.attack.suit === "diamonds" && p.attack.rank === 8 && !p.defense,
+      );
+      expect(stuckOnD8).toBe(false);
+    }
+    // (If the game advanced to game-over that's also fine — play continued.)
+
+    ws.close();
+  }, 15_000);
+
   it("close-window alarm firing applies the pending action", async () => {
     const res = await postRooms({ playerCount: 4, botCount: 0 });
     const body = (await res.json()) as CreateRoomResponse & { joinTokens?: string[] };
