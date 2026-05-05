@@ -56,7 +56,7 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
   const screen =
     sandboxParam === "skins"
       ? new SkinSandboxScreen({ assets: skinAssets, ticker: app.ticker })
-      : new SkinTunerScreen({ assets: skinAssets, ticker: app.ticker });
+      : new SkinTunerScreen({ assets: skinAssets, ticker: app.ticker, canvas: app.canvas });
   screen.layout(app.screen.width, app.screen.height);
   app.stage.addChild(screen);
   app.renderer.on("resize", () => {

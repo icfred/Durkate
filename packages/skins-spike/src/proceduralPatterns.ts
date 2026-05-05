@@ -103,7 +103,11 @@ function makeTexture(painter: (data: Uint8ClampedArray) => void): Texture {
   const img = ctx.createImageData(N, N);
   painter(img.data);
   ctx.putImageData(img, 0, 0);
-  return Texture.from(canvas);
+  const tex = Texture.from(canvas);
+  // Nearest sampling so the procedural pixels stay crisp when TilingSprite
+  // scales the tile up, instead of bilinear-blurring color transitions.
+  tex.source.scaleMode = "nearest";
+  return tex;
 }
 
 // ---- Generators -----------------------------------------------------------

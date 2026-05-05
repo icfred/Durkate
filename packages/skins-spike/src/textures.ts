@@ -18,10 +18,14 @@ export function createSkinAssets(renderer: Renderer): SkinAssets {
   // are simple bitmap motifs kept as a baseline for direct comparison.
   const procedural = generateProceduralPatterns(renderer);
   const bitmap = [0, 1, 5, 6].map((i) => makePatternTile(renderer, i));
+  const patterns = [...procedural, ...bitmap];
+  // Nearest sampling for all patterns so they stay crisp when TilingSprite
+  // scales them up — pixel-art over the cream surface, not bilinear blur.
+  for (const tex of patterns) tex.source.scaleMode = "nearest";
   return {
     cardSurface: makeCardSurface(renderer),
     cardDecoration: makeCardDecoration(renderer),
-    patterns: [...procedural, ...bitmap],
+    patterns,
   };
 }
 

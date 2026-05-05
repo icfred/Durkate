@@ -1,7 +1,7 @@
 import { color, spacing, stroke, typography } from "@durak/ui";
-import { Container, type FederatedPointerEvent, Graphics, Text } from "pixi.js";
+import { Container, type FederatedPointerEvent, Graphics, Rectangle, Text } from "pixi.js";
 
-const ROW_HEIGHT = 36;
+const ROW_HEIGHT = 28;
 
 export interface SliderOptions {
   label: string;
@@ -12,6 +12,12 @@ export interface SliderOptions {
   step?: number;
   format?(value: number): string;
   onChange(value: number): void;
+  /**
+   * If provided, clicking the value label invokes this callback. The screen
+   * uses it to mount an HTML number input over the value field for typed
+   * editing — sliders alone are too coarse for parameter tuning.
+   */
+  onRequestEdit?(slider: Slider): void;
 }
 
 export class Slider extends Container {
@@ -27,6 +33,7 @@ export class Slider extends Container {
   private readonly step: number;
   private readonly format: (value: number) => string;
   private readonly onChange: (value: number) => void;
+  private readonly onRequestEdit: ((slider: Slider) => void) | undefined;
   private value: number;
   private dragging = false;
 
@@ -38,6 +45,7 @@ export class Slider extends Container {
     this.step = options.step ?? 0;
     this.format = options.format ?? ((v) => v.toFixed(2));
     this.onChange = options.onChange;
+    this.onRequestEdit = options.onRequestEdit;
 
     this.labelText = new Text({
       text: options.label,
@@ -62,11 +70,17 @@ export class Slider extends Container {
         letterSpacing: typography.letterSpacing.tight,
       },
     });
+    this.valueText.eventMode = "static";
+    this.valueText.cursor = "text";
+    this.valueText.on("pointertap", (e) => {
+      e.stopPropagation();
+      this.onRequestEdit?.(this);
+    });
     this.addChild(this.valueText);
 
     const valueWidth = 56;
     this.trackX = 0;
-    this.trackY = 18;
+    this.trackY = 14;
     this.trackWidth = options.width - valueWidth - spacing.sm;
 
     this.track = new Graphics();
@@ -104,9 +118,32 @@ export class Slider extends Container {
     this.on("pointerupoutside", release);
 
     this.valueText.x = this.trackX + this.trackWidth + spacing.sm;
-    this.valueText.y = this.trackY - 6;
+    this.valueText.y = this.trackY - 4;
 
     this.redraw();
+  }
+
+  getValue(): number {
+    return this.value;
+  }
+
+  /**
+   * Apply a typed/edited value: clamp+snap, update the slider, and notify
+   * onChange if the value actually moved. Used by the screen's edit overlay.
+   */
+  applyEdit(raw: number): void {
+    if (!Number.isFinite(raw)) return;
+    const snapped = this.snap(raw);
+    if (snapped === this.value) return;
+    this.value = snapped;
+    this.redraw();
+    this.onChange(snapped);
+  }
+
+  /** Global Pixi-coords rectangle of the value-text hitbox. */
+  getValueGlobalBounds(): Rectangle {
+    const tl = this.valueText.toGlobal({ x: 0, y: 0 });
+    return new Rectangle(tl.x, tl.y, this.valueText.width, this.valueText.height);
   }
 
   set(value: number): void {
@@ -189,7 +226,7 @@ export class Cycle<T extends string> extends Container {
   private readonly valueText: Text;
   private readonly options: readonly T[];
   private readonly w: number;
-  private readonly h = 24;
+  private readonly h = 18;
   private readonly onChange: (value: T) => void;
   private current: T;
   private hovered = false;
@@ -214,7 +251,7 @@ export class Cycle<T extends string> extends Container {
     this.addChild(this.labelText);
 
     this.bg = new Graphics();
-    this.bg.y = 14;
+    this.bg.y = 10;
     this.addChild(this.bg);
 
     this.valueText = new Text({
@@ -280,7 +317,7 @@ export class Cycle<T extends string> extends Container {
       .stroke({ color: border, width: stroke.base, alignment: 0 });
     this.valueText.text = `< ${this.current.toUpperCase()} >`;
     this.valueText.x = Math.round((this.w - this.valueText.width) / 2);
-    this.valueText.y = 14 + Math.round((this.h - this.valueText.height) / 2);
+    this.valueText.y = 10 + Math.round((this.h - this.valueText.height) / 2);
   }
 
   static height(): number {

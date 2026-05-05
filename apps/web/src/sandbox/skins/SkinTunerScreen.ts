@@ -51,6 +51,12 @@ function sectionHeader({ panel, y, label }: SectionLayoutOpts): void {
 export interface SkinTunerScreenOptions {
   assets: SkinAssets;
   ticker: Ticker;
+  /**
+   * The Pixi canvas element. When provided, clicking a slider's value field
+   * mounts an HTML <input type="number"> over it for typed editing. Optional
+   * so unit tests (jsdom) can construct the screen without a real canvas.
+   */
+  canvas?: HTMLCanvasElement;
 }
 
 export class SkinTunerScreen extends Container implements Screen {
@@ -62,6 +68,8 @@ export class SkinTunerScreen extends Container implements Screen {
   private readonly panelInner: Container;
   private readonly codeText: Text;
   private readonly tickCallback: TickerCallback<unknown>;
+  private readonly canvas: HTMLCanvasElement | undefined;
+  private editorEl: HTMLInputElement | null = null;
   private spec: SkinSpec = decode("000000000000");
   private axes: Axes = { pattern: true, tint: true, finish: true, motion: true };
   private tunables: Tunables = cloneTunables(defaultTunables);
@@ -73,6 +81,7 @@ export class SkinTunerScreen extends Container implements Screen {
     super();
     this.ticker = options.ticker;
     this.assets = options.assets;
+    this.canvas = options.canvas;
 
     this.panel = new Panel({ width: PANEL_WIDTH, height: 980 });
     this.addChild(this.panel);
@@ -124,6 +133,10 @@ export class SkinTunerScreen extends Container implements Screen {
 
   dispose(): void {
     this.ticker.remove(this.tickCallback);
+    if (this.editorEl) {
+      this.editorEl.remove();
+      this.editorEl = null;
+    }
   }
 
   private buildPanel(): void {
@@ -463,11 +476,83 @@ export class SkinTunerScreen extends Container implements Screen {
       ...(opts.step !== undefined ? { step: opts.step } : {}),
       ...(opts.format !== undefined ? { format: opts.format } : {}),
       onChange: opts.onChange,
+      onRequestEdit: (s) => this.openEditor(s, opts.min, opts.max, opts.step ?? 0),
     });
     slider.x = spacing.lg;
     slider.y = yPos;
     panel.addChild(slider);
     return Slider.height();
+  }
+
+  /**
+   * Mount a styled HTML <input type="number"> over a slider's value field
+   * so the user can type a precise value. Sliders alone are too coarse for
+   * tuning. The overlay positions itself via canvas.getBoundingClientRect(),
+   * so it follows the panel exactly. Enter commits, Escape cancels, blur
+   * also commits.
+   */
+  private openEditor(slider: Slider, min: number, max: number, step: number): void {
+    if (!this.canvas) return;
+    if (this.editorEl) {
+      this.editorEl.remove();
+      this.editorEl = null;
+    }
+    const bounds = slider.getValueGlobalBounds();
+    const rect = this.canvas.getBoundingClientRect();
+    const pad = 4;
+    const width = Math.max(60, Math.ceil(bounds.width) + pad * 2);
+    const height = Math.max(20, Math.ceil(bounds.height) + pad);
+
+    const input = document.createElement("input");
+    input.type = "number";
+    input.value = slider.getValue().toFixed(2);
+    input.min = String(min);
+    input.max = String(max);
+    if (step > 0) input.step = String(step);
+    Object.assign(input.style, {
+      position: "absolute",
+      left: `${rect.left + bounds.x - pad}px`,
+      top: `${rect.top + bounds.y - pad / 2}px`,
+      width: `${width}px`,
+      height: `${height}px`,
+      fontFamily: "monospace",
+      fontSize: "12px",
+      background: "#1a1612",
+      color: "#f3eddc",
+      border: "1px solid #d36a4a",
+      borderRadius: "2px",
+      padding: "0 4px",
+      outline: "none",
+      zIndex: "10000",
+    } satisfies Partial<CSSStyleDeclaration>);
+
+    const cleanup = (): void => {
+      if (this.editorEl !== input) return;
+      this.editorEl = null;
+      input.remove();
+    };
+    const commit = (): void => {
+      const v = Number.parseFloat(input.value);
+      if (Number.isFinite(v)) slider.applyEdit(v);
+      cleanup();
+    };
+    const cancel = (): void => cleanup();
+
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        commit();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        cancel();
+      }
+    });
+    input.addEventListener("blur", commit);
+
+    document.body.appendChild(input);
+    this.editorEl = input;
+    input.focus();
+    input.select();
   }
 
   private rollNewCode(): void {
