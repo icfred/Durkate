@@ -27,10 +27,10 @@ uniform float uPulseSpeed;
 uniform float uPulseAmount;
 uniform float uDriftSpeed;
 
-// Fixed pixel grid for the cosmetic layer. The in-game card is 60x88 logical
-// units; 15x22 cells ≈ 4-unit blocks, which matches the pixel-art glyphs and
-// patterns. Kept as a const (not a uniform) because it never varies.
-const vec2 PIXEL_GRID = vec2(15.0, 22.0);
+// Cells across the card surface. Adjustable from the tuner so we can dial
+// pixel chunkiness up or down without touching the shader.
+uniform vec2 uPixelGrid;
+
 const float HUE_STEPS = 6.0;
 const float TIME_QUANT = 8.0;  // animation snaps to ~8 frames/sec
 
@@ -59,7 +59,7 @@ void main() {
   // Snap the spatial sample to the pixel grid. Every glsl reference to
   // pixelUv below produces colour blocks aligned to integer cells rather
   // than smooth gradients.
-  vec2 pixelUv = floor(vTextureCoord * PIXEL_GRID) / PIXEL_GRID;
+  vec2 pixelUv = floor(vTextureCoord * uPixelGrid) / uPixelGrid;
   float quantTime = floor(uTime * TIME_QUANT) / TIME_QUANT;
 
   float motionPulse = 0.0;
@@ -97,8 +97,8 @@ void main() {
     vec3 sky = mix(vec3(0.32, 0.42, 0.58), vec3(0.92, 0.94, 0.98), horizon);
     sky = mix(sky, vec3(0.95, 0.82, 0.62), step(0.7, 1.0 - horizon) * 0.4);
 
-    float sweepX = floor((0.5 + 0.42 * sin(quantTime * 0.35 + uSeed * 6.28318)) * PIXEL_GRID.x) / PIXEL_GRID.x;
-    float sweep = step(abs(pixelUv.x - sweepX) * PIXEL_GRID.x, 1.5);
+    float sweepX = floor((0.5 + 0.42 * sin(quantTime * 0.35 + uSeed * 6.28318)) * uPixelGrid.x) / uPixelGrid.x;
+    float sweep = step(abs(pixelUv.x - sweepX) * uPixelGrid.x, 1.5);
 
     sheen = sky + vec3(sweep) * 0.45;
     strength = uChromeStrength;
@@ -112,7 +112,7 @@ void main() {
     float r3 = fract((pixelUv.x + pixelUv.y) * 0.95 + driftT * 1.5 + uSeed * 0.7);
     vec3 holo = (huePalette(r1) + huePalette(r2) + huePalette(r3)) * 0.42;
 
-    vec2 grid = floor(pixelUv * PIXEL_GRID);
+    vec2 grid = floor(pixelUv * uPixelGrid);
     float twinkle = floor(quantTime * 4.0 + uSeed * 17.0);
     float sparkle = step(0.97, hash21(grid + vec2(twinkle, twinkle * 1.3)));
 
@@ -148,6 +148,7 @@ interface FoilUniformBlock {
     uPulseSpeed: number;
     uPulseAmount: number;
     uDriftSpeed: number;
+    uPixelGrid: Float32Array;
   };
 }
 
@@ -155,6 +156,7 @@ export interface FoilController {
   filter: Filter;
   setLook(time: number, finish: number, motion: number, seed: number): void;
   setTunables(foil: FoilTunables, motion: MotionTunables): void;
+  setPixelGrid(cellsX: number, cellsY: number): void;
 }
 
 export function createFoilFilter(): FoilController {
@@ -174,6 +176,7 @@ export function createFoilFilter(): FoilController {
         uPulseSpeed: { value: defaultTunables.motion.pulseSpeed, type: "f32" },
         uPulseAmount: { value: defaultTunables.motion.pulseAmount, type: "f32" },
         uDriftSpeed: { value: defaultTunables.motion.driftSpeed, type: "f32" },
+        uPixelGrid: { value: new Float32Array([15, 22]), type: "vec2<f32>" },
       },
     },
   });
@@ -198,6 +201,10 @@ export function createFoilFilter(): FoilController {
       u.uPulseSpeed = motion.pulseSpeed;
       u.uPulseAmount = motion.pulseAmount;
       u.uDriftSpeed = motion.driftSpeed;
+    },
+    setPixelGrid(cellsX, cellsY) {
+      u.uPixelGrid[0] = cellsX;
+      u.uPixelGrid[1] = cellsY;
     },
   };
 }

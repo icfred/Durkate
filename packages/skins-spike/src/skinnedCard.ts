@@ -40,6 +40,8 @@ export class SkinnedCard extends Container {
   private readonly tintFilter: ColorMatrixFilter;
   private readonly foil: FoilController;
   private readonly assets: SkinAssets;
+  private readonly baseWidth: number;
+  private readonly baseHeight: number;
   private spec: SkinSpec | null = null;
   private axes: Axes = { ...ALL_AXES };
   private tunables: Tunables = defaultTunables;
@@ -47,6 +49,8 @@ export class SkinnedCard extends Container {
   constructor(options: SkinnedCardOptions) {
     super();
     this.base = options.base;
+    this.baseWidth = options.baseWidth;
+    this.baseHeight = options.baseHeight;
     this.skinTarget = resolveSkinTarget(options.base);
     this.assets = options.assets;
     this.addChild(this.base);
@@ -67,12 +71,19 @@ export class SkinnedCard extends Container {
     this.tintFilter = new ColorMatrixFilter();
     this.foil = createFoilFilter();
     this.foil.setTunables(this.tunables.foil, this.tunables.motion);
+    this.applyPixelGrid();
   }
 
   setTunables(tunables: Tunables): void {
     this.tunables = tunables;
     this.foil.setTunables(tunables.foil, tunables.motion);
+    this.applyPixelGrid();
     if (this.spec) this.applySkin(this.spec, this.axes);
+  }
+
+  private applyPixelGrid(): void {
+    const cell = Math.max(1, this.tunables.foil.cellSize);
+    this.foil.setPixelGrid(this.baseWidth / cell, this.baseHeight / cell);
   }
 
   applySkin(spec: SkinSpec | null, axes: Axes = ALL_AXES): void {

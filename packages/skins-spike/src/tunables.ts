@@ -14,6 +14,12 @@ export interface FoilTunables {
   foilStrength: number;
   chromeStrength: number;
   holographicStrength: number;
+  /**
+   * Size of one pixel-art cell in card-local units. The shader's pixel grid
+   * is computed as (cardWidth / cellSize, cardHeight / cellSize). Lower =
+   * finer / less chunky. 4 matches the in-game card glyph size.
+   */
+  cellSize: number;
 }
 
 export interface MotionTunables {
@@ -47,6 +53,7 @@ export const defaultTunables: Tunables = {
     foilStrength: 0.45,
     chromeStrength: 0.6,
     holographicStrength: 0.75,
+    cellSize: 4,
   },
   motion: {
     shimmerSpeed: 0.4,

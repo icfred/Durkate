@@ -54,107 +54,133 @@ function makeCardDecoration(renderer: Renderer): Texture {
 }
 
 // Pattern tiles are pixel-art. Every motif is built from integer-aligned
-// rectangles on a coarse cell grid (PATTERN_TILE = 24, cell = PIXEL = 3),
-// so the result reads as discrete pixels rather than smooth strokes.
-// No circles, no diagonals, no antialiased lines.
+// rectangles on an 8x8 cell grid (PATTERN_TILE = 24, cell = PIXEL = 3px).
+// Each tile is hand-designed to seam at all four edges so it reads as an
+// infinite repeat rather than a tiled stamp.
 const PIXEL = 3;
+const TILE_CELLS = 8;
+
 function px(g: Graphics, cx: number, cy: number, color: number): void {
   g.rect(cx * PIXEL, cy * PIXEL, PIXEL, PIXEL).fill({ color });
 }
 
+// Each pattern is an 8x8 ASCII bitmap. "#" = ink cell, anything else = empty.
+// Multi-line template string preserves the visual layout for hand-editing
+// (biome-format would otherwise collapse arrays of row strings to one line).
+function drawBitmap(g: Graphics, art: string, color: number): void {
+  const rows = art.split("\n").filter((r) => r.length > 0);
+  for (let y = 0; y < TILE_CELLS; y++) {
+    const row = rows[y] ?? "";
+    for (let x = 0; x < TILE_CELLS; x++) {
+      if (row[x] === "#") px(g, x, y, color);
+    }
+  }
+}
+
+// 0: Polka dots — 2x2 dots on a 4-cell stride.
+const PAT_DOTS = `
+##..##..
+##..##..
+........
+........
+##..##..
+##..##..
+........
+........`;
+
+// 1: Diagonal stripes — 1px wide, stride 4. Tiles seamlessly.
+const PAT_STRIPES = `
+#...#...
+.#...#..
+..#...#.
+...#...#
+#...#...
+.#...#..
+..#...#.
+...#...#`;
+
+// 2: Bricks — running bond. Mortar is the ink.
+const PAT_BRICKS = `
+....#...
+....#...
+....#...
+########
+#.......
+#.......
+#.......
+########`;
+
+// 3: Diamond grid — two diamonds per tile, offset for a denser feel.
+const PAT_DIAMONDS = `
+.#......
+#.#.....
+.#......
+........
+.....#..
+....#.#.
+.....#..
+........`;
+
+// 4: Houndstooth — classic 4x4 motif tiled 2x.
+const PAT_HOUNDSTOOTH = `
+##..##..
+#...#...
+...#...#
+..##..##
+##..##..
+#...#...
+...#...#
+..##..##`;
+
+// 5: Checkerboard — 2x2 cells.
+const PAT_CHECKER = `
+##..##..
+##..##..
+..##..##
+..##..##
+##..##..
+##..##..
+..##..##
+..##..##`;
+
+// 6: Confetti — eight scattered single-cell dots, no two adjacent.
+const PAT_CONFETTI = `
+#.......
+...#....
+......#.
+..#.....
+.....#..
+.#......
+....#...
+.......#`;
+
+// 7: Cross-hatch X — paired diagonals forming an X per tile.
+const PAT_HATCH = `
+#......#
+.#....#.
+..#..#..
+...##...
+...##...
+..#..#..
+.#....#.
+#......#`;
+
+const PATTERN_BITMAPS: readonly string[] = [
+  PAT_DOTS,
+  PAT_STRIPES,
+  PAT_BRICKS,
+  PAT_DIAMONDS,
+  PAT_HOUNDSTOOTH,
+  PAT_CHECKER,
+  PAT_CONFETTI,
+  PAT_HATCH,
+];
+
 function makePatternTile(renderer: Renderer, index: number): Texture {
   const g = new Graphics();
   g.rect(0, 0, PATTERN_TILE, PATTERN_TILE).fill({ color: 0x000000, alpha: 0 });
-  const ink = 0xffffff;
-  // Tile is an 8x8 cell grid (24 / 3). Coordinates below are cell indices.
-  switch (index) {
-    case 0: {
-      // Centered 2x2 dot.
-      px(g, 3, 3, ink);
-      px(g, 4, 3, ink);
-      px(g, 3, 4, ink);
-      px(g, 4, 4, ink);
-      break;
-    }
-    case 1: {
-      // Stair-step diagonals (manual Bresenham, one pixel per cell).
-      for (let i = 0; i < 8; i++) px(g, i, 7 - i, ink);
-      for (let i = 0; i < 8; i++) px(g, (i + 4) % 8, 7 - i, ink);
-      break;
-    }
-    case 2: {
-      // Corner L: top row + left column.
-      for (let i = 0; i < 8; i++) px(g, i, 0, ink);
-      for (let i = 0; i < 8; i++) px(g, 0, i, ink);
-      break;
-    }
-    case 3: {
-      // Plus sign at center.
-      px(g, 3, 2, ink);
-      px(g, 4, 2, ink);
-      px(g, 3, 5, ink);
-      px(g, 4, 5, ink);
-      px(g, 2, 3, ink);
-      px(g, 2, 4, ink);
-      px(g, 5, 3, ink);
-      px(g, 5, 4, ink);
-      px(g, 3, 3, ink);
-      px(g, 4, 3, ink);
-      px(g, 3, 4, ink);
-      px(g, 4, 4, ink);
-      break;
-    }
-    case 4: {
-      // Hollow diamond outline (8-cell diamond).
-      const d: [number, number][] = [
-        [3, 1],
-        [4, 1],
-        [2, 2],
-        [5, 2],
-        [1, 3],
-        [6, 3],
-        [1, 4],
-        [6, 4],
-        [2, 5],
-        [5, 5],
-        [3, 6],
-        [4, 6],
-      ];
-      for (const [x, y] of d) px(g, x, y, ink);
-      break;
-    }
-    case 5: {
-      // Stepped wave: two rows of dashes offset.
-      for (let i = 0; i < 8; i += 2) px(g, i, 3, ink);
-      for (let i = 1; i < 8; i += 2) px(g, i, 4, ink);
-      break;
-    }
-    case 6: {
-      // Center 2x2 + four corner 2x2s (scattered dots).
-      const blocks: [number, number][] = [
-        [3, 3],
-        [0, 0],
-        [6, 0],
-        [0, 6],
-        [6, 6],
-      ];
-      for (const [bx, by] of blocks) {
-        px(g, bx, by, ink);
-        px(g, bx + 1, by, ink);
-        px(g, bx, by + 1, ink);
-        px(g, bx + 1, by + 1, ink);
-      }
-      break;
-    }
-    default: {
-      // X: two diagonals.
-      for (let i = 0; i < 8; i++) {
-        px(g, i, i, ink);
-        px(g, i, 7 - i, ink);
-      }
-      break;
-    }
-  }
+  const bitmap = PATTERN_BITMAPS[index] ?? PATTERN_BITMAPS[PATTERN_BITMAPS.length - 1];
+  if (bitmap) drawBitmap(g, bitmap, 0xffffff);
   return renderer.generateTexture({
     target: g,
     frame: new Rectangle(0, 0, PATTERN_TILE, PATTERN_TILE),

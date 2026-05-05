@@ -364,6 +364,21 @@ export class SkinTunerScreen extends Container implements Screen {
         this.card.setTunables(this.tunables);
       },
     });
+    y.value += this.addSlider(panel, y.value, sliderWidth, {
+      label: "PIXEL CELL",
+      min: 1,
+      max: 8,
+      initial: this.tunables.foil.cellSize,
+      step: 0.5,
+      format: (v) => `${v.toFixed(1)}u`,
+      onChange: (v) => {
+        this.tunables = {
+          ...this.tunables,
+          foil: { ...this.tunables.foil, cellSize: v },
+        };
+        this.card.setTunables(this.tunables);
+      },
+    });
     y.value += spacing.md;
 
     sectionHeader({ panel, y, label: "MOTION" });
