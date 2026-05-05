@@ -1,15 +1,16 @@
 import { type Renderer, Texture } from "pixi.js";
 
-// Procedural pattern tiles. Each generator paints a TILE_PX × TILE_PX RGBA
-// buffer pixel-by-pixel from a deterministic seed, uploaded once via a
-// canvas → Texture.from(). Patterns are designed to seam at all four edges
-// so TilingSprite repetition reads as a continuous surface, not a stamp.
+// Procedural pattern tiles. Each generator paints a TILE_PX × TILE_PX color
+// buffer AND a single-channel height buffer pixel-by-pixel from a
+// deterministic seed. After painting, a Sobel-on-height → Lambert lighting
+// pass modulates the color, baking depth into the final texture. Result is
+// a single RGBA texture uploaded via canvas → Texture.from() that drops
+// straight into the existing TilingSprite pipeline (no shader / SkinnedCard
+// changes needed for this phase).
 //
-// Why canvas + ImageData rather than Graphics.rect().fill()? With ~1000
-// single-pixel rect fills per tile, Pixi's Graphics tessellator drops most
-// of the rects (verified empirically — output texture came back almost
-// blank). ImageData gives us pixel-perfect control with no rasterizer in
-// the middle, which is what procedural pixel art actually wants.
+// Patterns are designed to seam at all four edges so TilingSprite repetition
+// reads as a continuous surface, not a stamp. The lighting pass also wraps
+// at edges so the bevel doesn't break the seam.
 
 export const PROC_TILE_PX = 48;
 const N = PROC_TILE_PX;
@@ -25,19 +26,16 @@ const PALETTES: Record<string, Palette> = {
 
 // ---- Pixel helpers --------------------------------------------------------
 
-function setPixel(data: Uint8ClampedArray, x: number, y: number, color: number, alpha = 255): void {
+function setColor(buf: Uint8ClampedArray, x: number, y: number, color: number, alpha = 255): void {
   const i = (y * N + x) * 4;
-  data[i] = (color >> 16) & 0xff;
-  data[i + 1] = (color >> 8) & 0xff;
-  data[i + 2] = color & 0xff;
-  data[i + 3] = alpha;
+  buf[i] = (color >> 16) & 0xff;
+  buf[i + 1] = (color >> 8) & 0xff;
+  buf[i + 2] = color & 0xff;
+  buf[i + 3] = alpha;
 }
 
-function scaleColor(color: number, k: number): number {
-  const r = Math.max(0, Math.min(255, Math.round(((color >> 16) & 0xff) * k)));
-  const g = Math.max(0, Math.min(255, Math.round(((color >> 8) & 0xff) * k)));
-  const b = Math.max(0, Math.min(255, Math.round((color & 0xff) * k)));
-  return (r << 16) | (g << 8) | b;
+function setHeight(buf: Uint8Array, x: number, y: number, h: number): void {
+  buf[y * N + x] = Math.max(0, Math.min(255, Math.round(h * 255)));
 }
 
 function paletteAt(palette: Palette, t: number): number {
@@ -58,7 +56,6 @@ function smooth(t: number): number {
   return t * t * (3 - 2 * t);
 }
 
-// Tileable value noise: hash grid coordinates wrap by `period`.
 function tileValueNoise(x: number, y: number, period: number, seed: number): number {
   const xi = Math.floor(x);
   const yi = Math.floor(y);
@@ -92,17 +89,68 @@ function tileFbm(x: number, y: number, basePeriod: number, seed: number, octaves
   return total / norm;
 }
 
+// ---- Lighting pass --------------------------------------------------------
+
+// Light direction in tile space: x = right, y = down, z = out of screen.
+// A top-left light pointing into the surface has negative x/y and positive z.
+// Magnitudes pre-normalized to a unit vector.
+const LIGHT_X = -0.5;
+const LIGHT_Y = -0.5;
+const LIGHT_Z = 0.7;
+// How strongly height differences turn into normal slope. Larger = more
+// dramatic bevel; chosen so flat regions stay full-bright and sharp edges
+// drop into shadow without going black.
+const BUMP_SCALE = 2.0;
+// Ambient term — even fully-shadowed pixels keep this fraction of color so
+// the dark side of bevels still reads as patterned, not as a black hole.
+const AMBIENT = 0.35;
+
+function applyLighting(color: Uint8ClampedArray, height: Uint8Array, out: Uint8ClampedArray): void {
+  const wrap = (n: number) => ((n % N) + N) % N;
+  for (let y = 0; y < N; y++) {
+    const yL = wrap(y - 1) * N;
+    const yR = wrap(y + 1) * N;
+    const yC = y * N;
+    for (let x = 0; x < N; x++) {
+      const xL = wrap(x - 1);
+      const xR = wrap(x + 1);
+      const hL = (height[yC + xL] ?? 0) / 255;
+      const hR = (height[yC + xR] ?? 0) / 255;
+      const hT = (height[yL + x] ?? 0) / 255;
+      const hB = (height[yR + x] ?? 0) / 255;
+      const dx = (hR - hL) * BUMP_SCALE;
+      const dy = (hB - hT) * BUMP_SCALE;
+      // Normal points "up" out of the surface where slope is zero; tilts
+      // toward downhill direction otherwise. Pre-normalize.
+      const nx = -dx;
+      const ny = -dy;
+      const nz = 1;
+      const len = Math.hypot(nx, ny, nz);
+      const dot = (nx * LIGHT_X + ny * LIGHT_Y + nz * LIGHT_Z) / len;
+      const lit = AMBIENT + (1 - AMBIENT) * Math.max(0, dot);
+      const ci = (yC + x) * 4;
+      out[ci] = (color[ci] ?? 0) * lit;
+      out[ci + 1] = (color[ci + 1] ?? 0) * lit;
+      out[ci + 2] = (color[ci + 2] ?? 0) * lit;
+      out[ci + 3] = color[ci + 3] ?? 255;
+    }
+  }
+}
+
 // ---- Texture upload -------------------------------------------------------
 
-function makeTexture(painter: (data: Uint8ClampedArray) => void): Texture {
+function makeTexture(painter: (color: Uint8ClampedArray, height: Uint8Array) => void): Texture {
   const canvas = document.createElement("canvas");
   canvas.width = N;
   canvas.height = N;
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("proceduralPatterns: 2d canvas context unavailable");
-  const img = ctx.createImageData(N, N);
-  painter(img.data);
-  ctx.putImageData(img, 0, 0);
+  const colorBuf = new Uint8ClampedArray(N * N * 4);
+  const heightBuf = new Uint8Array(N * N);
+  painter(colorBuf, heightBuf);
+  const finalImg = ctx.createImageData(N, N);
+  applyLighting(colorBuf, heightBuf, finalImg.data);
+  ctx.putImageData(finalImg, 0, 0);
   const tex = Texture.from(canvas);
   // Nearest sampling so the procedural pixels stay crisp when TilingSprite
   // scales the tile up, instead of bilinear-blurring color transitions.
@@ -113,7 +161,7 @@ function makeTexture(painter: (data: Uint8ClampedArray) => void): Texture {
 // ---- Generators -----------------------------------------------------------
 
 function voronoiTexture(seed: number, palette: Palette): Texture {
-  return makeTexture((data) => {
+  return makeTexture((color, height) => {
     const cells = 6; // 6×6 = 36 cells across the tile
     const cellSize = N / cells;
     const wrap = (n: number) => ((n % cells) + cells) % cells;
@@ -150,35 +198,21 @@ function voronoiTexture(seed: number, palette: Palette): Texture {
             }
           }
         }
-        // Edge: sqrt(d2) - sqrt(d1). Small near borders, large at centers.
-        const edge = Math.sqrt(secondBest) - Math.sqrt(best);
-        // Pick a color from the palette per cell id, with a per-id slight
-        // brightness jitter so neighboring cells of the same palette index
-        // still read as separate.
         const tCol = hash2(bestId, bestId * 13, seed + 99);
-        const baseColor = paletteAt(palette, tCol);
-        // Fake bevel: bright cell interior, dark outline along the border,
-        // and a thin highlight band 1 pixel inside the border.
-        let color: number;
-        if (edge < 0.7) {
-          // Outline.
-          color = scaleColor(baseColor, 0.25);
-        } else if (edge < 1.6) {
-          // Highlight band.
-          color = scaleColor(baseColor, 1.15);
-        } else {
-          // Cell body — slightly darken the deeper toward center for shading.
-          const k = 0.85 + 0.15 * Math.min(1, edge / 4);
-          color = scaleColor(baseColor, k);
-        }
-        setPixel(data, x, y, color);
+        setColor(color, x, y, paletteAt(palette, tCol));
+        // Height: edge distance, mapped 0..1. Cell centers are ~3-4 cellSize
+        // away from the second-nearest seed, edges are 0. Lambert lighting
+        // turns the edge falloff into a faceted shard look.
+        const edge = Math.sqrt(secondBest) - Math.sqrt(best);
+        const h = Math.min(1, edge / (cellSize * 0.6));
+        setHeight(height, x, y, h);
       }
     }
   });
 }
 
 function fbmMarbleTexture(seed: number, palette: Palette): Texture {
-  return makeTexture((data) => {
+  return makeTexture((color, height) => {
     const period = 4;
     const bands = palette.length;
     for (let y = 0; y < N; y++) {
@@ -186,28 +220,31 @@ function fbmMarbleTexture(seed: number, palette: Palette): Texture {
         const u = (x / N) * period;
         const v = (y / N) * period;
         const n = tileFbm(u, v, period, seed, 4);
-        // Marble: turbulent sin warp on top of fbm so contour lines bend.
         let m = 0.5 + 0.5 * Math.sin((u + v) * 1.4 + n * 6.28);
-        // Boost contrast.
         m = Math.max(0, Math.min(1, (m - 0.5) * 1.4 + 0.5));
         const band = Math.floor(m * bands) / bands;
-        setPixel(data, x, y, paletteAt(palette, band));
+        setColor(color, x, y, paletteAt(palette, band));
+        // Height: the smooth fbm value (not the posterized band) so lighting
+        // reveals continuous flowing 3D contours under the banded color.
+        setHeight(height, x, y, n);
       }
     }
   });
 }
 
 function truchetTexture(seed: number, palette: Palette): Texture {
-  return makeTexture((data) => {
+  return makeTexture((color, height) => {
     const cells = 4; // 4×4 = 16 truchet cells per tile
     const cellSize = N / cells;
     const bg = paletteAt(palette, 0.0);
-    const mid = paletteAt(palette, 0.5);
-    const fg = paletteAt(palette, 0.85);
-    const accent = paletteAt(palette, 1.0);
-    // Background fill.
+    const arc = paletteAt(palette, 0.85);
+    const inner = paletteAt(palette, 0.55);
+    // Background fill — flat color, height 0.
     for (let y = 0; y < N; y++) {
-      for (let x = 0; x < N; x++) setPixel(data, x, y, bg);
+      for (let x = 0; x < N; x++) {
+        setColor(color, x, y, bg);
+        setHeight(height, x, y, 0);
+      }
     }
     for (let cy = 0; cy < cells; cy++) {
       for (let cx = 0; cx < cells; cx++) {
@@ -217,21 +254,22 @@ function truchetTexture(seed: number, palette: Palette): Texture {
         const r = cellSize / 2;
         for (let py = 0; py < cellSize; py++) {
           for (let px = 0; px < cellSize; px++) {
-            // Two anchor corners depending on orientation.
             const ax = orient === 0 ? 0 : cellSize;
             const ay = 0;
             const bx2 = orient === 0 ? cellSize : 0;
             const by2 = cellSize;
             const d1 = Math.hypot(px - ax, py - ay);
             const d2 = Math.hypot(px - bx2, py - by2);
-            const e1 = Math.abs(d1 - r);
-            const e2 = Math.abs(d2 - r);
-            const e = Math.min(e1, e2);
-            let color = bg;
-            if (e < 0.6) color = accent;
-            else if (e < 1.6) color = fg;
-            else if (e < 3.0) color = mid;
-            setPixel(data, ox + px, oy + py, color);
+            const e = Math.min(Math.abs(d1 - r), Math.abs(d2 - r));
+            // Color: arc band core vs inner halo vs background.
+            if (e < 0.6) setColor(color, ox + px, oy + py, arc);
+            else if (e < 1.6) setColor(color, ox + px, oy + py, inner);
+            // (else stays as bg from the initial fill above)
+            // Height: tubes — peak on the arc center, fall off with
+            // distance. Using a smooth gaussian-ish bump gives a rounded
+            // rather than ridged tube under lighting.
+            const ridge = Math.exp(-(e * e) / 2.5);
+            setHeight(height, ox + px, oy + py, ridge);
           }
         }
       }
@@ -240,24 +278,26 @@ function truchetTexture(seed: number, palette: Palette): Texture {
 }
 
 function mazeTexture(seed: number, palette: Palette): Texture {
-  return makeTexture((data) => {
+  return makeTexture((color, height) => {
     const cells = 8; // 8×8 maze cells
     const cellSize = N / cells;
-    const bg = paletteAt(palette, 0.0);
-    const wallA = paletteAt(palette, 0.7);
-    const wallB = paletteAt(palette, 0.95);
-    const dot = paletteAt(palette, 0.55);
+    const floor = paletteAt(palette, 0.0);
+    const wallMid = paletteAt(palette, 0.7);
+    const wallTop = paletteAt(palette, 0.95);
     // Background.
     for (let y = 0; y < N; y++) {
-      for (let x = 0; x < N; x++) setPixel(data, x, y, bg);
+      for (let x = 0; x < N; x++) {
+        setColor(color, x, y, floor);
+        setHeight(height, x, y, 0);
+      }
     }
-    // Binary-tree carving: each cell knocks either north or east.
     const knockNorth: boolean[] = [];
     for (let cy = 0; cy < cells; cy++) {
       for (let cx = 0; cx < cells; cx++) {
         knockNorth[cy * cells + cx] = hash2(cx, cy, seed) > 0.5;
       }
     }
+    const t = Math.max(2, Math.floor(cellSize / 5));
     for (let cy = 0; cy < cells; cy++) {
       for (let cx = 0; cx < cells; cx++) {
         const idx = cy * cells + cx;
@@ -266,27 +306,27 @@ function mazeTexture(seed: number, palette: Palette): Texture {
         const drawEast = knockNorth[idx];
         const x0 = cx * cellSize;
         const y0 = cy * cellSize;
-        // Wall thickness scales with cellSize, with a 1-px highlight on the
-        // side that faces "inside" the cell.
-        const t = Math.max(1, Math.floor(cellSize / 6));
         if (drawSouth) {
           for (let i = 0; i < cellSize; i++) {
             for (let j = 0; j < t; j++) {
-              setPixel(data, x0 + i, y0 + cellSize - 1 - j, j === 0 ? wallB : wallA);
+              const px = x0 + i;
+              const py = y0 + cellSize - 1 - j;
+              setColor(color, px, py, j === 0 ? wallTop : wallMid);
+              // Height: solid wall ridge — tile-tall plateau.
+              setHeight(height, px, py, 1);
             }
           }
         }
         if (drawEast) {
           for (let i = 0; i < cellSize; i++) {
             for (let j = 0; j < t; j++) {
-              setPixel(data, x0 + cellSize - 1 - j, y0 + i, j === 0 ? wallB : wallA);
+              const px = x0 + cellSize - 1 - j;
+              const py = y0 + i;
+              setColor(color, px, py, j === 0 ? wallTop : wallMid);
+              setHeight(height, px, py, 1);
             }
           }
         }
-        // Center accent dot.
-        const dx = x0 + Math.floor(cellSize / 2);
-        const dy = y0 + Math.floor(cellSize / 2);
-        setPixel(data, dx, dy, dot);
       }
     }
   });
