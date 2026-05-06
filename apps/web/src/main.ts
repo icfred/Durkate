@@ -53,10 +53,16 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
   // and can't represent the procedural ones; we'll re-introduce a bake step
   // later if startup cost ever matters.
   const skinAssets = await loadSkinAssets(app.renderer);
+  const tunerInitialCode = new URLSearchParams(window.location.search).get("code") ?? undefined;
   const screen =
     sandboxParam === "skins"
       ? new SkinSandboxScreen({ assets: skinAssets, ticker: app.ticker })
-      : new SkinTunerScreen({ assets: skinAssets, ticker: app.ticker, canvas: app.canvas });
+      : new SkinTunerScreen({
+          assets: skinAssets,
+          ticker: app.ticker,
+          canvas: app.canvas,
+          ...(tunerInitialCode !== undefined && { initialCode: tunerInitialCode }),
+        });
   screen.layout(app.screen.width, app.screen.height);
   app.stage.addChild(screen);
   app.renderer.on("resize", () => {

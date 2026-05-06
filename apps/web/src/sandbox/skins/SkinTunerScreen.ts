@@ -81,6 +81,12 @@ export interface SkinTunerScreenOptions {
    * screen without a real canvas (inputs stay invisible in that case).
    */
   canvas?: HTMLCanvasElement;
+  /**
+   * Optional starting code. When provided (e.g. via the `?code=…` URL
+   * param coming from the sandbox grid), the tuner opens with that
+   * card's spec instead of the default "000000000000".
+   */
+  initialCode?: string;
 }
 
 export class SkinTunerScreen extends Container implements Screen {
@@ -124,6 +130,13 @@ export class SkinTunerScreen extends Container implements Screen {
     this.ticker = options.ticker;
     this.assets = options.assets;
     this.canvas = options.canvas;
+
+    // Honour an opening code from the URL (clicking a card in the
+    // sandbox grid sets ?code=…).
+    if (options.initialCode && /^[0-9a-fA-F]{12}$/.test(options.initialCode)) {
+      this.code = options.initialCode;
+      this.spec = decode(this.code);
+    }
 
     this.panel = new Panel({ width: PANEL_WIDTH, height: 980 });
     this.addChild(this.panel);
@@ -677,6 +690,30 @@ export class SkinTunerScreen extends Container implements Screen {
     this.code = rollCode(this.nextRand);
     this.spec = decode(this.code);
     this.codeText.text = this.code;
+
+    // Roll the tunables too — every numeric input the tuner exposes
+    // gets a fresh value. Previously only the spec rolled (pattern
+    // index, colorway, finish, etc.) and the tunables stayed put,
+    // which read as 'roll only changed half the card'.
+    const r = this.nextRand;
+    this.tunables = {
+      ...this.tunables,
+      pattern: {
+        ...this.tunables.pattern,
+        overlayAlpha: 0.7 + r() * 0.3, // 0.7..1.0, never fully washed out
+        tileSize: 16 + Math.round(r() * 32), // 16..48
+      },
+      foil: {
+        ...this.tunables.foil,
+        metalStrength: 0.7 + r() * 0.3,
+        holographicStrength: 0.7 + r() * 0.3,
+        cellSize: 1 + Math.round(r() * 7), // 1..8 px-cell sizes
+        coverageBias: r(), // full 0..1 range
+        depth: 0.6 + r() * 0.7, // 0.6..1.3, scales the per-finish base
+      },
+      wear: r() * 0.4, // 0..0.4 — stay clean by default, occasional aged
+    };
+
     this.applyAll();
     this.refreshControls();
   }

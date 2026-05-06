@@ -260,6 +260,21 @@ export class SkinSandboxScreen extends Container implements Screen {
         baseHeight: CARD_H,
         assets: this.assets,
       });
+      // Click → open in tuner with this card's code preserved as a
+      // URL param. Hard navigation rather than client-side routing
+      // because the screen swap happens at app boot in main.ts; pushing
+      // history would require building a real router for the spike.
+      card.eventMode = "static";
+      card.cursor = "pointer";
+      const cardIndex = idx;
+      card.on("pointertap", () => {
+        const code = this.codes[cardIndex];
+        if (!code) return;
+        const params = new URLSearchParams(window.location.search);
+        params.set("sandbox", "skins-tuner");
+        params.set("code", code);
+        window.location.search = `?${params.toString()}`;
+      });
       this.cards.push(card);
       this.grid.addChild(card);
     }
