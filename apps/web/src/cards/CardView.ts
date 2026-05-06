@@ -65,11 +65,11 @@ export class CardView extends Container implements Focusable {
   private readonly borderLayer: Graphics;
   private readonly glyphLayer: Container;
   private readonly bg: Graphics;
-  // The corner glyph (rank + suit, top-left) and a small plate behind
-  // it. The centre suit glyph that used to live here has been removed:
-  // on busy patterns the big centre glyph competed with the artwork
-  // and the corner plate is enough to anchor the rank/suit reading.
-  private readonly cornerPlate: Graphics;
+  // The corner glyph (rank + suit, top-left). Plate idea was tried twice
+  // and dropped both times — never sized cleanly across fonts. Instead
+  // the glyph carries its own contrast: high-contrast fill (true red or
+  // true black) inside an off-white outline. The outline colour is the
+  // workhorse — it pops against the dark card body of every colorway.
   private readonly cornerText: Text;
   private focused = false;
   private legalState: LegalState = "neutral";
@@ -97,15 +97,17 @@ export class CardView extends Container implements Focusable {
     this.glyphLayer.label = "card-glyph-layer";
     this.addChild(this.glyphLayer);
 
-    const fill =
-      card && !faceDown ? (isRedSuit(card.suit) ? color.danger : color.text) : color.text;
-    // Dark stroke gives the glyphs a hard contour so they read against any
-    // backdrop (foil / holographic / chrome). `join: "round"` is essential —
-    // the default miter joins produce sharp spikes at acute angles (the
-    // apex of "A" was the obvious offender).
+    // Glyph fill: true red for hearts/diamonds, true black for spades/
+    // clubs. Avoid the muted brick-red `color.danger` — it lacks the
+    // saturation needed to read against busy patterns.
+    const fill = card && !faceDown ? (isRedSuit(card.suit) ? 0xc83a3a : 0x141414) : color.text;
+    // Off-white outline. White-on-dark is the most reliable contrast
+    // combination across our colorways (most card backgrounds are dark
+    // off-blacks). `join: "round"` to avoid miter spikes on the apex
+    // of glyphs like "A".
     const stroke = {
-      color: color.bg,
-      width: 2,
+      color: 0xf3eddc,
+      width: 3,
       alignment: 0.5,
       join: "round" as const,
       miterLimit: 2,
@@ -125,9 +127,6 @@ export class CardView extends Container implements Focusable {
     // displayed at preview scale (4x in the tuner). Resolution 3 keeps
     // memory reasonable while crisp at typical preview / in-game scales.
     this.cornerText.resolution = 3;
-    // Corner plate sits BEHIND the rank+suit so it draws first.
-    this.cornerPlate = new Graphics();
-    this.glyphLayer.addChild(this.cornerPlate);
     this.glyphLayer.addChild(this.cornerText);
 
     this.redraw();
@@ -185,23 +184,9 @@ export class CardView extends Container implements Focusable {
       .clear()
       .roundRect(0, 0, CARD_W, CARD_H, 4)
       .stroke({ color: border, width: borderWidth, alignment: 0 });
-    this.cornerPlate.clear();
     if (isFace) {
       this.cornerText.x = 6;
       this.cornerText.y = 4;
-      // Plate sized just larger than the cornerText, with a tighter
-      // bottom padding because most fonts have descender space the
-      // text bbox already accounts for. Reading on every redraw so
-      // setGlyphLook (which can change the rendered metrics) keeps
-      // the plate fitted.
-      const padX = 3;
-      const padTop = 2;
-      const padBottom = 1;
-      const plateW = Math.ceil(this.cornerText.width) + padX * 2;
-      const plateH = Math.ceil(this.cornerText.height) + padTop + padBottom;
-      this.cornerPlate
-        .roundRect(this.cornerText.x - padX, this.cornerText.y - padTop, plateW, plateH, 2)
-        .fill({ color: color.bg, alpha: 0.6 });
     }
   }
 }
