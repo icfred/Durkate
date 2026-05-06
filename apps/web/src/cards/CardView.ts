@@ -86,16 +86,14 @@ export class CardView extends Container implements Focusable {
     this.glyphLayer.label = "card-glyph-layer";
     this.addChild(this.glyphLayer);
 
-    // Per-suit fill + outline pairing for legibility on dark card bodies:
-    //   - Red suits: bright pinkish-red (0xee3a4e) fill, pure-black
-    //     outline. The pinkish hue is distinct from the warm copper /
-    //     ember / amber patterns where the older 0xc83a3a brick-red
-    //     blended in. Pure black outline (vs near-black) bumps the
-    //     contrast another notch.
-    //   - Black suits: near-black fill, off-white outline. Unchanged.
+    // Per-suit fill + outline pairing for legibility on dark card bodies.
+    // Off-white outline on both suits — keeps the rim consistent across
+    // hearts/diamonds/spades/clubs and reads cleanly on every dark card
+    // background. Red suits use the bright pinkish 0xee3a4e fill that
+    // separates from copper/ember accents; black suits use near-black.
     const isRed = card != null && !faceDown && isRedSuit(card.suit);
     const fill = card && !faceDown ? (isRed ? 0xee3a4e : 0x141414) : color.text;
-    const strokeColor = isRed ? 0x000000 : 0xf3eddc;
+    const strokeColor = 0xf3eddc;
     // `join: "round"` to avoid miter spikes on the apex of glyphs like "A".
     const stroke = {
       color: strokeColor,
