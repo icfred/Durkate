@@ -1,6 +1,17 @@
 import type { Card } from "@durak/engine";
 import { color, type Focusable, typography } from "@durak/ui";
-import { Container, Graphics, Text } from "pixi.js";
+import { Container, Graphics, Text, type TextStyleFontWeight } from "pixi.js";
+
+/**
+ * Optional override for the rank+suit typography. SkinnedCard sets this
+ * from the spec's glyphStyle field; raw CardView usage falls back to
+ * the JetBrains Mono default.
+ */
+export interface GlyphLook {
+  fontFamily: string;
+  fontWeight: TextStyleFontWeight;
+  letterSpacing: number;
+}
 
 export const CARD_W = 60;
 export const CARD_H = 88;
@@ -54,8 +65,12 @@ export class CardView extends Container implements Focusable {
   private readonly borderLayer: Graphics;
   private readonly glyphLayer: Container;
   private readonly bg: Graphics;
+  // The corner glyph (rank + suit, top-left) and a small plate behind
+  // it. The centre suit glyph that used to live here has been removed:
+  // on busy patterns the big centre glyph competed with the artwork
+  // and the corner plate is enough to anchor the rank/suit reading.
+  private readonly cornerPlate: Graphics;
   private readonly cornerText: Text;
-  private readonly centerText: Text;
   private focused = false;
   private legalState: LegalState = "neutral";
   readonly card: Card | null;
@@ -99,32 +114,34 @@ export class CardView extends Container implements Focusable {
       text: card && !faceDown ? cardLabel(card) : "",
       style: {
         fontFamily: typography.family,
-        fontSize: typography.size.sm,
+        fontSize: typography.size.md,
         fontWeight: typography.weight.bold,
         fill,
         stroke,
         letterSpacing: typography.letterSpacing.tight,
       },
     });
-    this.centerText = new Text({
-      text: card && !faceDown ? SUIT_GLYPH[card.suit] : "",
-      style: {
-        fontFamily: typography.family,
-        fontSize: typography.size.xl,
-        fontWeight: typography.weight.bold,
-        fill,
-        stroke: { ...stroke, width: 3 },
-      },
-    });
     // Bump text resolution so glyphs stay sharp when the SkinnedCard is
-    // displayed at preview scale (4x in the tuner). Default rasterizes
-    // at 1x which then upscales blurry. Resolution 3 keeps memory
-    // reasonable while crisp at typical preview / in-game scales.
+    // displayed at preview scale (4x in the tuner). Resolution 3 keeps
+    // memory reasonable while crisp at typical preview / in-game scales.
     this.cornerText.resolution = 3;
-    this.centerText.resolution = 3;
+    // Corner plate sits BEHIND the rank+suit so it draws first.
+    this.cornerPlate = new Graphics();
+    this.glyphLayer.addChild(this.cornerPlate);
     this.glyphLayer.addChild(this.cornerText);
-    this.glyphLayer.addChild(this.centerText);
 
+    this.redraw();
+  }
+
+  /**
+   * Replace the corner glyph's typography. Re-rasterizes the text in
+   * the new font, sized to fit the same plate region.
+   */
+  setGlyphLook(look: GlyphLook): void {
+    if (!this.card || this.faceDown) return;
+    this.cornerText.style.fontFamily = look.fontFamily;
+    this.cornerText.style.fontWeight = look.fontWeight;
+    this.cornerText.style.letterSpacing = look.letterSpacing;
     this.redraw();
   }
 
@@ -168,11 +185,23 @@ export class CardView extends Container implements Focusable {
       .clear()
       .roundRect(0, 0, CARD_W, CARD_H, 4)
       .stroke({ color: border, width: borderWidth, alignment: 0 });
+    this.cornerPlate.clear();
     if (isFace) {
       this.cornerText.x = 6;
       this.cornerText.y = 4;
-      this.centerText.x = Math.round((CARD_W - this.centerText.width) / 2);
-      this.centerText.y = Math.round((CARD_H - this.centerText.height) / 2);
+      // Plate sized just larger than the cornerText, with a tighter
+      // bottom padding because most fonts have descender space the
+      // text bbox already accounts for. Reading on every redraw so
+      // setGlyphLook (which can change the rendered metrics) keeps
+      // the plate fitted.
+      const padX = 3;
+      const padTop = 2;
+      const padBottom = 1;
+      const plateW = Math.ceil(this.cornerText.width) + padX * 2;
+      const plateH = Math.ceil(this.cornerText.height) + padTop + padBottom;
+      this.cornerPlate
+        .roundRect(this.cornerText.x - padX, this.cornerText.y - padTop, plateW, plateH, 2)
+        .fill({ color: color.bg, alpha: 0.6 });
     }
   }
 }

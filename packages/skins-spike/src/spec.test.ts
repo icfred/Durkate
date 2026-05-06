@@ -43,5 +43,9 @@ describe("decode", () => {
     expect(["matte", "silver", "gold", "bronze", "holographic"]).toContain(spec.finish);
     expect(spec.colorway).toBeGreaterThanOrEqual(0);
     expect(spec.colorway).toBeLessThan(6);
+    expect(spec.glyphStyle).toBeGreaterThanOrEqual(0);
+    expect(spec.glyphStyle).toBeLessThan(4);
+    expect(spec.cardBackground).toBeGreaterThanOrEqual(0);
+    expect(spec.cardBackground).toBeLessThan(6);
   });
 });

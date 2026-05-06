@@ -6,6 +6,7 @@ export {
 } from "./cardBackgrounds.js";
 export { CODE_LENGTH, isValidCode, rollCode } from "./code.js";
 export { COLORWAY_COUNT, COLORWAYS, type Colorway, PALETTE_SIZE } from "./colorway.js";
+export { GLYPH_STYLE_COUNT, GLYPH_STYLES, type GlyphStyle } from "./glyphStyles.js";
 export type { PatternBundle } from "./renderers/patternMesh.js";
 export { type Axes, SkinnedCard, type SkinnedCardOptions } from "./skinnedCard.js";
 export { decode, type Finish, PATTERN_VARIANTS, type SkinSpec } from "./spec.js";

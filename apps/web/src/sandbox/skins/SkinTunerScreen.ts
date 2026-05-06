@@ -6,6 +6,7 @@ import {
   decode,
   defaultTunables,
   type Finish,
+  GLYPH_STYLES,
   PATTERN_VARIANTS,
   rollCode,
   type SkinAssets,
@@ -44,6 +45,7 @@ const PREVIEW_SCALE = 4;
 const FINISHES: readonly Finish[] = ["matte", "silver", "gold", "bronze", "holographic"];
 const COLORWAY_LABELS: readonly string[] = COLORWAYS.map((c) => c.name.toUpperCase());
 const CARD_BG_LABELS: readonly string[] = CARD_BACKGROUNDS.map((b) => b.name.toUpperCase());
+const GLYPH_LABELS: readonly string[] = GLYPH_STYLES.map((g) => g.name.toUpperCase());
 const CYCLE_WIDTH = 140;
 
 const PREVIEW_CARD: Card = { suit: "spades", rank: 14 };
@@ -453,6 +455,19 @@ export class SkinTunerScreen extends Container implements Screen {
       write: (v) => {
         const idx = COLORWAY_LABELS.indexOf(v);
         this.spec = { ...this.spec, colorway: Math.max(0, idx) };
+        this.applyAll();
+      },
+    });
+    y.value += spacing.sm;
+
+    sectionHeader({ panel, y, label: "GLYPH" });
+    y.value += this.addCycle<string>(panel, y.value, rowWidth, {
+      label: "FONT",
+      options: GLYPH_LABELS,
+      read: () => GLYPH_LABELS[this.spec.glyphStyle] ?? GLYPH_LABELS[0] ?? "MONO",
+      write: (v) => {
+        const idx = GLYPH_LABELS.indexOf(v);
+        this.spec = { ...this.spec, glyphStyle: Math.max(0, idx) };
         this.applyAll();
       },
     });
