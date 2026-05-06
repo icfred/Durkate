@@ -1,19 +1,10 @@
 import { ColorMatrixFilter, Container } from "pixi.js";
-import { GLYPH_STYLES } from "./glyphStyles.js";
 import { PROC_TILE_PX } from "./proceduralPatterns.js";
 import { createFoilMesh, type FoilMeshController } from "./renderers/foilMesh.js";
 import { createPatternMesh, type PatternMeshController } from "./renderers/patternMesh.js";
 import type { Finish, SkinSpec } from "./spec.js";
 import { PATTERN_TILE, type SkinAssets } from "./textures.js";
 import { defaultTunables, type Tunables } from "./tunables.js";
-
-interface GlyphLookSink {
-  setGlyphLook(look: { fontFamily: string; fontWeight: string; letterSpacing: number }): void;
-}
-
-function hasGlyphLookSink(base: Container): base is Container & GlyphLookSink {
-  return typeof (base as Partial<GlyphLookSink>).setGlyphLook === "function";
-}
 
 export interface Axes {
   pattern: boolean;
@@ -149,18 +140,6 @@ export class SkinnedCard extends Container {
     const bgIdx = spec.cardBackground % this.assets.cardBackgrounds.length;
     const bg = this.assets.cardBackgrounds[bgIdx] ?? this.assets.cardBackgrounds[0];
     if (bg) this.patternCtrl.setCardBackground(bg.color);
-
-    // Glyph style: bypassed if the base doesn't expose setGlyphLook
-    // (e.g. a plain Container in tests). The CardView in apps/web does.
-    const styleIdx = spec.glyphStyle % GLYPH_STYLES.length;
-    const style = GLYPH_STYLES[styleIdx] ?? GLYPH_STYLES[0];
-    if (style && hasGlyphLookSink(this.base)) {
-      this.base.setGlyphLook({
-        fontFamily: style.fontFamily,
-        fontWeight: style.fontWeight,
-        letterSpacing: style.letterSpacing,
-      });
-    }
 
     if (axes.pattern) {
       this.patternCtrl.view.visible = true;

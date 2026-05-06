@@ -1,17 +1,6 @@
 import type { Card } from "@durak/engine";
 import { color, type Focusable, typography } from "@durak/ui";
-import { Container, Graphics, Text, type TextStyleFontWeight } from "pixi.js";
-
-/**
- * Optional override for the rank+suit typography. SkinnedCard sets this
- * from the spec's glyphStyle field; raw CardView usage falls back to
- * the JetBrains Mono default.
- */
-export interface GlyphLook {
-  fontFamily: string;
-  fontWeight: TextStyleFontWeight;
-  letterSpacing: number;
-}
+import { Container, Graphics, Text } from "pixi.js";
 
 export const CARD_W = 60;
 export const CARD_H = 88;
@@ -97,16 +86,20 @@ export class CardView extends Container implements Focusable {
     this.glyphLayer.label = "card-glyph-layer";
     this.addChild(this.glyphLayer);
 
-    // Glyph fill: true red for hearts/diamonds, true black for spades/
-    // clubs. Avoid the muted brick-red `color.danger` — it lacks the
-    // saturation needed to read against busy patterns.
-    const fill = card && !faceDown ? (isRedSuit(card.suit) ? 0xc83a3a : 0x141414) : color.text;
-    // Off-white outline. White-on-dark is the most reliable contrast
-    // combination across our colorways (most card backgrounds are dark
-    // off-blacks). `join: "round"` to avoid miter spikes on the apex
-    // of glyphs like "A".
+    // Per-suit fill + outline pairing chosen for legibility on the dark
+    // card bodies that dominate our colorways:
+    //   - Red suits (hearts / diamonds): vivid red fill, BLACK outline.
+    //     The black outline reads against the warm patterns the red
+    //     glyphs typically blend into.
+    //   - Black suits (spades / clubs): near-black fill, WHITE outline.
+    //     The white outline does the work on dark patterns where a
+    //     pure-black glyph would disappear.
+    const isRed = card != null && !faceDown && isRedSuit(card.suit);
+    const fill = card && !faceDown ? (isRed ? 0xc83a3a : 0x141414) : color.text;
+    const strokeColor = isRed ? 0x141414 : 0xf3eddc;
+    // `join: "round"` to avoid miter spikes on the apex of glyphs like "A".
     const stroke = {
-      color: 0xf3eddc,
+      color: strokeColor,
       width: 3,
       alignment: 0.5,
       join: "round" as const,
@@ -129,18 +122,6 @@ export class CardView extends Container implements Focusable {
     this.cornerText.resolution = 3;
     this.glyphLayer.addChild(this.cornerText);
 
-    this.redraw();
-  }
-
-  /**
-   * Replace the corner glyph's typography. Re-rasterizes the text in
-   * the new font, sized to fit the same plate region.
-   */
-  setGlyphLook(look: GlyphLook): void {
-    if (!this.card || this.faceDown) return;
-    this.cornerText.style.fontFamily = look.fontFamily;
-    this.cornerText.style.fontWeight = look.fontWeight;
-    this.cornerText.style.letterSpacing = look.letterSpacing;
     this.redraw();
   }
 

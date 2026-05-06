@@ -1,6 +1,5 @@
 import { CARD_BACKGROUND_COUNT } from "./cardBackgrounds.js";
 import { COLORWAY_COUNT } from "./colorway.js";
-import { GLYPH_STYLE_COUNT } from "./glyphStyles.js";
 import { fnv1a, mulberry32 } from "./rng.js";
 import { defaultTunables, type SpecRanges } from "./tunables.js";
 
@@ -14,8 +13,6 @@ export interface SkinSpec {
   cardBackground: number;
   /** Index into SkinAssets.colorways. Picks the palette for accent regions. */
   colorway: number;
-  /** Index into GLYPH_STYLES. Picks the rank+suit typography. */
-  glyphStyle: number;
   tint: { hue: number; saturation: number; brightness: number };
   finish: Finish;
 }
@@ -30,7 +27,6 @@ export function decode(code: string, ranges: SpecRanges = defaultTunables.spec):
   const index = Math.floor(rand() * PATTERN_VARIANTS);
   const cardBackground = Math.floor(rand() * CARD_BACKGROUND_COUNT);
   const colorway = Math.floor(rand() * COLORWAY_COUNT);
-  const glyphStyle = Math.floor(rand() * GLYPH_STYLE_COUNT);
   const hue = lerp(ranges.hue, rand());
   const saturation = lerp(ranges.saturation, rand());
   const brightness = lerp(ranges.brightness, rand());
@@ -39,7 +35,6 @@ export function decode(code: string, ranges: SpecRanges = defaultTunables.spec):
     pattern: { offsetX, offsetY, scale, index },
     cardBackground,
     colorway,
-    glyphStyle,
     tint: { hue, saturation, brightness },
     finish,
   };
