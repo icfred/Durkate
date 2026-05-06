@@ -1,4 +1,9 @@
 export { type AtlasUrls, loadSkinAssets } from "./atlas.js";
+export {
+  CARD_BACKGROUND_COUNT,
+  CARD_BACKGROUNDS,
+  type CardBackground,
+} from "./cardBackgrounds.js";
 export { CODE_LENGTH, isValidCode, rollCode } from "./code.js";
 export { COLORWAY_COUNT, COLORWAYS, type Colorway, PALETTE_SIZE } from "./colorway.js";
 export type { PatternBundle } from "./renderers/patternMesh.js";

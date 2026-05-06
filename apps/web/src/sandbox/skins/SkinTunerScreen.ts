@@ -1,6 +1,7 @@
 import type { Card } from "@durak/engine";
 import {
   type Axes,
+  CARD_BACKGROUNDS,
   COLORWAYS,
   decode,
   defaultTunables,
@@ -42,6 +43,7 @@ const PANEL_WIDTH = 380;
 const PREVIEW_SCALE = 4;
 const FINISHES: readonly Finish[] = ["matte", "silver", "gold", "bronze", "holographic"];
 const COLORWAY_LABELS: readonly string[] = COLORWAYS.map((c) => c.name.toUpperCase());
+const CARD_BG_LABELS: readonly string[] = CARD_BACKGROUNDS.map((b) => b.name.toUpperCase());
 const CYCLE_WIDTH = 140;
 
 const PREVIEW_CARD: Card = { suit: "spades", rank: 14 };
@@ -430,6 +432,19 @@ export class SkinTunerScreen extends Container implements Screen {
     });
     y.value += spacing.sm;
 
+    sectionHeader({ panel, y, label: "BACKGROUND" });
+    y.value += this.addCycle<string>(panel, y.value, rowWidth, {
+      label: "BODY",
+      options: CARD_BG_LABELS,
+      read: () => CARD_BG_LABELS[this.spec.cardBackground] ?? CARD_BG_LABELS[0] ?? "NOIR",
+      write: (v) => {
+        const idx = CARD_BG_LABELS.indexOf(v);
+        this.spec = { ...this.spec, cardBackground: Math.max(0, idx) };
+        this.applyAll();
+      },
+    });
+    y.value += spacing.sm;
+
     sectionHeader({ panel, y, label: "COLORWAY" });
     y.value += this.addCycle<string>(panel, y.value, rowWidth, {
       label: "PALETTE",
@@ -528,6 +543,34 @@ export class SkinTunerScreen extends Container implements Screen {
         this.tunables = {
           ...this.tunables,
           foil: { ...this.tunables.foil, cellSize: v },
+        };
+        this.card.setTunables(this.tunables);
+      },
+    });
+    y.value += this.addNumber(panel, y.value, rowWidth, {
+      label: "COVERAGE",
+      min: 0,
+      max: 1,
+      step: 0.01,
+      read: () => this.tunables.foil.coverageBias,
+      write: (v) => {
+        this.tunables = {
+          ...this.tunables,
+          foil: { ...this.tunables.foil, coverageBias: v },
+        };
+        this.card.setTunables(this.tunables);
+      },
+    });
+    y.value += this.addNumber(panel, y.value, rowWidth, {
+      label: "DEPTH",
+      min: 0,
+      max: 1.5,
+      step: 0.01,
+      read: () => this.tunables.foil.depth,
+      write: (v) => {
+        this.tunables = {
+          ...this.tunables,
+          foil: { ...this.tunables.foil, depth: v },
         };
         this.card.setTunables(this.tunables);
       },

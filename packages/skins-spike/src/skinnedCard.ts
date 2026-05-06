@@ -100,6 +100,7 @@ export class SkinnedCard extends Container {
     this.foilCtrl.setTunables({
       metalStrength: this.tunables.foil.metalStrength,
       holoStrength: this.tunables.foil.holographicStrength,
+      coverageBias: this.tunables.foil.coverageBias,
     });
     const cell = Math.max(1, this.tunables.foil.cellSize);
     this.foilCtrl.setPixelGrid(this.baseWidth / cell, this.baseHeight / cell);
@@ -131,6 +132,14 @@ export class SkinnedCard extends Container {
     const cwIdx = spec.colorway % this.assets.colorways.length;
     const colorway = this.assets.colorways[cwIdx] ?? this.assets.colorways[0];
     if (colorway) this.patternCtrl.setColorway(colorway.palette);
+
+    // Card background: the muted body colour for region 0/1 (the
+    // dominant area of every pattern) plus the wear stock. Independent
+    // of colorway so a noir-cyber and a linen-cyber card look very
+    // different.
+    const bgIdx = spec.cardBackground % this.assets.cardBackgrounds.length;
+    const bg = this.assets.cardBackgrounds[bgIdx] ?? this.assets.cardBackgrounds[0];
+    if (bg) this.patternCtrl.setCardBackground(bg.color);
 
     if (axes.pattern) {
       this.patternCtrl.view.visible = true;
@@ -171,6 +180,12 @@ export class SkinnedCard extends Container {
     const tileWorldSize = PATTERN_TILE * this.spec.pattern.scale;
     const tilesAcross = this.baseWidth / tileWorldSize;
     const tilesDown = this.baseHeight / tileWorldSize;
+    // Per-finish base depth, scaled by the foil.depth tunable. Matte
+    // gets a hint of relief (0.1) so the card isn't pancake-flat;
+    // metals get medium depth; holographic is the deepest. The user
+    // can shift the whole curve up/down with the tunable.
+    const baseDepth = depthForFinish(this.spec.finish);
+    const depth = clamp01(baseDepth * this.tunables.foil.depth);
     this.patternCtrl.setLook({
       tileScaleX: tilesAcross,
       tileScaleY: tilesDown,
@@ -182,6 +197,7 @@ export class SkinnedCard extends Container {
       viewTiltX: this.skew.x,
       viewTiltY: this.skew.y,
       wear: this.tunables.wear,
+      depth,
     });
   }
 
@@ -229,6 +245,25 @@ function finishToFloat(finish: Finish): number {
     case "holographic":
       return 4;
   }
+}
+
+function depthForFinish(finish: Finish): number {
+  switch (finish) {
+    case "matte":
+      return 0.12; // hint of relief
+    case "silver":
+      return 0.62;
+    case "gold":
+      return 0.7;
+    case "bronze":
+      return 0.65;
+    case "holographic":
+      return 0.92;
+  }
+}
+
+function clamp01(v: number): number {
+  return Math.max(0, Math.min(1, v));
 }
 
 // CardView exposes a `skinLayer` field; other wrappers may not. When the base

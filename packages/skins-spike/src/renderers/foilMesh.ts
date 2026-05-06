@@ -55,6 +55,10 @@ uniform float uCornerRadius;
 uniform vec2 uPixelGrid;
 uniform vec2 uViewTilt;
 uniform float uWear;
+// 0..1 — widens the gloss-gate threshold so finishes can cover more of
+// the pattern when set high. 0.5 default is a moderate widening over the
+// generator-bright-peaks-only baseline.
+uniform float uCoverageBias;
 
 vec3 huePalette(float h) {
   h = fract(h);
@@ -91,13 +95,14 @@ void main() {
   vec3 sheen = vec3(0.0);
   float strength = 0.0;
 
-  // Gloss gating — both metals and holo stamp ONLY where the pattern's
-  // gloss map is high. The previous range (0.35-0.78) was greedy: it
-  // covered most of every voronoi cell and most fbm vein peaks, which
-  // meant the pattern's varied colours were mostly hidden under foil.
-  // Tightening to 0.55-0.88 means stamps land just on the brightest
-  // peaks; the rest of the pattern stays visible as the colour layer.
-  float coverage = smoothstep(0.55, 0.88, finishMask);
+  // Gloss gating — both metals and holo stamp where the pattern's
+  // finishMask is high. coverageBias widens the gate: at 0 only the
+  // very brightest peaks qualify (default-tight), at 1 most of the
+  // pattern's mid-finishMask area gets stamped too. Patterns with
+  // sparse finishMask (P7 brick) need a higher bias to read.
+  float lo = mix(0.55, 0.18, uCoverageBias);
+  float hi = mix(0.88, 0.45, uCoverageBias);
+  float coverage = smoothstep(lo, hi, finishMask);
 
   if (uFinish < 3.5) {
     // METALLIC: Silver (1) / Gold (2) / Bronze (3). Each has its own
@@ -199,6 +204,7 @@ interface FoilMeshUniforms {
   uPixelGrid: Float32Array;
   uViewTilt: Float32Array;
   uWear: number;
+  uCoverageBias: number;
 }
 
 export interface FoilMeshController {
@@ -215,7 +221,7 @@ export interface FoilMeshController {
     viewTiltY: number;
     wear: number;
   }): void;
-  setTunables(opts: { metalStrength: number; holoStrength: number }): void;
+  setTunables(opts: { metalStrength: number; holoStrength: number; coverageBias: number }): void;
   setPixelGrid(cellsX: number, cellsY: number): void;
 }
 
@@ -244,6 +250,7 @@ export function createFoilMesh(
     uPixelGrid: { value: new Float32Array([15, 22]), type: "vec2<f32>" },
     uViewTilt: { value: new Float32Array([0, 0]), type: "vec2<f32>" },
     uWear: { value: 0, type: "f32" },
+    uCoverageBias: { value: 0.5, type: "f32" },
   });
 
   const shader = new Shader({
@@ -286,6 +293,7 @@ export function createFoilMesh(
     setTunables(opts) {
       u.uMetalStrength = opts.metalStrength;
       u.uHoloStrength = opts.holoStrength;
+      u.uCoverageBias = opts.coverageBias;
     },
     setPixelGrid(cellsX, cellsY) {
       u.uPixelGrid[0] = cellsX;

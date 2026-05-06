@@ -83,11 +83,14 @@ function tileFbm(x: number, y: number, basePeriod: number, seed: number, octaves
   return total / norm;
 }
 
-// Map a hash value [0,1) to a region in 1..7 (inclusive). Reserves
-// region 0 for substrate/wear so visible patterns always use a non-bg
-// palette slot.
+// Map a hash value [0,1) to a region 1..7. ~55% of values map to
+// region 1 (the muted card background) and ~45% to regions 2..7
+// (vibrant accents). Biasing toward 1 keeps the dominant area of
+// patterns like voronoi predictably muted, so glyph legibility holds
+// across colorways and accent cells pop visually.
 function regionFromHash(h: number): number {
-  return 1 + Math.floor(h * 7);
+  if (h < 0.55) return 1;
+  return 2 + Math.floor(((h - 0.55) / 0.45) * 6);
 }
 
 // ---- Texture upload -------------------------------------------------------
@@ -201,15 +204,13 @@ function truchetBundle(seed: number): PatternBundle {
   return makeBundle((height, regionId, finishMask) => {
     const cells = 4;
     const cellSize = N / cells;
-    // Background fill — region 2 (medium palette slot). Was region 1, but
-    // palette[1] is the darkest VISIBLE colour across all colorways so
-    // truchet ended up looking uniformly dark regardless of colorway.
-    // Region 2 is brighter and varies more between colorways (teal /
-    // brown / green / purple / red / blue), making the pattern actually
-    // change appearance per colorway.
+    // Background fill — region 1 = card body colour (muted, set by
+    // the spec's cardBackground rather than the colorway). Most of
+    // the truchet card paints with this; the arcs (regions 4 and 6)
+    // are the colorway-driven accents.
     for (let y = 0; y < N; y++) {
       for (let x = 0; x < N; x++) {
-        setRegion(regionId, x, y, 2);
+        setRegion(regionId, x, y, 1);
         setHeight(height, x, y, 0);
         setFinishMask(finishMask, x, y, 0);
       }
@@ -245,13 +246,11 @@ function mazeBundle(seed: number): PatternBundle {
   return makeBundle((height, regionId, finishMask) => {
     const cells = 8;
     const cellSize = N / cells;
-    // Floor: region 2 (medium palette slot). Same reasoning as truchet
-    // bg — palette[1] was so dark every colorway looked the same. The
-    // floor is the bulk of the card so it drives the cross-colorway
-    // contrast.
+    // Floor: region 1 = card body. Walls are colorway-driven accents
+    // (regions 6/7).
     for (let y = 0; y < N; y++) {
       for (let x = 0; x < N; x++) {
-        setRegion(regionId, x, y, 2);
+        setRegion(regionId, x, y, 1);
         setHeight(height, x, y, 0);
         setFinishMask(finishMask, x, y, 0);
       }
@@ -363,10 +362,10 @@ function dotsBundle(seed: number): PatternBundle {
     const dots = 6;
     const cellSize = N / dots;
     const dotRadius = cellSize * 0.36;
-    // Background
+    // Background: region 1 (card body colour). Dots are accents.
     for (let y = 0; y < N; y++) {
       for (let x = 0; x < N; x++) {
-        setRegion(regionId, x, y, 2);
+        setRegion(regionId, x, y, 1);
         setHeight(height, x, y, 0);
         setFinishMask(finishMask, x, y, 0);
       }
@@ -458,7 +457,11 @@ function brickBundle(seed: number): PatternBundle {
           const edge = Math.min(edgeX, edgeY);
           const bevel = Math.min(1, edge / 2);
           setHeight(height, x, y, 0.5 + 0.5 * bevel);
-          setFinishMask(finishMask, x, y, 0.4 * bevel);
+          // Brick faces are mostly smooth metal — finishMask 0.7..1.0
+          // so the foil actually lands on them. Earlier 0.4*bevel
+          // peaked below the gate threshold and the brick pattern
+          // rendered with no foil at all.
+          setFinishMask(finishMask, x, y, 0.7 + 0.3 * bevel);
         }
       }
     }

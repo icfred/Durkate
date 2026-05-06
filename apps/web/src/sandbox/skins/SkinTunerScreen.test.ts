@@ -12,6 +12,7 @@ function mockAssets(): SkinAssets {
       regionId: Texture.EMPTY,
       finishMask: Texture.EMPTY,
     })),
+    cardBackgrounds: [{ name: "test", color: 0x141416 }],
     colorways: [{ name: "test", palette: [0, 0, 0, 0, 0, 0, 0, 0] }],
     scratchMap: Texture.EMPTY,
   };

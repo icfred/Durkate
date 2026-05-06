@@ -25,6 +25,20 @@ export interface FoilTunables {
    * finer / less chunky. 4 matches the in-game card glyph size.
    */
   cellSize: number;
+  /**
+   * 0..1. Widens the foil-coverage gloss gate — at 0 finishes only stamp
+   * on the very brightest finishMask peaks; at 1 they cover much more of
+   * the pattern. Lets cards with sparse finishMask (P7 brick, etc.) still
+   * get a meaningful foil presence without the generator changing.
+   */
+  coverageBias: number;
+  /**
+   * 0..1. Pattern-relief depth. 0 = fully flat (pure 2D ink, like an
+   * unlit print). 0.1 ≈ a hint of relief on matte cards. 1.0 = full
+   * Lambert + Fresnel + specular for premium foils. SkinnedCard sets a
+   * sensible default per finish; this scales the result globally.
+   */
+  depth: number;
 }
 
 export interface Tunables {
@@ -56,6 +70,8 @@ export const defaultTunables: Tunables = {
     metalStrength: 0.95,
     holographicStrength: 0.95,
     cellSize: 4,
+    coverageBias: 0.5,
+    depth: 1.0,
   },
   wear: 0,
 };

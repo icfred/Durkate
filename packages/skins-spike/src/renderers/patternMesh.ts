@@ -62,6 +62,15 @@ uniform vec2 uCardSize;
 uniform float uCornerRadius;
 uniform vec2 uViewTilt;
 uniform float uWear;
+// Card body colour. Used for region 0 / 1 (the muted predominate area)
+// and as the base for wear chips, decoupled from the colorway palette.
+uniform vec3 uCardBg;
+// Pattern relief depth, 0..1. 0 = flat 2D (no lighting / Fresnel /
+// specular). 0.1 ≈ a faint hint of relief on matte. 1.0 = full lit
+// foil. Replaces the old binary matte vs lit branch with a continuous
+// scale so a 'matte' card can still show subtle paper texture and
+// premium foils feel deeper.
+uniform float uDepth;
 
 float roundedRectSdf(vec2 px, vec2 size, float r) {
   vec2 q = abs(px - size * 0.5) - (size * 0.5 - r);
@@ -76,61 +85,81 @@ void main() {
 
   vec2 tileUV = fract(vUV * uTileScale + uTileOffset);
 
-  // Region lookup: regionMap encodes 0..7 as 0..255 in even steps;
-  // round(r * 7) recovers the region as a float in [0, 7]. Sample
-  // uPaletteMap at (region + 0.5) / 8 to hit the centre of the
-  // texel for that region.
+  // Region lookup. Regions 0 and 1 are reserved as the card body —
+  // they paint uCardBg (the muted background colour) regardless of
+  // colorway. Regions 2..7 are vibrant accents and read from the
+  // colorway palette texture. This is what gives every card a
+  // legible neutral-toned body with accent colours only on the
+  // pattern's minority regions.
   float regionR = texture(uRegionMap, tileUV).r;
   float regionF = clamp(floor(regionR * 7.0 + 0.5), 0.0, 7.0);
-  vec3 color = texture(uPaletteMap, vec2((regionF + 0.5) / 8.0, 0.5)).rgb;
+  vec3 color;
+  if (regionF < 1.5) {
+    color = uCardBg;
+  } else {
+    color = texture(uPaletteMap, vec2((regionF + 0.5) / 8.0, 0.5)).rgb;
+  }
 
   float finishMask = texture(uFinishMask, tileUV).r;
-
-  float hL = texture(uHeightMap, fract(tileUV - vec2(uTexelSize, 0.0))).r;
-  float hR = texture(uHeightMap, fract(tileUV + vec2(uTexelSize, 0.0))).r;
-  float hT = texture(uHeightMap, fract(tileUV - vec2(0.0, uTexelSize))).r;
-  float hB = texture(uHeightMap, fract(tileUV + vec2(0.0, uTexelSize))).r;
-  vec3 baseNormal = normalize(vec3(
-    -(hR - hL) * uBumpScale,
-    -(hB - hT) * uBumpScale,
-    1.0
-  ));
-
-  vec3 tiltVec = vec3(uViewTilt.y, -uViewTilt.x, 0.0) * 2.5;
-  vec3 normal = normalize(baseNormal + tiltVec);
-
-  vec3 lightDir = normalize(vec3(-0.5, -0.5, 0.7));
-
-  float lambert = max(0.0, dot(normal, lightDir));
-  float ambient = 0.4;
-  float lit = ambient + (1.0 - ambient) * lambert;
-
-  vec3 viewDir = vec3(0.0, 0.0, 1.0);
-  vec3 halfway = normalize(lightDir + viewDir);
-  float specPower = mix(8.0, 48.0, finishMask);
-  float spec = pow(max(0.0, dot(normal, halfway)), specPower);
-  vec3 highlight = vec3(spec * finishMask);
-
-  float fresnel = pow(1.0 - max(0.0, dot(normal, viewDir)), 3.0);
-  highlight += vec3(fresnel) * (0.35 + 0.65 * finishMask);
-
   float height = texture(uHeightMap, tileUV).r;
-  vec3 finalRGB = color * lit + highlight;
 
-  // Wear: scratch-map driven. The "stock" colour the pattern wears
-  // toward is palette[0] — by convention the card's substrate. Sample
-  // the palette texture at region 0's centre. (Earlier this referenced
-  // a uPalette[8] uniform array that was refactored out in favour of
-  // uPaletteMap; the leftover broke shader compilation and the whole
-  // pattern mesh rendered as nothing.)
+  vec3 finalRGB;
+  if (uDepth < 0.001) {
+    // Fully flat — pure printed ink. No lighting math at all.
+    finalRGB = color;
+  } else {
+    // Lighting computed at full strength then mixed with the flat
+    // colour by uDepth. depth 0.1 produces a hint of relief; depth
+    // 1.0 produces the full lit foil look.
+    float hL = texture(uHeightMap, fract(tileUV - vec2(uTexelSize, 0.0))).r;
+    float hR = texture(uHeightMap, fract(tileUV + vec2(uTexelSize, 0.0))).r;
+    float hT = texture(uHeightMap, fract(tileUV - vec2(0.0, uTexelSize))).r;
+    float hB = texture(uHeightMap, fract(tileUV + vec2(0.0, uTexelSize))).r;
+    vec3 baseNormal = normalize(vec3(
+      -(hR - hL) * uBumpScale,
+      -(hB - hT) * uBumpScale,
+      1.0
+    ));
+
+    vec3 tiltVec = vec3(uViewTilt.y, -uViewTilt.x, 0.0) * 2.5;
+    vec3 normal = normalize(baseNormal + tiltVec);
+
+    vec3 lightDir = normalize(vec3(-0.5, -0.5, 0.7));
+
+    float lambert = max(0.0, dot(normal, lightDir));
+    float ambient = 0.4;
+    float lit = ambient + (1.0 - ambient) * lambert;
+
+    vec3 viewDir = vec3(0.0, 0.0, 1.0);
+    vec3 halfway = normalize(lightDir + viewDir);
+    float specPower = mix(8.0, 48.0, finishMask);
+    float spec = pow(max(0.0, dot(normal, halfway)), specPower);
+    vec3 highlight = vec3(spec * finishMask);
+
+    float fresnel = pow(1.0 - max(0.0, dot(normal, viewDir)), 3.0);
+    highlight += vec3(fresnel) * (0.35 + 0.65 * finishMask);
+
+    vec3 litColor = color * lit + highlight;
+    finalRGB = mix(color, litColor, uDepth);
+  }
+
+  // Wear: scratch-map driven. The 'stock' the pattern wears toward
+  // is uCardBg (the card body) — slightly darkened so chips read as
+  // recessed substrate. Higher wear pulls more strongly toward the
+  // stock so the visual contrast between mid- and high-wear is
+  // unambiguous (was barely perceptible).
   if (uWear > 0.001) {
-    vec3 stock = texture(uPaletteMap, vec2(0.5 / 8.0, 0.5)).rgb * 0.55;
+    vec3 stock = uCardBg * 0.7;
     float wearThreshold = texture(uScratchMap, vUV).r;
-    float scratchAmount = smoothstep(wearThreshold - 0.06, wearThreshold + 0.02, uWear);
-    finalRGB = mix(finalRGB, stock, scratchAmount * 0.8);
-    finalRGB *= 1.0 - (1.0 - height) * uWear * 0.25;
-    float wlum = dot(finalRGB, vec3(0.299, 0.587, 0.114));
-    finalRGB = mix(finalRGB, vec3(wlum) * 0.92, uWear * 0.2);
+    // Sharper smoothstep + wear-driven mix strength: at low wear
+    // each scratch is subtle, at high wear scratches read as deep
+    // chips that almost fully reveal the substrate.
+    float scratchAmount = smoothstep(wearThreshold - 0.04, wearThreshold + 0.01, uWear);
+    finalRGB = mix(finalRGB, stock, scratchAmount * (0.7 + 0.25 * uWear));
+    finalRGB *= 1.0 - (1.0 - height) * uWear * 0.18;
+    // Global desaturation removed — it muted everything at high wear
+    // and hid the scratch detail. The scratches themselves carry the
+    // 'aged card' read.
   }
 
   finalColor = vec4(finalRGB, uOverlayAlpha * maskA);
@@ -147,6 +176,8 @@ interface PatternMeshUniforms {
   uCornerRadius: number;
   uViewTilt: Float32Array;
   uWear: number;
+  uCardBg: Float32Array;
+  uDepth: number;
 }
 
 export interface PatternMeshController {
@@ -154,6 +185,8 @@ export interface PatternMeshController {
   setBundle(bundle: PatternBundle): void;
   /** Replace the active colorway. Pass an array of 8 packed RGB ints. */
   setColorway(palette: readonly number[]): void;
+  /** Card body colour (regions 0/1 + wear). Single packed RGB int. */
+  setCardBackground(color: number): void;
   setLook(opts: {
     tileScaleX: number;
     tileScaleY: number;
@@ -165,6 +198,12 @@ export interface PatternMeshController {
     viewTiltX: number;
     viewTiltY: number;
     wear: number;
+    /**
+     * Pattern relief depth, 0..1. SkinnedCard sets a sensible default
+     * per finish (matte ~0.1, metals ~0.6-0.7, holographic ~0.9) and
+     * the user can scale via the foil.depth tunable.
+     */
+    depth: number;
   }): void;
 }
 
@@ -191,6 +230,8 @@ export function createPatternMesh(
     uCornerRadius: { value: 4, type: "f32" },
     uViewTilt: { value: new Float32Array([0, 0]), type: "vec2<f32>" },
     uWear: { value: 0, type: "f32" },
+    uCardBg: { value: new Float32Array([0.08, 0.08, 0.09]), type: "vec3<f32>" },
+    uDepth: { value: 1.0, type: "f32" },
   });
 
   // Colorway palette as a 1×8 RGBA texture. Owned by the controller so
@@ -232,6 +273,11 @@ export function createPatternMesh(
       shader.resources.uPaletteMap = paletteTex.source;
       shader.resources.uPaletteSampler = paletteTex.source.style;
     },
+    setCardBackground(color) {
+      u.uCardBg[0] = ((color >> 16) & 0xff) / 255;
+      u.uCardBg[1] = ((color >> 8) & 0xff) / 255;
+      u.uCardBg[2] = (color & 0xff) / 255;
+    },
     setLook(opts) {
       u.uTileScale[0] = opts.tileScaleX;
       u.uTileScale[1] = opts.tileScaleY;
@@ -243,6 +289,7 @@ export function createPatternMesh(
       u.uViewTilt[0] = opts.viewTiltX;
       u.uViewTilt[1] = opts.viewTiltY;
       u.uWear = opts.wear;
+      u.uDepth = opts.depth;
     },
   };
 }

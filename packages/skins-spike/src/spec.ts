@@ -1,3 +1,4 @@
+import { CARD_BACKGROUND_COUNT } from "./cardBackgrounds.js";
 import { COLORWAY_COUNT } from "./colorway.js";
 import { fnv1a, mulberry32 } from "./rng.js";
 import { defaultTunables, type SpecRanges } from "./tunables.js";
@@ -8,7 +9,9 @@ export const PATTERN_VARIANTS = 8;
 
 export interface SkinSpec {
   pattern: { offsetX: number; offsetY: number; scale: number; index: number };
-  /** Index into SkinAssets.colorways. Picks the palette per region. */
+  /** Index into SkinAssets.cardBackgrounds. The dominant card body colour. */
+  cardBackground: number;
+  /** Index into SkinAssets.colorways. Picks the palette for accent regions. */
   colorway: number;
   tint: { hue: number; saturation: number; brightness: number };
   finish: Finish;
@@ -22,6 +25,7 @@ export function decode(code: string, ranges: SpecRanges = defaultTunables.spec):
   const offsetY = rand();
   const scale = lerp(ranges.patternScale, rand());
   const index = Math.floor(rand() * PATTERN_VARIANTS);
+  const cardBackground = Math.floor(rand() * CARD_BACKGROUND_COUNT);
   const colorway = Math.floor(rand() * COLORWAY_COUNT);
   const hue = lerp(ranges.hue, rand());
   const saturation = lerp(ranges.saturation, rand());
@@ -29,6 +33,7 @@ export function decode(code: string, ranges: SpecRanges = defaultTunables.spec):
   const finish = pick(FINISHES, rand());
   return {
     pattern: { offsetX, offsetY, scale, index },
+    cardBackground,
     colorway,
     tint: { hue, saturation, brightness },
     finish,

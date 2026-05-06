@@ -1,4 +1,5 @@
 import { Graphics, Rectangle, type Renderer, type Texture } from "pixi.js";
+import { CARD_BACKGROUNDS, type CardBackground } from "./cardBackgrounds.js";
 import { COLORWAYS, type Colorway } from "./colorway.js";
 import { generateProceduralPatterns } from "./proceduralPatterns.js";
 import type { PatternBundle } from "./renderers/patternMesh.js";
@@ -12,12 +13,10 @@ export const PATTERN_TILE = 24;
 export interface SkinAssets {
   cardSurface: Texture;
   cardDecoration: Texture;
-  /**
-   * Pattern shapes only — no colors. The shader looks up colors via
-   * `colorways[spec.colorway].palette[regionId]` at draw time.
-   */
   patterns: PatternBundle[];
-  /** Available palettes; the spec's `colorway` field indexes into this. */
+  /** Muted card body colours; spec.cardBackground indexes into this. */
+  cardBackgrounds: readonly CardBackground[];
+  /** Available palettes; spec.colorway indexes into this. */
   colorways: readonly Colorway[];
   scratchMap: Texture;
 }
@@ -28,6 +27,7 @@ export function createSkinAssets(_renderer: Renderer): SkinAssets {
     cardSurface: makeCardSurface(_renderer),
     cardDecoration: makeCardDecoration(_renderer),
     patterns,
+    cardBackgrounds: CARD_BACKGROUNDS,
     colorways: COLORWAYS,
     scratchMap: generateScratchMap(0xa11ce5),
   };
