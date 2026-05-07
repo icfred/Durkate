@@ -71,6 +71,10 @@ uniform vec3 uCardBg;
 // scale so a 'matte' card can still show subtle paper texture and
 // premium foils feel deeper.
 uniform float uDepth;
+// Parent worldAlpha. Pixi v8's custom-shader meshes don't auto-multiply
+// by worldAlpha (only the built-in batched mesh material does), so we
+// thread it through manually. SkinnedCard syncs this each render tick.
+uniform float uAlpha;
 
 float roundedRectSdf(vec2 px, vec2 size, float r) {
   vec2 q = abs(px - size * 0.5) - (size * 0.5 - r);
@@ -162,7 +166,7 @@ void main() {
     // 'aged card' read.
   }
 
-  finalColor = vec4(finalRGB, uOverlayAlpha * maskA);
+  finalColor = vec4(finalRGB, uOverlayAlpha * maskA * uAlpha);
 }
 `;
 
@@ -178,6 +182,7 @@ interface PatternMeshUniforms {
   uWear: number;
   uCardBg: Float32Array;
   uDepth: number;
+  uAlpha: number;
 }
 
 export interface PatternMeshController {
@@ -205,6 +210,8 @@ export interface PatternMeshController {
      */
     depth: number;
   }): void;
+  /** Multiplied into final fragment alpha. SkinnedCard syncs from worldAlpha. */
+  setAlpha(alpha: number): void;
 }
 
 export function createPatternMesh(
@@ -232,6 +239,7 @@ export function createPatternMesh(
     uWear: { value: 0, type: "f32" },
     uCardBg: { value: new Float32Array([0.08, 0.08, 0.09]), type: "vec3<f32>" },
     uDepth: { value: 1.0, type: "f32" },
+    uAlpha: { value: 1.0, type: "f32" },
   });
 
   // Colorway palette as a 1×8 RGBA texture. Owned by the controller so
@@ -290,6 +298,9 @@ export function createPatternMesh(
       u.uViewTilt[1] = opts.viewTiltY;
       u.uWear = opts.wear;
       u.uDepth = opts.depth;
+    },
+    setAlpha(alpha) {
+      u.uAlpha = alpha;
     },
   };
 }

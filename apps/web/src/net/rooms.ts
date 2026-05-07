@@ -9,6 +9,11 @@ export interface CreateRoomOptions {
   botCount: number;
   /** Bot difficulty. Ignored when `botCount === 0`. */
   difficulty?: BotDifficulty | undefined;
+  /**
+   * Hold the room in lobby until the host sends `StartGame`. Used by
+   * the FFA flow so the host can review / share before play begins.
+   */
+  lobbyHold?: boolean | undefined;
   serverUrl: string;
   /** Test seam: replaces global fetch. */
   fetchImpl?: typeof fetch;
@@ -27,13 +32,19 @@ export class CreateRoomError extends Error {
 export async function createRoom(options: CreateRoomOptions): Promise<CreateRoomResponse> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const url = new URL("/rooms", normalizeBase(options.serverUrl)).toString();
-  const body: { playerCount: number; botCount: number; difficulty?: BotDifficulty } = {
+  const body: {
+    playerCount: number;
+    botCount: number;
+    difficulty?: BotDifficulty;
+    lobbyHold?: boolean;
+  } = {
     playerCount: options.playerCount,
     botCount: options.botCount,
   };
   if (options.botCount > 0 && options.difficulty !== undefined) {
     body.difficulty = options.difficulty;
   }
+  if (options.lobbyHold === true) body.lobbyHold = true;
   let response: Response;
   try {
     response = await fetchImpl(url, {

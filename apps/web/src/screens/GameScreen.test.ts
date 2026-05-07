@@ -298,17 +298,31 @@ describe("GameScreen", () => {
     screen.dispose();
   });
 
-  it("DEFEND with a non-beating card is blocked client-side", () => {
+  it("arrow nav skips non-beating cards so DEFEND can't land on one", () => {
+    // midround fixture: defender (seat 1) facing clubs-8, hand is
+    // [clubs-11, hearts-9, diamonds-13]. Trump is hearts.
+    //   - clubs-11 beats clubs-8 (same suit, higher rank): legal
+    //   - hearts-9 beats clubs-8 (trump beats non-trump): legal
+    //   - diamonds-13 cannot beat clubs-8 (different non-trump suit): illegal
+    // Three ArrowRight presses with three legal targets would wrap to the
+    // first legal card; with only two legal targets the wrap lands on the
+    // second one. Either way Enter submits a legal DEFEND — the illegal
+    // card is unreachable, which is exactly what we're asserting.
     const snapshot = loadFixture("midround");
     const submitAction = vi.fn<(action: Action) => void>();
     const screen = new GameScreen({ snapshot, submitAction });
     screen.layout(800, 600);
 
-    // diamonds 13 cannot beat clubs 8 (different suit, not trump): no action.
     window.dispatchEvent(press("ArrowRight"));
     window.dispatchEvent(press("ArrowRight"));
     window.dispatchEvent(press("Enter"));
-    expect(submitAction).not.toHaveBeenCalled();
+
+    expect(submitAction).toHaveBeenCalledTimes(1);
+    const [submitted] = submitAction.mock.calls[0] ?? [];
+    if (!submitted || submitted.type !== "DEFEND") throw new Error("expected DEFEND");
+    // Whichever legal card was focused, the played card is never the
+    // diamonds-13 — that's the property worth pinning down.
+    expect(submitted.card.suit === "diamonds" && submitted.card.rank === 13).toBe(false);
 
     screen.dispose();
   });
@@ -375,6 +389,7 @@ describe("GameScreen", () => {
         thinkingSeats: [],
         eliminated: [],
         pendingClose: null,
+        turnDeadline: null,
       });
     }
     expect(banner?.visible).toBe(true);
@@ -390,6 +405,7 @@ describe("GameScreen", () => {
         thinkingSeats: [],
         eliminated: [],
         pendingClose: null,
+        turnDeadline: null,
       });
     }
     expect(banner?.visible).toBe(false);
@@ -427,6 +443,7 @@ describe("GameScreen", () => {
         thinkingSeats: [1],
         eliminated: [],
         pendingClose: null,
+        turnDeadline: null,
       });
     }
     expect(label?.visible).toBe(true);
@@ -441,6 +458,7 @@ describe("GameScreen", () => {
         thinkingSeats: [],
         eliminated: [],
         pendingClose: null,
+        turnDeadline: null,
       });
     }
     expect(label?.visible).toBe(false);
@@ -544,6 +562,7 @@ describe("GameScreen N-player layout", () => {
         thinkingSeats: [],
         eliminated: [2],
         pendingClose: null,
+        turnDeadline: null,
       });
     }
     expect(findByLabel(screen, "eliminated-2")?.visible).toBe(true);
@@ -1016,6 +1035,7 @@ describe("GameScreen animations", () => {
         thinkingSeats: [],
         eliminated: [],
         pendingClose: { kind: "END_ROUND", closesAt: 1_000_000 + 2_400, passed: [] },
+        turnDeadline: null,
       });
     }
     expect(banner?.visible).toBe(true);
@@ -1033,6 +1053,7 @@ describe("GameScreen animations", () => {
         thinkingSeats: [],
         eliminated: [],
         pendingClose: null,
+        turnDeadline: null,
       });
     }
     expect(banner?.visible).toBe(false);
@@ -1072,6 +1093,7 @@ describe("GameScreen animations", () => {
         thinkingSeats: [],
         eliminated: [],
         pendingClose: { kind: "END_ROUND", closesAt: Date.now() + 2_500, passed: [] },
+        turnDeadline: null,
       });
     }
     window.dispatchEvent(press("p"));

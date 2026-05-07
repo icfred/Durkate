@@ -28,7 +28,7 @@ const RETRY_BUTTON_H = 40;
 const ROOM_CODE_MAX = 8;
 const SHARE_URL_MAX_CHARS = 56;
 
-export type LobbyStatus = "waiting" | "starting";
+export type LobbyStatus = "waiting" | "starting" | "ready";
 
 export interface LobbyScreenOptions {
   mode: Mode;
@@ -48,6 +48,13 @@ export interface LobbyScreenOptions {
   onRetry?: () => void;
   onBack?: () => void;
   onJoin(code: string): void;
+  /**
+   * Host-side "start now" — sends a `StartGame` WS message and lets the
+   * server fill any unfilled human slots with bots and begin. Provide
+   * for FFA lobby-hold rooms; omit for friend / bot rooms which auto-
+   * start when seats fill.
+   */
+  onStart?(): void;
   copyToClipboard?(text: string): Promise<void> | void;
 }
 
@@ -61,12 +68,19 @@ function humansJoined(room: RoomMembership | null): number {
   return seats.filter((s) => s.name !== null).length;
 }
 
-function deriveStatus(mode: Mode, expected: number, room: RoomMembership | null): LobbyStatus {
+function deriveStatus(
+  mode: Mode,
+  expected: number,
+  room: RoomMembership | null,
+  holdsForStart: boolean,
+): LobbyStatus {
+  if (holdsForStart) return "ready";
   if (mode === "bot") return "starting";
   return humansJoined(room) >= expected ? "starting" : "waiting";
 }
 
 function headlineFor(mode: Mode, status: LobbyStatus, expected: number): string {
+  if (status === "ready") return "READY — START OR INVITE FRIENDS";
   if (status === "starting") {
     return mode === "bot" ? "STARTING VS BOT" : "STARTING";
   }
@@ -96,6 +110,7 @@ export class LobbyScreen extends Container implements Screen {
   private readonly fieldLocalX: number;
   private readonly fieldLocalY: number;
   private readonly onJoin: (code: string) => void;
+  private readonly holdsForStart: boolean;
   private overlay: TextInputOverlayHandle | null = null;
   private inputValue = "";
   private currentStatus: LobbyStatus;
@@ -116,12 +131,22 @@ export class LobbyScreen extends Container implements Screen {
     this.shareUrls =
       options.shareUrls ?? (options.shareUrl && this.mode !== "bot" ? [options.shareUrl] : []);
     this.onJoin = options.onJoin;
+    this.holdsForStart = options.onStart !== undefined;
     this.copyToClipboard = options.copyToClipboard ?? defaultCopyToClipboard;
-    this.currentStatus = deriveStatus(this.mode, this.humansExpected, options.initialRoom);
+    this.currentStatus = deriveStatus(
+      this.mode,
+      this.humansExpected,
+      options.initialRoom,
+      this.holdsForStart,
+    );
     this.creation = options.initialCreation ?? { status: "ready" };
 
     const extraShares = Math.max(0, this.shareUrls.length - 1);
-    this.panelH = PANEL_H_BASE + extraShares * PANEL_H_PER_EXTRA_SHARE;
+    // FFA lobby hold: the START NOW button needs an extra ~70px of
+    // panel height beyond the share-url stack so it doesn't overflow
+    // into the back button.
+    const startBlock = options.onStart ? 70 : 0;
+    this.panelH = PANEL_H_BASE + extraShares * PANEL_H_PER_EXTRA_SHARE + startBlock;
 
     this.panel = new Panel({ width: PANEL_W, height: this.panelH });
     this.addChild(this.panel);
@@ -316,6 +341,22 @@ export class LobbyScreen extends Container implements Screen {
       this.fieldLocalY = 0;
     }
 
+    if (options.onStart) {
+      const onStart = options.onStart;
+      const startButton = new Button({
+        label: "START NOW",
+        width: 200,
+        height: 44,
+        onActivate: withClickSound(() => onStart()),
+      });
+      attachButtonHover(startButton);
+      startButton.x = Math.round((PANEL_W - 200) / 2);
+      startButton.y = nextY + spacing.lg;
+      this.readyContent.addChild(startButton);
+      this.focus.register(startButton);
+      nextY = startButton.y + 44;
+    }
+
     if (options.onBack) {
       const onBack = options.onBack;
       const backButton = new Button({
@@ -398,7 +439,7 @@ export class LobbyScreen extends Container implements Screen {
   }
 
   private update(room: RoomMembership | null): void {
-    const next = deriveStatus(this.mode, this.humansExpected, room);
+    const next = deriveStatus(this.mode, this.humansExpected, room, this.holdsForStart);
     let dirty = false;
     if (next !== this.currentStatus) {
       this.currentStatus = next;

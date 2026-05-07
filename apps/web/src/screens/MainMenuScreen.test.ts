@@ -77,49 +77,13 @@ describe("MainMenuScreen root view", () => {
   });
 });
 
-describe("MainMenuScreen FFA configurator", () => {
-  it("opens the FFA configurator with cycling player / bot / difficulty rows", () => {
-    const screen = new MainMenuScreen({
-      onPlayBot: vi.fn(),
-      onPlayFriend: vi.fn(),
-      onPlayFfa: vi.fn(),
-    });
-    const playFfa = findButton(screen, "PLAY FFA");
-    if (!playFfa) throw new Error("PLAY FFA not found");
-    playFfa.activate();
-    expect(screen.testView()).toBe("ffa-config");
-    const labels = collectText(screen);
-    expect(labels.some((l) => l.startsWith("PLAYERS:"))).toBe(true);
-    expect(labels.some((l) => l.startsWith("BOTS:"))).toBe(true);
-    expect(labels.some((l) => l.startsWith("DIFFICULTY:"))).toBe(true);
-    expect(labels).toContain("START");
-    expect(labels).toContain("BACK");
-    screen.dispose();
-  });
-
-  it("clamps the bot count when the player count drops below the bot count", () => {
-    const screen = new MainMenuScreen({
-      onPlayBot: vi.fn(),
-      onPlayFriend: vi.fn(),
-      onPlayFfa: vi.fn(),
-    });
-    const playFfa = findButton(screen, "PLAY FFA");
-    if (!playFfa) throw new Error("PLAY FFA not found");
-    playFfa.activate();
-    expect(screen.testFfaConfig()).toEqual({ playerCount: 4, botCount: 3, difficulty: "medium" });
-
-    // PLAYERS cycles 4 → 5 → 6 → 2 (drops below current bot count of 3, clamps to 1)
-    const players = findButton(screen, "PLAYERS: 4");
-    if (!players) throw new Error("PLAYERS row not found");
-    players.activate();
-    players.activate();
-    players.activate();
-    expect(screen.testFfaConfig().playerCount).toBe(2);
-    expect(screen.testFfaConfig().botCount).toBe(1);
-    screen.dispose();
-  });
-
-  it("invokes onPlayFfa with the configured values on START", () => {
+describe("MainMenuScreen FFA", () => {
+  // The FFA config screen was removed: the user wanted the menu to drop
+  // straight into a 6-player room with bots filling the non-host slots,
+  // and a friend joining via the share link swaps a bot out (handled by
+  // the worker's lobby-hold path). The button now calls onPlayFfa with
+  // the canonical defaults instead of opening a config view.
+  it("invokes onPlayFfa directly with 6 players + 5 medium bots", () => {
     const seen: { playerCount: number; botCount: number; difficulty: string }[] = [];
     const screen = new MainMenuScreen({
       onPlayBot: vi.fn(),
@@ -127,20 +91,7 @@ describe("MainMenuScreen FFA configurator", () => {
       onPlayFfa: (config) => seen.push(config),
     });
     findButton(screen, "PLAY FFA")?.activate();
-    findButton(screen, "START")?.activate();
-    expect(seen).toEqual([{ playerCount: 4, botCount: 3, difficulty: "medium" }]);
-    screen.dispose();
-  });
-
-  it("BACK from FFA returns to root", () => {
-    const screen = new MainMenuScreen({
-      onPlayBot: vi.fn(),
-      onPlayFriend: vi.fn(),
-      onPlayFfa: vi.fn(),
-    });
-    findButton(screen, "PLAY FFA")?.activate();
-    findButton(screen, "BACK")?.activate();
-    expect(screen.testView()).toBe("root");
+    expect(seen).toEqual([{ playerCount: 6, botCount: 5, difficulty: "medium" }]);
     screen.dispose();
   });
 });

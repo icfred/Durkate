@@ -86,6 +86,19 @@ export class FocusManager {
     this.focusAt((this.index - 1 + this.nodes.length) % this.nodes.length);
   }
 
+  /**
+   * Focus a previously-registered node by reference. Returns true on
+   * success, false if the node isn't registered. Used by callers that
+   * need to restore selection across re-renders (e.g. keeping the same
+   * hand card focused after a snapshot update).
+   */
+  focus(node: Focusable): boolean {
+    const at = this.nodes.indexOf(node);
+    if (at < 0) return false;
+    this.focusAt(at);
+    return true;
+  }
+
   subscribeMove(listener: FocusEventListener): () => void {
     this.moveListeners.add(listener);
     return () => {

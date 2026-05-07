@@ -102,6 +102,7 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
       mode: "ffa",
       playerCount: config.playerCount,
       botCount: config.botCount,
+      lobbyHold: true,
     };
     if (config.botCount > 0) payload.difficulty = config.difficulty;
     void runRoomCreation(payload, httpUrl);
@@ -122,10 +123,14 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
           const roomCode = state.roomCode ?? "";
           const playerCount = state.playerCount ?? 2;
           const botCount = state.botCount ?? (mode === "bot" ? 1 : 0);
-          const humansExpected = playerCount - botCount;
           const tokens = state.joinTokens;
+          // Bot mode never has share tokens. For everything else surface
+          // whatever the server returned — for friend mode that's the
+          // reserved-human seat tokens; for FFA lobby-hold it's the
+          // bot-seat swap tokens (server hides bot tokens in non-hold
+          // FFA so this stays correct without an explicit mode check).
           const shareTokens =
-            mode === "bot" || humansExpected <= 1
+            mode === "bot"
               ? []
               : tokens.length > 0
                 ? tokens
@@ -138,7 +143,7 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
               botCount,
             }),
           );
-          return new LobbyScreen({
+          const lobbyOpts: ConstructorParameters<typeof LobbyScreen>[0] = {
             mode,
             roomCode,
             playerCount,
@@ -159,7 +164,14 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
               appStore.getState().showLobby({ mode, roomCode: next });
             },
             onBack: () => appStore.getState().showMenu(),
-          });
+          };
+          // FFA lobby-hold: surface a START NOW button that releases
+          // the hold via the StartGame WS message. Bot/friend modes
+          // auto-start when seats fill so they don't need this.
+          if (mode === "ffa") {
+            lobbyOpts.onStart = () => appStore.getState().startGame();
+          }
+          return new LobbyScreen(lobbyOpts);
         }
         case "game":
           return new GameScreen({
@@ -255,6 +267,7 @@ interface RoomCreationStart {
   playerCount: 2 | 3 | 4 | 5 | 6;
   botCount: number;
   difficulty?: BotDifficulty;
+  lobbyHold?: boolean;
 }
 
 async function runRoomCreation(start: RoomCreationStart, httpUrl: string): Promise<void> {
@@ -276,6 +289,7 @@ async function runRoomCreation(start: RoomCreationStart, httpUrl: string): Promi
     botCount: start.botCount,
   };
   if (start.difficulty !== undefined) createOptions.difficulty = start.difficulty;
+  if (start.lobbyHold === true) createOptions.lobbyHold = true;
   try {
     const response = await createRoom(createOptions);
     appStore.getState().roomCreated({

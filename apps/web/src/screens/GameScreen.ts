@@ -20,6 +20,14 @@ const SECTION_PADDING = spacing.lg;
 const OPPONENT_STACK_OFFSET_X = 4;
 const OPPONENT_STACK_OFFSET_Y = 3;
 
+// Selected-card pop. Legal cards lift well clear of the row; illegal
+// cards still respond so the user knows what's selected, just enough
+// less to keep the legal/illegal cue obvious.
+const FOCUS_SCALE_LEGAL = 1.18;
+const FOCUS_SCALE_ILLEGAL = 1.06;
+const FOCUS_LIFT_PX = 12;
+const FOCUS_LERP = 0.22;
+
 const ERROR_TOAST_MS = 3000;
 const TURN_PULSE_PERIOD_MS = 1200;
 const THINKING_PULSE_PERIOD_MS = 900;
@@ -229,6 +237,53 @@ class OpponentSlot extends Container {
   }
 }
 
+/**
+ * Focus-driven grow + lift on a single hand card. Lerps scale and
+ * vertical lift toward a focused/unfocused target every tick. Top-left
+ * pivot keeps the card's layout origin stable so existing deal/play/take
+ * animations (which set absolute positions) don't have to know about
+ * the effect — we apply the offset by adjusting the position around
+ * `basePos` instead of changing the pivot.
+ */
+class HandCardEffects {
+  private readonly view: CardView;
+  private readonly basePos: { x: number; y: number };
+  private readonly legal: boolean;
+  private targetScale = 1;
+  private currentScale = 1;
+  private targetLift = 0;
+  private currentLift = 0;
+
+  constructor(view: CardView, basePos: { x: number; y: number }, legal: boolean) {
+    this.view = view;
+    this.basePos = basePos;
+    this.legal = legal;
+  }
+
+  setFocused(focused: boolean): void {
+    if (focused) {
+      this.targetScale = this.legal ? FOCUS_SCALE_LEGAL : FOCUS_SCALE_ILLEGAL;
+      this.targetLift = FOCUS_LIFT_PX * (this.legal ? 1 : 0.4);
+    } else {
+      this.targetScale = 1;
+      this.targetLift = 0;
+    }
+  }
+
+  tick(): void {
+    const ds = this.targetScale - this.currentScale;
+    const dl = this.targetLift - this.currentLift;
+    if (Math.abs(ds) < 1e-4 && Math.abs(dl) < 1e-4) return;
+    this.currentScale += ds * FOCUS_LERP;
+    this.currentLift += dl * FOCUS_LERP;
+    this.view.scale.set(this.currentScale);
+    const growW = CARD_W * (this.currentScale - 1);
+    const growH = CARD_H * (this.currentScale - 1);
+    this.view.x = this.basePos.x - growW * 0.5;
+    this.view.y = this.basePos.y - growH - this.currentLift;
+  }
+}
+
 interface SlotPosition {
   xFrac: number;
   yFrac: number;
@@ -285,6 +340,7 @@ export class GameScreen extends Container implements Screen {
   private readonly focus = new FocusManager();
   private readonly waiting: Text;
   private readonly turnLabel: Text;
+  private readonly turnTimerText: Text;
   private readonly keyHint: Text;
   private readonly errorBanner: Container;
   private readonly errorBannerBg: Graphics;
@@ -326,6 +382,11 @@ export class GameScreen extends Container implements Screen {
   private thinkingPulseElapsed = 0;
   private errorVisibleMs = 0;
   private opponentSlots = new Map<SeatIndex, OpponentSlot>();
+  private readonly handEffects = new Set<HandCardEffects>();
+  // Last focused hand card, by `cardKey`. Restored after every re-render
+  // so a bot or opponent's move doesn't yank the selection back to the
+  // first legal card.
+  private focusedCardKey: string | null = null;
 
   constructor(options: GameScreenOptions) {
     super();
@@ -357,6 +418,23 @@ export class GameScreen extends Container implements Screen {
     this.turnLabel.label = "turn-label";
     this.turnLabel.visible = false;
     this.addChild(this.turnLabel);
+
+    // Turn timer countdown. Sits alongside the turn label and counts
+    // down to the server's turn-timeout deadline. Goes red as time
+    // runs out so it reads as urgent at a glance.
+    this.turnTimerText = new Text({
+      text: "",
+      style: {
+        fontFamily: typography.family,
+        fontSize: typography.size.sm,
+        fontWeight: typography.weight.bold,
+        fill: color.textMuted,
+        letterSpacing: typography.letterSpacing.wide,
+      },
+    });
+    this.turnTimerText.label = "turn-timer";
+    this.turnTimerText.visible = false;
+    this.addChild(this.turnTimerText);
 
     this.keyHint = new Text({
       text: "",
@@ -683,6 +761,8 @@ export class GameScreen extends Container implements Screen {
   }
 
   private onTick(deltaMs: number): void {
+    for (const fx of this.handEffects) fx.tick();
+    this.refreshTurnTimer();
     if (this.turnPulseActive) {
       this.turnPulseElapsed = (this.turnPulseElapsed + deltaMs) % TURN_PULSE_PERIOD_MS;
       const phase = (this.turnPulseElapsed / TURN_PULSE_PERIOD_MS) * Math.PI * 2;
@@ -731,6 +811,7 @@ export class GameScreen extends Container implements Screen {
     this.rightStack.removeChildren();
     this.myHandRow.removeChildren();
     this.focus.clear();
+    this.handEffects.clear();
 
     const snapshot = this.snapshot;
     if (!snapshot) {
@@ -970,15 +1051,84 @@ export class GameScreen extends Container implements Screen {
 
   private renderMyHand(snapshot: Snapshot): void {
     const hand = snapshot.you.hand;
+    const previousFocus = this.focusedCardKey;
+    let restoreTarget: CardView | null = null;
+    let firstLegal: CardView | null = null;
     hand.forEach((card, i) => {
       const view = new CardView(card);
-      view.x = i * (CARD_W + HAND_GAP);
+      const baseX = i * (CARD_W + HAND_GAP);
+      const baseY = 0;
+      view.x = baseX;
+      view.y = baseY;
       view.onActivate = () => this.tryPlayCard(card);
       const isLegal = legalPlay(snapshot, card) !== null;
       view.setLegalState(isLegal ? "legal" : "illegal");
       this.myHandRow.addChild(view);
-      this.focus.register(view);
+      // Only legal cards are focusable. Arrow keys skip illegal ones
+      // entirely so the player can't "select" a card they can't play.
+      // Illegal cards still render (dimmed via `setLegalState`) so the
+      // hand reads as a whole.
+      const key = cardKey(card);
+      if (isLegal) {
+        this.focus.register(view);
+        if (!firstLegal) firstLegal = view;
+        if (previousFocus !== null && key === previousFocus) restoreTarget = view;
+      }
+
+      const fx = new HandCardEffects(view, { x: baseX, y: baseY }, isLegal);
+      this.handEffects.add(fx);
+      // FocusManager dispatches via cardView.setFocus. We patch the
+      // instance method (shadowing the prototype) so the manager's
+      // existing keyboard-driven focus changes also drive the grow/lift
+      // animation without any other plumbing.
+      const originalSetFocus = view.setFocus.bind(view);
+      view.setFocus = (focused: boolean) => {
+        originalSetFocus(focused);
+        fx.setFocused(focused);
+        if (focused) this.focusedCardKey = key;
+      };
     });
+    // Restore selection: prefer the previously-focused card; fall back to
+    // the first legal one. `register` auto-focuses the first node, so we
+    // override here when we have a better target.
+    if (restoreTarget !== null && restoreTarget !== firstLegal) {
+      this.focus.focus(restoreTarget);
+    }
+    // If nothing legal exists, drop the remembered key so the next render
+    // doesn't try to restore something stale.
+    if (firstLegal === null) this.focusedCardKey = null;
+  }
+
+  private refreshTurnTimer(): void {
+    const deadline = this.room?.turnDeadline ?? null;
+    // The pendingClose banner already owns the visible countdown during
+    // its window; suppress this timer to avoid two duelling clocks.
+    if (deadline === null || this.room?.pendingClose || !this.snapshot) {
+      this.turnTimerText.visible = false;
+      return;
+    }
+    const remainingMs = deadline - this.now();
+    if (remainingMs <= 0) {
+      this.turnTimerText.visible = false;
+      return;
+    }
+    const remaining = (remainingMs / 1000).toFixed(1);
+    this.turnTimerText.text = `${remaining}s`;
+    // Red once <5s remain so the deadline reads as urgent without
+    // needing an extra animation. The accent (mid-game muted) is
+    // enough at >5s.
+    this.turnTimerText.style.fill = remainingMs < 5000 ? color.danger : color.accent;
+    this.turnTimerText.visible = true;
+    this.layoutTurnTimer();
+  }
+
+  private layoutTurnTimer(): void {
+    if (!this.turnTimerText.visible) return;
+    // Sit immediately to the right of the (centered) turnLabel with a
+    // small gap, so the pair reads as a single "Your turn — defend  3.4s"
+    // line.
+    this.turnTimerText.x = this.turnLabel.x + this.turnLabel.width + spacing.sm;
+    this.turnTimerText.y = this.turnLabel.y;
   }
 
   private renderTurnLabel(snapshot: Snapshot): void {
@@ -1004,6 +1154,7 @@ export class GameScreen extends Container implements Screen {
     this.turnLabel.y = Math.round(
       this.viewHeight / 2 - CARD_H / 2 - this.turnLabel.height - spacing.sm,
     );
+    this.layoutTurnTimer();
 
     // Anchor the table at the screen's horizontal centre and lay out cards
     // symmetrically inside the row (see tableStartX). This keeps every card's

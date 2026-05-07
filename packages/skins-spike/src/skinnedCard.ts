@@ -43,7 +43,7 @@ export interface SkinnedCardOptions {
  * to a bare base.
  */
 export class SkinnedCard extends Container {
-  private readonly base: Container;
+  readonly base: Container;
   private readonly skinTarget: Container;
   private readonly patternCtrl: PatternMeshController;
   private readonly foilCtrl: FoilMeshController;
@@ -88,6 +88,21 @@ export class SkinnedCard extends Container {
 
     this.tintFilter = new ColorMatrixFilter();
     this.applyFoilTunables();
+
+    // Sync each mesh's own groupAlpha (Pixi v8's accumulated worldAlpha)
+    // into its uAlpha uniform every render tick. Pixi only auto-
+    // multiplies alpha for batched/standard mesh materials; custom
+    // GlPrograms have to thread it manually. Reading the mesh's own
+    // groupAlpha (rather than SkinnedCard's) captures alpha set on
+    // intermediate ancestors — e.g. CardView.alpha = 0.45 for illegal
+    // cards — so the pattern + foil overlays fade in lockstep with the
+    // bare CardView underneath.
+    this.patternCtrl.view.onRender = () => {
+      this.patternCtrl.setAlpha(this.patternCtrl.view.groupAlpha);
+    };
+    this.foilCtrl.view.onRender = () => {
+      this.foilCtrl.setAlpha(this.foilCtrl.view.groupAlpha);
+    };
   }
 
   setTunables(tunables: Tunables): void {

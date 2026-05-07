@@ -61,11 +61,16 @@ export const requestRematchSchema = z.object({
   type: z.literal("RequestRematch"),
 });
 
+export const startGameSchema = z.object({
+  type: z.literal("StartGame"),
+});
+
 export const clientMessageSchema = z.discriminatedUnion("type", [
   joinRoomSchema,
   leaveRoomSchema,
   submitActionSchema,
   requestRematchSchema,
+  startGameSchema,
 ]);
 
 export function parseClientMessage(raw: unknown): ClientMessage {
@@ -180,6 +185,7 @@ export const roomStateMessageSchema = z.object({
   thinkingSeats: z.array(seatSchema).optional(),
   eliminated: z.array(seatSchema).optional(),
   pendingClose: pendingCloseStateSchema.nullable().optional(),
+  turnDeadline: z.number().nullable().optional(),
 });
 
 export const serverMessageSchema = z.discriminatedUnion("type", [

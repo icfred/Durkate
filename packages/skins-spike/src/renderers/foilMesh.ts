@@ -59,6 +59,8 @@ uniform float uWear;
 // the pattern when set high. 0.5 default is a moderate widening over the
 // generator-bright-peaks-only baseline.
 uniform float uCoverageBias;
+// Parent worldAlpha. See patternMesh.ts for rationale.
+uniform float uAlpha;
 
 vec3 huePalette(float h) {
   h = fract(h);
@@ -188,7 +190,7 @@ void main() {
     sheen = mix(sheen, vec3(wlum) * 0.82, uWear * 0.4);
   }
 
-  finalColor = vec4(sheen * strength, strength);
+  finalColor = vec4(sheen * strength, strength * uAlpha);
 }
 `;
 
@@ -205,6 +207,7 @@ interface FoilMeshUniforms {
   uViewTilt: Float32Array;
   uWear: number;
   uCoverageBias: number;
+  uAlpha: number;
 }
 
 export interface FoilMeshController {
@@ -223,6 +226,7 @@ export interface FoilMeshController {
   }): void;
   setTunables(opts: { metalStrength: number; holoStrength: number; coverageBias: number }): void;
   setPixelGrid(cellsX: number, cellsY: number): void;
+  setAlpha(alpha: number): void;
 }
 
 export function createFoilMesh(
@@ -251,6 +255,7 @@ export function createFoilMesh(
     uViewTilt: { value: new Float32Array([0, 0]), type: "vec2<f32>" },
     uWear: { value: 0, type: "f32" },
     uCoverageBias: { value: 0.5, type: "f32" },
+    uAlpha: { value: 1.0, type: "f32" },
   });
 
   const shader = new Shader({
@@ -298,6 +303,9 @@ export function createFoilMesh(
     setPixelGrid(cellsX, cellsY) {
       u.uPixelGrid[0] = cellsX;
       u.uPixelGrid[1] = cellsY;
+    },
+    setAlpha(alpha) {
+      u.uAlpha = alpha;
     },
   };
 }

@@ -200,7 +200,17 @@ export class MainMenuScreen extends Container implements Screen {
       label: "PLAY FFA",
       width: buttonW,
       height: buttonH,
-      onActivate: withClickSound(() => this.transitionTo("ffa-config")),
+      // Skip the config screen — FFA defaults to 6 players, 5 medium
+      // bots, lobby-held so the host can review and share before play.
+      // Bots in non-host slots get swapped out when friends join via the
+      // shared invite links.
+      onActivate: withClickSound(() =>
+        this.options.onPlayFfa({
+          playerCount: 6,
+          botCount: 5,
+          difficulty: "medium",
+        }),
+      ),
     });
     attachButtonHover(playFfa);
     playFfa.x = Math.round((PANEL_W - buttonW) / 2);

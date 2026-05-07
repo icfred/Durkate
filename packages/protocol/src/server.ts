@@ -59,6 +59,14 @@ export interface RoomStateMessage {
   eliminated?: SeatIndex[];
   /** Pending round-close window (ADR-0011), null/omitted when not in window. */
   pendingClose?: PendingCloseState | null;
+  /**
+   * Wall-clock ms (Date.now() basis) at which the active actor's turn
+   * times out. Null/omitted when no turn timer is armed (e.g. between
+   * rounds, during a `pendingClose` window — the close-window timer
+   * supersedes per-turn). Clients render a countdown for the active
+   * seat; a server-side alarm enforces the deadline.
+   */
+  turnDeadline?: number | null;
 }
 
 export type ServerMessage = SnapshotMessage | EventsMessage | ErrorMessage | RoomStateMessage;

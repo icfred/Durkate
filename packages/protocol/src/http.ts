@@ -16,12 +16,20 @@ export interface NPlayerCreateRoomRequest {
   botCount: number;
   /** Difficulty applied to all bots in the room. Defaults to medium. */
   difficulty?: BotDifficulty | undefined;
+  /**
+   * Hold the room in lobby until the host sends `StartGame`. Bot seats
+   * still get reserved (and their tokens returned in `joinTokens` so the
+   * host can share to swap them out for friends), but the engine isn't
+   * started until the host signals ready.
+   */
+  lobbyHold?: boolean | undefined;
 }
 
 export interface NormalizedCreateRoomRequest {
   playerCount: 2 | 3 | 4 | 5 | 6;
   botCount: number;
   difficulty?: BotDifficulty | undefined;
+  lobbyHold?: boolean | undefined;
 }
 
 export interface CreateRoomResponse {
@@ -60,6 +68,7 @@ export const nPlayerCreateRoomRequestSchema = z
     playerCount: playerCountSchema,
     botCount: z.number().int().nonnegative(),
     difficulty: botDifficultySchema.optional(),
+    lobbyHold: z.boolean().optional(),
   })
   .refine((v) => v.botCount < v.playerCount, {
     message: "botCount must be < playerCount",
@@ -110,6 +119,7 @@ export function normalizeCreateRoomRequest(req: CreateRoomRequest): NormalizedCr
       botCount: req.botCount,
     };
     if (req.difficulty !== undefined) out.difficulty = req.difficulty;
+    if (req.lobbyHold !== undefined) out.lobbyHold = req.lobbyHold;
     return out;
   }
   const out: NormalizedCreateRoomRequest = {

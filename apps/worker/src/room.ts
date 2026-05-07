@@ -50,6 +50,7 @@ interface PersistedRoom {
   pendingClose?: PendingCloseState | null;
   pendingCloseBy?: SeatIndex | null;
   botFanOut?: { seat: SeatIndex; at: number }[];
+  lobbyHold?: boolean;
   // Legacy fields kept for back-compat parsing only.
   mode?: "human" | "bot";
   botSeat?: SeatIndex | null;
@@ -64,6 +65,14 @@ interface InitRequestBody {
   playerCount: number;
   botCount: number;
   difficulty?: BotDifficulty;
+  /**
+   * Hold the room in lobby until the host signals ready via the
+   * `StartGame` client message. Bot seats are still pre-allocated (so
+   * the lobby UI shows their names) and the bot-seat tokens are
+   * surfaced as `joinTokens` so the host can share them — anyone who
+   * connects with a bot-seat token replaces that bot.
+   */
+  lobbyHold?: boolean;
 }
 
 const TOKEN_BYTES = 32;
@@ -84,6 +93,32 @@ const STALE_MS = 10 * 60 * 1000;
 // delay is halved so the round wraps up quickly for any spectators still
 // attached.
 const ALL_BOTS_SPEEDUP_FACTOR = 0.5;
+
+// Bot display names. Russian-themed because Durak is a Russian card game,
+// but kept short and recognisable so they read clearly in a 6-seat
+// opponent layout. Chosen at room creation, no duplicates within a room.
+const BOT_NAMES: readonly string[] = [
+  "Anya",
+  "Boris",
+  "Dima",
+  "Elena",
+  "Fyodor",
+  "Galina",
+  "Igor",
+  "Katya",
+  "Lev",
+  "Misha",
+  "Nadia",
+  "Olga",
+  "Pavel",
+  "Raisa",
+  "Sasha",
+  "Tanya",
+  "Vera",
+  "Yuri",
+  "Zoya",
+  "Maxim",
+];
 
 interface Env {
   TURN_TIMEOUT_MS?: string;
@@ -115,6 +150,17 @@ export class Room extends DurableObject<Env> {
   // Empty outside the window; arming this composes with the existing
   // single-actor `bot-think` slot via `armBotTurnIfNeeded`.
   private botFanOut: Map<SeatIndex, number> = new Map();
+  // Mid-round throw-in queued for the next `bot-think` fire. Set when
+  // `armBotTurnIfNeeded` finds a non-attacker non-defender bot with a
+  // matching-rank card (FFA pile-on, ADR-0010). `runBotMoveNow` consumes
+  // it ahead of the active actor's normal `bot.choose`. Cleared on
+  // game-over / rematch / forfeit so it doesn't leak across rounds.
+  private pendingThrowIn: { seat: SeatIndex; card: Card } | null = null;
+  // FFA lobby hold: when true the room won't auto-start even with all
+  // seats filled. The host sends `StartGame` to release. Bot-seat
+  // tokens are exposed in `joinTokens` while held so a friend joining
+  // via the share link can swap into a bot's slot.
+  private lobbyHold = false;
   private readonly turnTimeoutMs: number;
   private readonly disconnectForfeitMs: number;
   private closeWindowMs: number;
@@ -183,6 +229,7 @@ export class Room extends DurableObject<Env> {
     this.botFanOut = new Map(
       (persisted.botFanOut ?? []).map((entry) => [entry.seat, entry.at] as const),
     );
+    this.lobbyHold = persisted.lobbyHold ?? false;
     this.alarms.load(persisted.deadlines);
   }
 
@@ -218,13 +265,17 @@ export class Room extends DurableObject<Env> {
     this.seats = new Array<Seat | null>(playerCount).fill(null);
     this.rematchSeats = new Array<boolean>(playerCount).fill(false);
     this.botDifficulty = parseDifficulty(body.difficulty);
+    this.lobbyHold = body.lobbyHold === true;
     // Bots fill seats from the back so seat 0 stays human (the host).
+    // Pick distinct display names from the pool so no two bots in the
+    // room share a name (avoids the confusing "× 5 vs Bot 1" UI).
     this.botSeats = [];
+    const names = pickBotNames(botCount);
     for (let i = 0; i < botCount; i++) {
       const seatIndex = (playerCount - 1 - i) as SeatIndex;
       this.botSeats.push(seatIndex);
       this.seats[seatIndex] = {
-        name: `Bot ${botCount - i}`,
+        name: names[i] ?? `Bot ${botCount - i}`,
         token: randomBase64Url(TOKEN_BYTES),
       };
     }
@@ -235,6 +286,17 @@ export class Room extends DurableObject<Env> {
     for (let i = 0; i < remainingHumans; i++) {
       const guest = this.addPlayer(`Guest ${i + 1}`);
       joinTokens.push(guest.token);
+    }
+    // Lobby-hold rooms also expose bot-seat tokens as share tokens. A
+    // friend joining via one of these takes that bot's seat (the bot is
+    // dropped from `botSeats` and the seat name is renamed to `Guest`).
+    // Bot tokens are appended after any reserved-human tokens so the
+    // ordering matches the host's expectation: "shareable" first.
+    if (this.lobbyHold) {
+      for (const botSeat of this.botSeats) {
+        const seat = this.seats[botSeat];
+        if (seat) joinTokens.push(seat.token);
+      }
     }
     const response: CreateRoomResponse = {
       roomId: this.ctx.id.toString(),
@@ -261,7 +323,24 @@ export class Room extends DurableObject<Env> {
       return new Response("invalid token", { status: 403 });
     }
     if (this.botSeats.includes(seat)) {
-      return new Response("seat reserved for bot", { status: 403 });
+      // Lobby-hold FFA: bot-seat tokens act as "swap" tokens. The
+      // connecting human takes the seat and the bot is dropped from
+      // `botSeats`. Outside lobby-hold the seat is genuinely reserved
+      // for the bot driver, so reject as before.
+      if (!this.lobbyHold || this.engineState !== null) {
+        return new Response("seat reserved for bot", { status: 403 });
+      }
+      this.botSeats = this.botSeats.filter((s) => s !== seat);
+      const existing = this.seats[seat];
+      if (existing) {
+        // Rename the seat from the bot's display name to a generic guest
+        // label. Token stays the same so reconnects with the same URL
+        // continue to land on this seat.
+        this.seats[seat] = { name: "Guest", token: existing.token };
+      }
+      this.alarms.cancel("bot-think");
+      this.botFanOut.delete(seat);
+      this.broadcastRoomState();
     }
     if (this.clientForSeat(seat) !== undefined) {
       return new Response("seat already attached", { status: 409 });
@@ -283,6 +362,7 @@ export class Room extends DurableObject<Env> {
     this.broadcastRoomState();
     if (
       this.engineState === null &&
+      !this.lobbyHold &&
       this.allSeatsFilled() &&
       this.attachedSeatCount() === this.playerCount
     ) {
@@ -337,6 +417,14 @@ export class Room extends DurableObject<Env> {
       }
       case "RequestRematch": {
         const result = this.requestRematch(seat);
+        if (!result.ok) {
+          this.send(ws, { type: "Error", code: result.reason, message: result.reason });
+        }
+        await this.persist();
+        return;
+      }
+      case "StartGame": {
+        const result = this.releaseLobbyHold(seat);
         if (!result.ok) {
           this.send(ws, { type: "Error", code: result.reason, message: result.reason });
         }
@@ -518,6 +606,7 @@ export class Room extends DurableObject<Env> {
     this.pendingClose = null;
     this.pendingCloseBy = null;
     this.botFanOut.clear();
+    this.pendingThrowIn = null;
     // Clear all alarm bookkeeping before deleteAll wipes the persisted map.
     this.alarms.cancel("turn-timeout");
     this.alarms.cancel("forfeit");
@@ -603,6 +692,7 @@ export class Room extends DurableObject<Env> {
     this.pendingClose = null;
     this.pendingCloseBy = null;
     this.botFanOut.clear();
+    this.pendingThrowIn = null;
     this.alarms.cancel("turn-timeout");
     this.alarms.cancel("bot-think");
     this.alarms.cancel("forfeit");
@@ -735,6 +825,24 @@ export class Room extends DurableObject<Env> {
     return { ok: true };
   }
 
+  // Host (seat 0) presses "start" in the FFA lobby. Releases the
+  // lobbyHold flag and fires the same auto-start check the WS upgrade
+  // path runs — so the game begins immediately when both conditions
+  // (all seats filled + everyone connected) already held.
+  private releaseLobbyHold(
+    seat: SeatIndex,
+  ): { ok: true } | { ok: false; reason: "FORBIDDEN_ACTION" } {
+    if (this.engineState !== null) return { ok: false, reason: "FORBIDDEN_ACTION" };
+    if (!this.lobbyHold) return { ok: false, reason: "FORBIDDEN_ACTION" };
+    if (seat !== 0) return { ok: false, reason: "FORBIDDEN_ACTION" };
+    this.lobbyHold = false;
+    this.broadcastRoomState();
+    if (this.allSeatsFilled() && this.attachedSeatCount() === this.playerCount) {
+      this.startGame(newSeed());
+    }
+    return { ok: true };
+  }
+
   private shouldFireRematch(): boolean {
     // Bots never request rematch. The trigger is "every human seat opted
     // in" — the rematch fires once all non-bot seats have flipped their
@@ -755,6 +863,7 @@ export class Room extends DurableObject<Env> {
     this.pendingClose = null;
     this.pendingCloseBy = null;
     this.botFanOut.clear();
+    this.pendingThrowIn = null;
     this.engineState = null;
     this.rematchSeats = new Array<boolean>(this.playerCount).fill(false);
     this.broadcastRoomState();
@@ -925,6 +1034,7 @@ export class Room extends DurableObject<Env> {
     this.pendingClose = null;
     this.pendingCloseBy = null;
     this.botFanOut.clear();
+    this.pendingThrowIn = null;
     this.alarms.cancel("close-window");
 
     // If the original action was END_ROUND but throw-ins added undefended
@@ -1047,6 +1157,7 @@ export class Room extends DurableObject<Env> {
   // outstanding bot-think state. Idempotent — safe to call after every
   // engine transition.
   private armBotTurnIfNeeded(): void {
+    this.pendingThrowIn = null;
     if (this.botSeats.length === 0) {
       this.botChainCount = 0;
       this.clearThinkingState();
@@ -1064,14 +1175,25 @@ export class Room extends DurableObject<Env> {
       // single-bot pacing path would mis-fire if it tried to act here.
       return;
     }
-    const active = activeActorSeat(this.engineState);
-    if (!this.botSeats.includes(active)) {
+
+    // Mid-round throw-in (FFA): when the table is fully defended, any
+    // non-defender — not just the attacker — may pile on with a matching-
+    // rank card. The existing flow only schedules the active actor (the
+    // attacker, after a defense), so without this only the attacker bot
+    // ever throws in mid-round. Find an eligible non-attacker bot first
+    // and schedule them ahead of the attacker's normal turn.
+    const throwIn = this.findMidRoundThrowIn(this.engineState);
+    const actingSeat = throwIn?.seat ?? activeActorSeat(this.engineState);
+    if (throwIn !== null) {
+      this.pendingThrowIn = throwIn;
+    } else if (!this.botSeats.includes(actingSeat)) {
       this.botChainCount = 0;
       this.clearThinkingState();
       return;
     }
     if (this.botChainCount >= this.botIterationCap) {
       this.botChainCount = 0;
+      this.pendingThrowIn = null;
       this.clearThinkingState();
       this.sendErrorToHumans("BOT_LOOP_CAP", "bot iteration cap reached");
       return;
@@ -1079,7 +1201,7 @@ export class Room extends DurableObject<Env> {
     this.botChainCount += 1;
     const baseDelay = computeThinkDelay({
       state: this.engineState,
-      seat: active,
+      seat: actingSeat,
       difficulty: this.botDifficulty,
       bounds: this.thinkBounds,
     });
@@ -1099,6 +1221,48 @@ export class Room extends DurableObject<Env> {
       : baseDelay;
     this.alarms.schedule("bot-think", Date.now() + delay);
     this.broadcastRoomState();
+  }
+
+  // Returns a queued throw-in for a non-attacker non-defender bot when
+  // one is eligible: the table must be fully defended (no undefended
+  // attacks), under the per-bout cap (6), the defender must still have
+  // enough cards to face another beat, and the seat must hold a card
+  // whose rank already appears on the table. Picks the cheapest matching
+  // card (non-trumps first, lowest rank first) to mirror the engine bot's
+  // own throw-in heuristic. Returns the lowest seat index when several
+  // bots are eligible — order doesn't matter much for FFA, and stable
+  // ordering keeps replay traces predictable.
+  private findMidRoundThrowIn(state: InRoundState): { seat: SeatIndex; card: Card } | null {
+    if (state.table.length === 0) return null;
+    if (state.table.length >= 6) return null;
+    if (state.table.some((p) => !p.defense)) return null;
+    const defenderHand = state.hands[state.defender];
+    if (!defenderHand || defenderHand.length === 0) return null;
+    const ranks = new Set<number>();
+    for (const pair of state.table) {
+      ranks.add(pair.attack.rank);
+      if (pair.defense) ranks.add(pair.defense.rank);
+    }
+    const eliminated = eliminatedSeatsOfState(state);
+    const trump = state.trumpSuit;
+    for (const seat of [...this.botSeats].sort((a, b) => a - b)) {
+      if (seat === state.defender) continue;
+      if (seat === state.attacker) continue;
+      if (eliminated.has(seat)) continue;
+      const hand = state.hands[seat];
+      if (!hand || hand.length === 0) continue;
+      const matches = hand.filter((c) => ranks.has(c.rank));
+      if (matches.length === 0) continue;
+      const sorted = [...matches].sort((a, b) => {
+        const trumpA = a.suit === trump ? 1 : 0;
+        const trumpB = b.suit === trump ? 1 : 0;
+        if (trumpA !== trumpB) return trumpA - trumpB;
+        return a.rank - b.rank;
+      });
+      const card = sorted[0];
+      if (card) return { seat, card };
+    }
+    return null;
   }
 
   // True iff every seat still in the round (non-eliminated) is a bot.
@@ -1149,6 +1313,11 @@ export class Room extends DurableObject<Env> {
     this.scheduleTurnTimer();
     this.armBotTurnIfNeeded();
     this.bumpStaleIfFinished();
+    // Surface the new turn-timeout deadline when the next actor is a
+    // human (i.e. armBotTurnIfNeeded didn't schedule a fresh bot-think
+    // and didn't broadcast). Without this the player has no visible
+    // countdown after the bot finishes its move.
+    if (!this.alarms.has("bot-think")) this.broadcastRoomState();
     return true;
   }
 
@@ -1174,22 +1343,37 @@ export class Room extends DurableObject<Env> {
     }
   }
 
-  // Synchronously runs one bot.choose -> step. Returns true if a move
+  // Synchronously runs one bot.choose -> apply. Returns true if a move
   // landed. Used by the alarm handler and by the zero-delay fast path.
+  // Routes through `applyEnforcedAction` so bot END_ROUND / TAKE_PILE
+  // opens the FFA throw-in close window (ADR-0011) the same way a human
+  // submission does — without this, bots would resolve rounds instantly
+  // in 3+ player FFA and leave nobody a chance to throw in.
   private runBotMoveNow(): boolean {
     if (this.botSeats.length === 0) return false;
     if (this.engineState === null || this.engineState.phase !== "in-round") return false;
+    // Mid-round throw-in: a non-active non-defender bot was queued by
+    // `armBotTurnIfNeeded` to pile on. Submit ahead of the active actor's
+    // normal `bot.choose` so non-attacker bots actually throw in during
+    // the bout instead of waiting for the close window.
+    const pending = this.pendingThrowIn;
+    this.pendingThrowIn = null;
+    if (pending !== null && this.botSeats.includes(pending.seat)) {
+      const action: Action = { type: "THROW_IN", by: pending.seat, card: pending.card };
+      const result = this.applyEnforcedAction(action);
+      if (result.ok) return true;
+      // Engine rejected (e.g. state advanced between scheduling and firing).
+      // Fall through to the active actor's normal move so the round still
+      // makes progress.
+    }
     const active = activeActorSeat(this.engineState);
     if (!this.botSeats.includes(active)) return false;
     const action = bot.choose(this.engineState, { difficulty: this.botDifficulty });
-    const result = step(this.engineState, action);
+    const result = this.applyEnforcedAction(action);
     if (!result.ok) {
       this.sendErrorToHumans("BOT_ILLEGAL_ACTION", `bot rejected: ${result.reason}`);
       return false;
     }
-    this.engineState = result.state;
-    this.broadcast(result.events);
-    this.advancePastEliminatedActor();
     return true;
   }
 
@@ -1227,6 +1411,11 @@ export class Room extends DurableObject<Env> {
     const pendingClose: PendingCloseState | null = this.pendingClose
       ? { ...this.pendingClose, passed: [...this.pendingClose.passed] }
       : null;
+    // Surface the per-turn timeout deadline so clients can render a
+    // countdown for whoever is on the move. Suppressed during the
+    // close window — the close-window banner already owns the visible
+    // timer in that state.
+    const turnDeadline = pendingClose === null ? (this.alarms.get("turn-timeout") ?? null) : null;
     for (const ws of this.ctx.getWebSockets()) {
       const seat = this.seatForWebSocket(ws);
       if (seat === undefined) continue;
@@ -1241,6 +1430,7 @@ export class Room extends DurableObject<Env> {
         thinkingSeats,
         eliminated,
         pendingClose,
+        turnDeadline,
       };
       this.send(ws, msg);
     }
@@ -1289,6 +1479,10 @@ export class Room extends DurableObject<Env> {
 
   private scheduleTurnTimer(): void {
     if (this.engineState === null || this.engineState.phase !== "in-round") return;
+    // The FFA close window owns the active deadline; arming a separate
+    // turn-timeout would race the close-window alarm and could synthesize
+    // a TIMEOUT for the wrong actor when it fires.
+    if (this.pendingClose !== null) return;
     this.alarms.schedule("turn-timeout", Date.now() + this.turnTimeoutMs);
   }
 
@@ -1311,6 +1505,7 @@ export class Room extends DurableObject<Env> {
         : null,
       pendingCloseBy: this.pendingCloseBy,
       botFanOut: Array.from(this.botFanOut.entries()).map(([seat, at]) => ({ seat, at })),
+      lobbyHold: this.lobbyHold,
     };
     await this.ctx.storage.put(STORAGE_KEY, snapshot);
   }
@@ -1384,6 +1579,32 @@ export function newSeed(): number {
 function parseDifficulty(raw: unknown): BotDifficulty {
   if (raw === "easy" || raw === "medium" || raw === "hard") return raw;
   return DEFAULT_BOT_DIFFICULTY;
+}
+
+// Pick `count` distinct names from `BOT_NAMES`. Uses a Fisher-Yates
+// shuffle seeded from `crypto.getRandomValues` so different rooms don't
+// always seat the same names, and so within a room every bot has a
+// different name. Falls back to "Bot N" if `count` exceeds the pool —
+// shouldn't happen for our 2-6 player range, but better than throwing.
+export function pickBotNames(count: number): string[] {
+  if (count <= 0) return [];
+  const pool = [...BOT_NAMES];
+  const seedBuf = new Uint32Array(pool.length);
+  crypto.getRandomValues(seedBuf);
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = (seedBuf[i] ?? 0) % (i + 1);
+    const a = pool[i];
+    const b = pool[j];
+    if (a !== undefined && b !== undefined) {
+      pool[i] = b;
+      pool[j] = a;
+    }
+  }
+  const out: string[] = [];
+  for (let i = 0; i < count; i++) {
+    out.push(pool[i] ?? `Bot ${i + 1}`);
+  }
+  return out;
 }
 
 export function randomBase64Url(byteLength: number): string {

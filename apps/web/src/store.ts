@@ -67,6 +67,12 @@ export interface RoomMembership {
   eliminated: SeatIndex[];
   /** Pending throw-in close window (ADR-0011), null when not in a window. */
   pendingClose: PendingCloseState | null;
+  /**
+   * Wall-clock ms at which the active actor's turn times out. Null when
+   * no timer is armed. Suppressed by the server during a `pendingClose`
+   * window — that banner owns the visible countdown in that state.
+   */
+  turnDeadline: number | null;
 }
 
 export type RoomCreationState =
@@ -129,6 +135,7 @@ export interface AppState {
   lastError: ServerError | null;
   submitAction: (action: Action) => void;
   requestRematch: () => void;
+  startGame: () => void;
   showMenu(): void;
   showLobby(args: { mode: Mode; roomCode: string; token?: string | null }): void;
   showGame(args?: { mode?: Mode; roomCode?: string }): void;
@@ -367,6 +374,14 @@ export const appStore = createStore<AppState>((set, get) => {
         return;
       }
       state.__sender({ type: "RequestRematch" });
+    },
+    startGame: () => {
+      const state = get() as InternalState;
+      if (state.connection.status !== "open" || !state.__sender) {
+        console.warn("[store] dropped startGame; not connected");
+        return;
+      }
+      state.__sender({ type: "StartGame" });
     },
     toggleMute: () => {
       const next = !get().audio.muted;

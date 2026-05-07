@@ -20,4 +20,13 @@ export interface RequestRematch {
   type: "RequestRematch";
 }
 
-export type ClientMessage = JoinRoom | LeaveRoom | SubmitAction | RequestRematch;
+/**
+ * Sent by the host to release a `lobbyHold` room and begin play. The
+ * server fills any remaining empty seats with bots and starts. Ignored
+ * if the room is already running or wasn't held.
+ */
+export interface StartGame {
+  type: "StartGame";
+}
+
+export type ClientMessage = JoinRoom | LeaveRoom | SubmitAction | RequestRematch | StartGame;

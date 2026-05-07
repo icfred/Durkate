@@ -463,6 +463,16 @@ describe("Room FFA throw-in window (close-window)", () => {
     expect(afterThrow.table.length).toBe(2);
     expect(afterThrow.table[1]?.defense).toBeUndefined();
 
+    // Drain the post-throw-in fan-out alarm first (seat 2 has no rank
+    // matches left, passes; seat 3 already passed). This way the
+    // close-window alarm fires alone and isn't co-dispatched with a bot
+    // move — bot moves now route through `applyEnforcedAction`, so a
+    // bot TAKE_PILE choice would itself open a fresh window and confuse
+    // the assertions here.
+    await runInDurableObject(stub, async (room: Room) => {
+      await room.testFireAlarm(Date.now() + 1_000);
+    });
+
     // Fire close-window alarm. Without the fix this would attempt
     // END_ROUND, get ATTACKS_UNDEFENDED, and silently strand the game.
     await runInDurableObject(stub, async (room: Room) => {
@@ -476,11 +486,13 @@ describe("Room FFA throw-in window (close-window)", () => {
     const deadlines = await runInDurableObject(stub, async (room: Room) => room.testDeadlines());
     expect(deadlines["bot-think"]).toBeDefined();
 
-    // Fire bot-think generously: defender should beat the undefended D-8
-    // with H-12 (trump), or take the pile. The bug shape is "D-8 sits on
-    // the table forever undefended" — assert that scenario does NOT occur.
+    // Fire alarms generously: defender beats the undefended D-8 with H-12
+    // (trump), or takes the pile. If the bot takes the pile a TAKE_PILE
+    // close-window opens for 60s of fan-out — fire long enough for that
+    // to collapse too. Bug shape is "D-8 sits on the table forever
+    // undefended" — assert that scenario does NOT occur.
     await runInDurableObject(stub, async (room: Room) => {
-      await room.testFireAlarm(Date.now() + 10_000);
+      await room.testFireAlarm(Date.now() + 70_000);
     });
     const final = await runInDurableObject(stub, async (room: Room) => room.testCurrentState());
     if (!final) throw new Error("final state lost");

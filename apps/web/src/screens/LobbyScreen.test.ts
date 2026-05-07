@@ -37,6 +37,7 @@ function makeRoom(occupants: (string | null)[], you: number | null = 0): RoomMem
     thinkingSeats: [],
     eliminated: [],
     pendingClose: null,
+    turnDeadline: null,
   };
 }
 
