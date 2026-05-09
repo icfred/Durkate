@@ -318,6 +318,7 @@ describe("connect", () => {
     const handlers = makeHandlers();
     const { conn, harness } = start(handlers);
     harness.sockets[0]?.emitClose(1006, "boom");
+    warn.mockClear();
     conn.send({ type: "SubmitAction", action: { type: "START_GAME" } });
     expect(warn).toHaveBeenCalledOnce();
   });
