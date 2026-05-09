@@ -2,9 +2,10 @@ import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/700.css";
 
 import { loadSkinAssets } from "@durak/skins-spike";
-import { Button, color, FocusManager, spacing, typography } from "@durak/ui";
-import { Application, Container, Text } from "pixi.js";
+import { color, typography } from "@durak/ui";
+import { Application, Container } from "pixi.js";
 import { AnimSandboxScreen } from "./screens/AnimSandboxScreen.js";
+import { HelpModal } from "./screens/HelpModal.js";
 import { SkinSandboxScreen } from "./screens/SkinSandboxScreen.js";
 import { SkinTunerScreen } from "./screens/SkinTunerScreen.js";
 import type { Screen } from "./screens/types.js";
@@ -22,12 +23,11 @@ function activeScreen(): ScreenName {
   return isScreenName(raw) ? raw : "skins";
 }
 
-function navigate(screen: ScreenName): void {
+function navigateTo(screen: ScreenName, code?: string): void {
   const params = new URLSearchParams(window.location.search);
   params.set("screen", screen);
-  // Drop deep-link `code` when leaving the tuner so re-entries get a clean
-  // start. Tuner→tuner navigation never goes through here.
-  if (screen !== "tuner") params.delete("code");
+  if (code !== undefined) params.set("code", code);
+  else params.delete("code");
   window.location.search = `?${params.toString()}`;
 }
 
@@ -47,65 +47,49 @@ await app.init({
 });
 mount.appendChild(app.canvas);
 
-const NAV_HEIGHT = 56;
-const TITLE = "CARD SANDBOX";
+const screenContainer = new Container();
+app.stage.addChild(screenContainer);
 
-function buildNav(current: ScreenName): { container: Container; height: number } {
-  const container = new Container();
+const modalContainer = new Container();
+modalContainer.visible = false;
+app.stage.addChild(modalContainer);
 
-  const title = new Text({
-    text: TITLE,
-    style: {
-      fontFamily: typography.family,
-      fontSize: typography.size.md,
-      fontWeight: typography.weight.bold,
-      fill: color.text,
-      letterSpacing: typography.letterSpacing.stamp,
-    },
-  });
-  title.x = spacing.lg;
-  title.y = Math.round((NAV_HEIGHT - title.height) / 2);
-  container.addChild(title);
-
-  const focus = new FocusManager();
-  const labels: Record<ScreenName, string> = {
-    skins: "GRID",
-    tuner: "TUNER",
-    anims: "ANIMS",
-  };
-  let cursor = 240;
-  for (const name of SCREEN_NAMES) {
-    const isActive = name === current;
-    const btn = new Button({
-      label: isActive ? `[${labels[name]}]` : labels[name],
-      width: 120,
-      height: 36,
-      onActivate: () => {
-        if (name === current) return;
-        navigate(name);
-      },
-    });
-    btn.x = cursor;
-    btn.y = Math.round((NAV_HEIGHT - 36) / 2);
-    container.addChild(btn);
-    focus.register(btn);
-    cursor += btn.width + spacing.sm;
-  }
-  focus.attach();
-  return { container, height: NAV_HEIGHT };
+let activeModal: HelpModal | null = null;
+function openHelpModal(): void {
+  if (activeModal) return;
+  activeModal = new HelpModal({ onClose: closeHelpModal });
+  modalContainer.addChild(activeModal);
+  modalContainer.visible = true;
+  activeModal.layout(app.screen.width, app.screen.height);
+}
+function closeHelpModal(): void {
+  if (!activeModal) return;
+  activeModal.dispose();
+  modalContainer.removeChild(activeModal);
+  activeModal.destroy({ children: true });
+  activeModal = null;
+  modalContainer.visible = false;
 }
 
 const screen = activeScreen();
-const nav = buildNav(screen);
-nav.container.y = 0;
-app.stage.addChild(nav.container);
-
-const screenContainer = new Container();
-screenContainer.y = nav.height;
-app.stage.addChild(screenContainer);
-
 const mounted: Screen = await mountScreen(screen);
 screenContainer.addChild(mounted);
+
+// Top-level ESC: close modal first, otherwise return to the skins grid
+// from tuner / anims. Skins itself ignores ESC at this layer (the screen
+// handles ESC internally to clear ripple focus).
+window.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (activeModal) {
+    event.preventDefault();
+    closeHelpModal();
+    return;
+  }
+  if (screen !== "skins") {
+    event.preventDefault();
+    navigateTo("skins");
+  }
+});
 
 app.renderer.on("resize", layoutAll);
 layoutAll();
@@ -113,7 +97,8 @@ layoutAll();
 function layoutAll(): void {
   const w = app.screen.width;
   const h = app.screen.height;
-  mounted.layout(w, Math.max(0, h - nav.height));
+  mounted.layout(w, h);
+  if (activeModal) activeModal.layout(w, h);
 }
 
 async function mountScreen(name: ScreenName): Promise<Screen> {
@@ -123,7 +108,12 @@ async function mountScreen(name: ScreenName): Promise<Screen> {
   // Both `skins` and `tuner` need the procedural skin assets; load once.
   const assets = await loadSkinAssets(app.renderer);
   if (name === "skins") {
-    return new SkinSandboxScreen({ assets, ticker: app.ticker });
+    return new SkinSandboxScreen({
+      assets,
+      ticker: app.ticker,
+      onShowHelp: () => openHelpModal(),
+      onOpenTuner: (code) => navigateTo("tuner", code),
+    });
   }
   const code = new URLSearchParams(window.location.search).get("code") ?? undefined;
   return new SkinTunerScreen({
