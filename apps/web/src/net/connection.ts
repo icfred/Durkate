@@ -99,7 +99,8 @@ export function createConnectionController(
   };
 
   const openFor = (roomId: string) => {
-    closeActive();
+    console.info("[conn] openFor", roomId);
+    closeActive("openFor");
     // Reserve `active` before connecting. `connectImpl` synchronously fires
     // setStatus("connecting"), which triggers a store-subscriber re-entry
     // into `reconcile`. If `active` is still null at that point, reconcile
@@ -110,8 +111,9 @@ export function createConnectionController(
     store.getState().setSender(conn.send);
   };
 
-  const closeActive = () => {
+  const closeActive = (reason: string) => {
     if (!active) return;
+    console.info("[conn] closeActive", reason, { roomId: active.roomId });
     active.conn?.close();
     active = null;
     store.getState().setSender(null);
@@ -121,14 +123,14 @@ export function createConnectionController(
     if (state.phase === "lobby" || state.phase === "game" || state.phase === "gameover") {
       const { roomCode, currentToken } = state;
       if (!roomCode || !currentToken) {
-        closeActive();
+        closeActive(`reconcile:missing(${state.phase}, code=${!!roomCode}, tok=${!!currentToken})`);
         return;
       }
       if (active && active.roomId === roomCode) return;
       openFor(roomCode);
       return;
     }
-    closeActive();
+    closeActive(`reconcile:phase=${state.phase}`);
   };
 
   return {
@@ -137,11 +139,11 @@ export function createConnectionController(
       const unsub = store.subscribe(reconcile);
       return () => {
         unsub();
-        closeActive();
+        closeActive("teardown");
       };
     },
     forceDisconnect: () => {
-      closeActive();
+      closeActive("forceDisconnect");
     },
   };
 }
