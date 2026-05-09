@@ -145,6 +145,14 @@ export interface AppState {
   requestRematch: () => void;
   startGame: () => void;
   setBotDifficulty: (seat: number, difficulty: BotDifficulty) => void;
+  /**
+   * Lobby last-interacted-cycle hint. Survives the screen rebuild that
+   * happens when PLAYERS or ROUNDS triggers a room recreation, so the
+   * lobby can re-focus the same control instead of snapping back to
+   * the first registered button.
+   */
+  lobbyFocusHint: "players" | "rounds" | null;
+  setLobbyFocusHint: (hint: "players" | "rounds" | null) => void;
   showMenu(): void;
   showLobby(args: { mode: Mode; roomCode: string; token?: string | null }): void;
   showGame(args?: { mode?: Mode; roomCode?: string }): void;
@@ -400,6 +408,8 @@ export const appStore = createStore<AppState>((set, get) => {
       }
       state.__sender({ type: "SetBotDifficulty", seat, difficulty });
     },
+    lobbyFocusHint: null,
+    setLobbyFocusHint: (hint) => set({ lobbyFocusHint: hint }),
     toggleMute: () => {
       const next = !get().audio.muted;
       writeMuted(next);

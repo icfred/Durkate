@@ -131,6 +131,7 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
             }),
           );
           const totalRounds = state.room?.match?.totalRounds ?? 1;
+          const focusHint = state.lobbyFocusHint;
           const lobbyOpts: ConstructorParameters<typeof LobbyScreen>[0] = {
             mode,
             roomCode,
@@ -153,6 +154,7 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
               appStore.getState().showLobby({ mode, roomCode: next });
             },
             onBack: () => appStore.getState().showMenu(),
+            ...(focusHint ? { initialFocus: focusHint } : {}),
           };
           // Always-on START NOW: every room created from PLAY is
           // ffa+lobbyHold so the host explicitly releases the hold.
@@ -173,13 +175,21 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
           // setup surface, so this is how those settings get changed.
           // The connection controller closes the old ws and opens the
           // new one when `roomCode` flips. Both handlers read the
-          // freshest values from the store at click time so cycling
-          // one config doesn't reset the other.
-          lobbyOpts.onCyclePlayers = () => {
+          // freshest values from the store and accept a direction so
+          // arrow keys can step the value either way.
+          lobbyOpts.onCyclePlayers = (dir) => {
             const s = appStore.getState();
             const cur = s.playerCount ?? 2;
-            const next = cur >= 6 ? 2 : cur + 1;
+            const playersOrder = [2, 3, 4, 5, 6];
+            const idx = playersOrder.indexOf(cur);
+            const nextIdx =
+              ((idx === -1 ? 0 : idx) + dir + playersOrder.length) % playersOrder.length;
+            const next = playersOrder[nextIdx] ?? 2;
             const rounds = s.room?.match?.totalRounds ?? 1;
+            // Remember which control the user just touched so the
+            // rebuilt lobby can restore focus there instead of
+            // auto-focusing PLAYERS.
+            s.setLobbyFocusHint("players");
             startGame({
               playerCount: next as 2 | 3 | 4 | 5 | 6,
               botCount: next - 1,
@@ -187,13 +197,16 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
               rounds,
             });
           };
-          lobbyOpts.onCycleRounds = () => {
+          lobbyOpts.onCycleRounds = (dir) => {
             const s = appStore.getState();
             const players = s.playerCount ?? 2;
-            const order = [1, 3, 5, 7, 9];
-            const cur = s.room?.match?.totalRounds ?? 1;
+            // Best-of-N options the lobby surfaces: 3, 5, 7.
+            const order = [3, 5, 7];
+            const cur = s.room?.match?.totalRounds ?? 3;
             const idx = order.indexOf(cur);
-            const next = order[(idx + 1) % order.length] ?? 3;
+            const nextIdx = ((idx === -1 ? 0 : idx) + dir + order.length) % order.length;
+            const next = order[nextIdx] ?? 3;
+            s.setLobbyFocusHint("rounds");
             startGame({
               playerCount: players as 2 | 3 | 4 | 5 | 6,
               botCount: Math.max(0, players - 1),

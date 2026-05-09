@@ -76,7 +76,7 @@ describe("LobbyScreen friend mode", () => {
     screen.dispose();
   });
 
-  it("renders the share URL and a copy link button", () => {
+  it("renders a copy invite link button (URL itself is hidden)", () => {
     const screen = new LobbyScreen({
       mode: "friend",
       roomCode: "WXYZ",
@@ -85,9 +85,9 @@ describe("LobbyScreen friend mode", () => {
       onJoin: vi.fn(),
     });
     const labels = collectText(screen);
-    expect(labels).toContain("https://durak/#room=WXYZ");
-    expect(labels).toContain("COPY LINK");
-    expect(labels).toContain("INVITE LINK");
+    // URL is no longer surfaced — the copy button is the whole API.
+    expect(labels).not.toContain("https://durak/#room=WXYZ");
+    expect(labels).toContain("COPY INVITE LINK");
     screen.dispose();
   });
 
@@ -101,7 +101,7 @@ describe("LobbyScreen friend mode", () => {
       onJoin: vi.fn(),
       copyToClipboard: copy,
     });
-    const copyButton = findContainerWithText(screen, "COPY LINK");
+    const copyButton = findContainerWithText(screen, "COPY INVITE LINK");
     if (!copyButton) throw new Error("copy button not found");
     (copyButton as unknown as { activate(): void }).activate();
     expect(copy).toHaveBeenCalledWith("https://durak/#room=ABCD");
@@ -199,7 +199,7 @@ describe("LobbyScreen N-aware FFA", () => {
     screen.dispose();
   });
 
-  it("renders a single COPY LINK button regardless of how many tokens the worker returned", () => {
+  it("renders a single COPY INVITE LINK button regardless of how many tokens the worker returned", () => {
     const screen = new LobbyScreen({
       mode: "ffa",
       roomCode: "ABCD",
@@ -210,10 +210,9 @@ describe("LobbyScreen N-aware FFA", () => {
       onJoin: vi.fn(),
     });
     const labels = collectText(screen);
-    expect(labels).toContain("COPY LINK");
+    expect(labels).toContain("COPY INVITE LINK");
     expect(labels).not.toContain("COPY LINK 1");
     expect(labels).not.toContain("COPY LINK 2");
-    expect(labels).toContain("INVITE LINK");
     screen.dispose();
   });
 

@@ -15,20 +15,18 @@ import { attachBackNav } from "./backNav.js";
 import type { Screen } from "./types.js";
 
 const PANEL_W = 540;
-const PANEL_H_BASE = 600;
-const PANEL_H_PER_EXTRA_SHARE = 70;
+const PANEL_H_BASE = 540;
+const PANEL_H_PER_EXTRA_SHARE = 0;
 const CONFIG_CELL_H = 36;
 const DIVIDER_PAD = spacing.md;
 const FIELD_W = 240;
 const FIELD_H = 48;
-const COPY_BUTTON_W = 140;
 const COPY_BUTTON_H = 36;
 const BACK_BUTTON_W = 140;
-const BACK_BUTTON_H = 36;
+const BACK_BUTTON_H = 40;
 const RETRY_BUTTON_W = 160;
 const RETRY_BUTTON_H = 40;
 const ROOM_CODE_MAX = 8;
-const SHARE_URL_MAX_CHARS = 56;
 
 export type LobbyStatus = "waiting" | "starting" | "ready";
 
@@ -67,10 +65,20 @@ export interface LobbyScreenOptions {
    * label. Omit (or 1) on legacy single-round flows.
    */
   rounds?: number;
-  /** Host-side cycle: bumps `playerCount` and re-creates the room. */
-  onCyclePlayers?(): void;
+  /**
+   * Host-side cycle: bumps `playerCount` and re-creates the room.
+   * `dir` is +1 (next/up) or -1 (previous/down). Click activations
+   * call with +1; arrow keys pass the direction.
+   */
+  onCyclePlayers?(dir: 1 | -1): void;
   /** Host-side cycle: bumps `rounds` and re-creates the room. */
-  onCycleRounds?(): void;
+  onCycleRounds?(dir: 1 | -1): void;
+  /**
+   * Restore focus to a specific control on construction. Used when
+   * the lobby is rebuilt after a PLAYERS / ROUNDS cycle so the user
+   * stays on the control they just adjusted.
+   */
+  initialFocus?: "players" | "rounds";
   copyToClipboard?(text: string): Promise<void> | void;
 }
 
@@ -135,6 +143,16 @@ export class LobbyScreen extends Container implements Screen {
   // ROUNDS label when the first RoomState arrives (the initial render
   // happens before `state.room.match` is populated).
   private roundsButton: Button | null = null;
+  // Tag for the currently-focused cycle control. Set by the patched
+  // `setFocus` on PLAYERS / ROUNDS buttons; consumed by the capture-
+  // phase keydown handler so arrow-key presses adjust the value
+  // instead of moving focus to a neighbour.
+  private focusedCycleControl: "players" | "rounds" | null = null;
+  private readonly arrowKeyHandler: (event: KeyboardEvent) => void;
+  private readonly cycleHandlers: {
+    players?: (dir: 1 | -1) => void;
+    rounds?: (dir: 1 | -1) => void;
+  } = {};
   private overlay: TextInputOverlayHandle | null = null;
   private inputValue = "";
   private currentStatus: LobbyStatus;
@@ -147,6 +165,11 @@ export class LobbyScreen extends Container implements Screen {
 
   constructor(options: LobbyScreenOptions) {
     super();
+    // Capture-phase arrow handler: runs before FocusManager's window
+    // keydown listener, intercepts ←/→ when one of the cycle buttons
+    // is focused, and dispatches a value bump. Without this the arrow
+    // keys would just move focus to a sibling button.
+    this.arrowKeyHandler = (event) => this.handleArrowKey(event);
     this.mode = options.mode;
     void options.roomCode;
     this.playerCount = options.playerCount ?? 2;
@@ -212,36 +235,47 @@ export class LobbyScreen extends Container implements Screen {
     this.addDivider(nextY);
     nextY += DIVIDER_PAD;
 
-    // Config row: PLAYERS and ROUNDS cycle controls. Host-only — when
-    // the cycle callbacks aren't wired (joiner, or a future read-only
-    // mode) the row renders the values as plain labels.
+    // Config row: PLAYERS and ROUNDS cycle controls. Stacked vertically
+    // so each gets the full panel width, since the user steers them with
+    // ←/→ to bump the value. Click also cycles forward (Enter on a
+    // focused button via FocusManager).
     if (options.onCyclePlayers || options.onCycleRounds || options.rounds !== undefined) {
       const rounds = options.rounds ?? 1;
-      const configY = nextY;
-      const colW = (PANEL_W - spacing.lg * 2) / 2;
+      const cellW = PANEL_W - spacing.lg * 2;
 
+      const playersCb = options.onCyclePlayers;
       const playersOpts: Parameters<typeof this.makeConfigCell>[0] = {
         label: `PLAYERS: ${this.playerCount}`,
         x: spacing.lg,
-        y: configY,
-        w: colW,
+        y: nextY,
+        w: cellW,
       };
-      if (options.onCyclePlayers) playersOpts.onActivate = options.onCyclePlayers;
+      if (playersCb) {
+        playersOpts.onActivate = () => playersCb(1);
+        playersOpts.cycleKind = "players";
+      }
       this.playersControl = this.makeConfigCell(playersOpts);
       this.readyContent.addChild(this.playersControl);
+      if (playersCb) this.cycleHandlers.players = playersCb;
+      nextY += CONFIG_CELL_H + spacing.sm;
 
+      const roundsCb = options.onCycleRounds;
       const roundsOpts: Parameters<typeof this.makeConfigCell>[0] = {
         label: roundsLabel(rounds),
-        x: spacing.lg + colW,
-        y: configY,
-        w: colW,
+        x: spacing.lg,
+        y: nextY,
+        w: cellW,
       };
-      if (options.onCycleRounds) roundsOpts.onActivate = options.onCycleRounds;
+      if (roundsCb) {
+        roundsOpts.onActivate = () => roundsCb(1);
+        roundsOpts.cycleKind = "rounds";
+      }
       this.roundsControl = this.makeConfigCell(roundsOpts);
       this.readyContent.addChild(this.roundsControl);
       this.roundsButton = findChildButton(this.roundsControl);
-
+      if (roundsCb) this.cycleHandlers.rounds = roundsCb;
       nextY += CONFIG_CELL_H + spacing.lg;
+
       this.addDivider(nextY);
       nextY += DIVIDER_PAD;
     } else {
@@ -266,148 +300,73 @@ export class LobbyScreen extends Container implements Screen {
     this.addDivider(nextY);
     nextY += DIVIDER_PAD;
 
+    // COPY LINK — single centered button. The URL itself isn't shown:
+    // the button copies it on click and that's the only operation the
+    // host needs. Saves a row + reads more in line with the rest of
+    // the in-game language.
     if (this.shareUrls.length > 0) {
-      // One share label + one share URL + one copy button — no per-token
-      // duplication. The first URL is always a valid invite (room code +
-      // any seat token reserves a seat); using the first one keeps the
-      // UI flat and reads as "the room link". Empty seats default to
-      // bots, and a friend joining via this link takes a bot's seat
-      // (server-side lobby-hold swap).
       const url = this.shareUrls[0] as string;
-      const shareLabel = new Text({
-        text: "INVITE LINK",
-        style: {
-          fontFamily: typography.family,
-          fontSize: typography.size.xs,
-          fill: color.textMuted,
-          letterSpacing: typography.letterSpacing.wide,
-        },
-      });
-      shareLabel.x = Math.round((PANEL_W - shareLabel.width) / 2);
-      shareLabel.y = nextY;
-      this.readyContent.addChild(shareLabel);
-
-      const shareUrlText = new Text({
-        text: truncateForDisplay(url, SHARE_URL_MAX_CHARS),
-        style: {
-          fontFamily: typography.family,
-          fontSize: typography.size.sm,
-          fill: color.text,
-          letterSpacing: typography.letterSpacing.tight,
-        },
-      });
-      shareUrlText.x = Math.round((PANEL_W - shareUrlText.width) / 2);
-      shareUrlText.y = shareLabel.y + shareLabel.height + spacing.xs;
-      this.readyContent.addChild(shareUrlText);
-
       const copyButton = new Button({
-        label: "COPY LINK",
-        width: COPY_BUTTON_W,
+        label: "COPY INVITE LINK",
+        width: 220,
         height: COPY_BUTTON_H,
         onActivate: withClickSound(() => this.handleCopy(url)),
       });
       attachButtonHover(copyButton);
-      copyButton.x = Math.round((PANEL_W - copyButton.width) / 2);
-      copyButton.y = shareUrlText.y + shareUrlText.height + spacing.sm;
+      copyButton.x = Math.round((PANEL_W - 220) / 2);
+      copyButton.y = nextY;
       this.readyContent.addChild(copyButton);
       this.focus.register(copyButton);
-
-      nextY = copyButton.y + copyButton.height + spacing.md;
+      nextY = copyButton.y + copyButton.height + spacing.lg;
     }
 
-    if (this.mode === "friend") {
-      const joinLabel = new Text({
-        text: "JOIN ANOTHER ROOM",
-        style: {
-          fontFamily: typography.family,
-          fontSize: typography.size.xs,
-          fill: color.textMuted,
-          letterSpacing: typography.letterSpacing.wide,
-        },
-      });
-      joinLabel.x = Math.round((PANEL_W - joinLabel.width) / 2);
-      joinLabel.y = nextY + spacing.lg;
-      this.readyContent.addChild(joinLabel);
+    // The manual JOIN-by-code field is gone — joining a room is via
+    // the invite URL, not by typing the code. These fields stay nulled
+    // so existing instance code that still references them keeps working.
+    this.field = null;
+    this.fieldText = null;
+    this.fieldHint = null;
+    this.fieldLocalX = 0;
+    this.fieldLocalY = 0;
 
-      this.fieldLocalX = Math.round((PANEL_W - FIELD_W) / 2);
-      this.fieldLocalY = joinLabel.y + joinLabel.height + spacing.sm;
+    this.addDivider(nextY);
+    nextY += DIVIDER_PAD;
 
-      const field = new Container();
-      field.x = this.fieldLocalX;
-      field.y = this.fieldLocalY;
-      this.readyContent.addChild(field);
-
-      const fieldBg = new Graphics();
-      fieldBg
-        .roundRect(0, 0, FIELD_W, FIELD_H, 2)
-        .fill({ color: color.bgSunken })
-        .stroke({ color: color.borderFocus, width: 2, alignment: 0 });
-      field.addChild(fieldBg);
-
-      const fieldText = new Text({
-        text: "",
-        style: {
-          fontFamily: typography.family,
-          fontSize: typography.size.lg,
-          fontWeight: typography.weight.bold,
-          fill: color.text,
-          letterSpacing: typography.letterSpacing.stamp,
-        },
-      });
-      const fieldHint = new Text({
-        text: "TYPE CODE  -  ENTER",
-        style: {
-          fontFamily: typography.family,
-          fontSize: typography.size.xs,
-          fill: color.textMuted,
-          letterSpacing: typography.letterSpacing.wide,
-        },
-      });
-      field.addChild(fieldText);
-      field.addChild(fieldHint);
-      this.field = field;
-      this.fieldText = fieldText;
-      this.fieldHint = fieldHint;
-      this.layoutFieldText();
-      nextY = this.fieldLocalY + FIELD_H;
-    } else {
-      this.field = null;
-      this.fieldText = null;
-      this.fieldHint = null;
-      this.fieldLocalX = 0;
-      this.fieldLocalY = 0;
-    }
-
-    if (options.onStart) {
-      const onStart = options.onStart;
-      const startButton = new Button({
-        label: "START NOW",
-        width: 200,
-        height: 44,
-        onActivate: withClickSound(() => onStart()),
-      });
-      attachButtonHover(startButton);
-      startButton.x = Math.round((PANEL_W - 200) / 2);
-      startButton.y = nextY + spacing.lg;
-      this.readyContent.addChild(startButton);
-      this.focus.register(startButton);
-      nextY = startButton.y + 44;
-    }
-
+    // Action row: BACK and START NOW side by side. START NOW is the
+    // primary action (wider, accent-bordered); BACK is secondary.
+    const actionGap = spacing.md;
+    const startW = 200;
+    const backW = BACK_BUTTON_W;
+    const actionTotalW = (options.onStart ? startW + actionGap : 0) + (options.onBack ? backW : 0);
+    let actionX = Math.round((PANEL_W - actionTotalW) / 2);
     if (options.onBack) {
       const onBack = options.onBack;
       const backButton = new Button({
         label: "BACK",
-        width: BACK_BUTTON_W,
+        width: backW,
         height: BACK_BUTTON_H,
         onActivate: withClickSound(() => onBack()),
       });
       attachButtonHover(backButton);
-      backButton.x = Math.round((PANEL_W - BACK_BUTTON_W) / 2);
-      backButton.y = nextY + spacing.lg;
+      backButton.x = actionX;
+      backButton.y = nextY;
       this.readyContent.addChild(backButton);
       this.focus.register(backButton);
-      nextY = backButton.y + BACK_BUTTON_H;
+      actionX += backW + actionGap;
+    }
+    if (options.onStart) {
+      const onStart = options.onStart;
+      const startButton = new Button({
+        label: "START",
+        width: startW,
+        height: BACK_BUTTON_H,
+        onActivate: withClickSound(() => onStart()),
+      });
+      attachButtonHover(startButton);
+      startButton.x = actionX;
+      startButton.y = nextY;
+      this.readyContent.addChild(startButton);
+      this.focus.register(startButton);
     }
 
     void nextY;
@@ -456,6 +415,16 @@ export class LobbyScreen extends Container implements Screen {
       : null;
 
     this.detachBackNav = options.onBack ? attachBackNav({ onBack: options.onBack }) : null;
+
+    if (this.cycleHandlers.players || this.cycleHandlers.rounds) {
+      window.addEventListener("keydown", this.arrowKeyHandler, { capture: true });
+    }
+
+    // Apply initial-focus hint AFTER FocusManager.attach so the
+    // override beats the auto-first-register focus.
+    if (options.initialFocus === "rounds" && this.roundsButton) {
+      this.focus.focus(this.roundsButton);
+    }
   }
 
   layout(viewWidth: number, viewHeight: number): void {
@@ -473,6 +442,18 @@ export class LobbyScreen extends Container implements Screen {
     this.overlay = null;
     this.focus.detach();
     this.focus.clear();
+    window.removeEventListener("keydown", this.arrowKeyHandler, { capture: true });
+  }
+
+  private handleArrowKey(event: KeyboardEvent): void {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    const target = this.focusedCycleControl;
+    if (!target) return;
+    const handler = this.cycleHandlers[target];
+    if (!handler) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    handler(event.key === "ArrowRight" ? 1 : -1);
   }
 
   private update(room: RoomMembership | null): void {
@@ -670,13 +651,17 @@ export class LobbyScreen extends Container implements Screen {
   // A clickable config cell: bordered rect with centred label, used for
   // the PLAYERS / ROUNDS cycle controls. When `onActivate` is missing,
   // renders as a plain label (no border, no focus registration) so
-  // joiner clients can still read the values.
+  // joiner clients can still read the values. `cycleKind` opts the
+  // button into the arrow-key cycle path: its setFocus is patched
+  // _before_ FocusManager.register so the very first auto-focus on
+  // construction tags `focusedCycleControl` correctly.
   private makeConfigCell(opts: {
     label: string;
     x: number;
     y: number;
     w: number;
     onActivate?: () => void;
+    cycleKind?: "players" | "rounds";
   }): Container {
     const cell = new Container();
     cell.x = opts.x;
@@ -691,6 +676,15 @@ export class LobbyScreen extends Container implements Screen {
       attachButtonHover(button);
       button.x = Math.round((opts.w - (opts.w - spacing.sm)) / 2);
       cell.addChild(button);
+      if (opts.cycleKind) {
+        const kind = opts.cycleKind;
+        const original = button.setFocus.bind(button);
+        button.setFocus = (focused: boolean) => {
+          original(focused);
+          if (focused) this.focusedCycleControl = kind;
+          else if (this.focusedCycleControl === kind) this.focusedCycleControl = null;
+        };
+      }
       this.focus.register(button);
     } else {
       const text = new Text({
@@ -790,10 +784,4 @@ function defaultCopyToClipboard(text: string): Promise<void> | void {
   if (typeof navigator !== "undefined" && navigator.clipboard) {
     return navigator.clipboard.writeText(text);
   }
-}
-
-function truncateForDisplay(text: string, max: number): string {
-  if (text.length <= max) return text;
-  const head = Math.max(0, max - 1);
-  return `${text.slice(0, head)}…`;
 }
