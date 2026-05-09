@@ -175,6 +175,18 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
           if (mode === "ffa") {
             lobbyOpts.onStart = () => appStore.getState().startGame();
           }
+          // Per-bot difficulty cycle. The current difficulty rides on
+          // the seat's `difficulty` field in RoomState; we read the
+          // freshest value from the store at click time (the room may
+          // have updated between renders) and rotate easy → medium →
+          // hard → easy.
+          lobbyOpts.onCycleBotDifficulty = (seatIndex: number) => {
+            const seat = appStore.getState().room?.seats[seatIndex];
+            const current = seat?.difficulty ?? "medium";
+            const order = ["easy", "medium", "hard"] as const;
+            const next = order[(order.indexOf(current) + 1) % order.length] ?? "medium";
+            appStore.getState().setBotDifficulty(seatIndex, next);
+          };
           return new LobbyScreen(lobbyOpts);
         }
         case "game":

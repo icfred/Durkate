@@ -19,6 +19,13 @@ export interface ErrorMessage {
 
 export interface RoomSeat {
   name: string | null;
+  /**
+   * Whether this seat is occupied by a human or a bot. Omitted on
+   * legacy clients/servers that haven't adopted the per-seat shape.
+   */
+  kind?: "human" | "bot";
+  /** Bot difficulty for `kind: "bot"` seats. Omitted otherwise. */
+  difficulty?: "easy" | "medium" | "hard";
 }
 
 export interface DisconnectState {

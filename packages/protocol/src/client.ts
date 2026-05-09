@@ -29,4 +29,21 @@ export interface StartGame {
   type: "StartGame";
 }
 
-export type ClientMessage = JoinRoom | LeaveRoom | SubmitAction | RequestRematch | StartGame;
+/**
+ * Host-only. Cycle a bot seat's difficulty before play starts. Rejected
+ * if the seat isn't a bot, the room isn't in the lobby phase, or the
+ * sender isn't seat 0.
+ */
+export interface SetBotDifficulty {
+  type: "SetBotDifficulty";
+  seat: number;
+  difficulty: "easy" | "medium" | "hard";
+}
+
+export type ClientMessage =
+  | JoinRoom
+  | LeaveRoom
+  | SubmitAction
+  | RequestRematch
+  | StartGame
+  | SetBotDifficulty;

@@ -76,7 +76,7 @@ describe("LobbyScreen friend mode", () => {
     screen.dispose();
   });
 
-  it("renders the room code and share URL", () => {
+  it("renders the share URL and a copy link button", () => {
     const screen = new LobbyScreen({
       mode: "friend",
       roomCode: "WXYZ",
@@ -85,9 +85,9 @@ describe("LobbyScreen friend mode", () => {
       onJoin: vi.fn(),
     });
     const labels = collectText(screen);
-    expect(labels).toContain("WXYZ");
     expect(labels).toContain("https://durak/#room=WXYZ");
     expect(labels).toContain("COPY LINK");
+    expect(labels).toContain("INVITE LINK");
     screen.dispose();
   });
 

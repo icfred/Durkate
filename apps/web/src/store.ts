@@ -144,6 +144,7 @@ export interface AppState {
   submitAction: (action: Action) => void;
   requestRematch: () => void;
   startGame: () => void;
+  setBotDifficulty: (seat: number, difficulty: BotDifficulty) => void;
   showMenu(): void;
   showLobby(args: { mode: Mode; roomCode: string; token?: string | null }): void;
   showGame(args?: { mode?: Mode; roomCode?: string }): void;
@@ -390,6 +391,14 @@ export const appStore = createStore<AppState>((set, get) => {
         return;
       }
       state.__sender({ type: "StartGame" });
+    },
+    setBotDifficulty: (seat, difficulty) => {
+      const state = get() as InternalState;
+      if (state.connection.status !== "open" || !state.__sender) {
+        console.warn("[store] dropped setBotDifficulty; not connected");
+        return;
+      }
+      state.__sender({ type: "SetBotDifficulty", seat, difficulty });
     },
     toggleMute: () => {
       const next = !get().audio.muted;

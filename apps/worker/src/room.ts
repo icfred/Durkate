@@ -56,6 +56,11 @@ interface PersistedRoom {
   currentRound?: number;
   scores?: number[];
   matchOver?: boolean;
+  // Per-seat bot difficulty. `null` for human seats. Array length
+  // tracks `playerCount`. Older persisted snapshots (pre-DUR-62) only
+  // carried `botDifficulty` as a single value — `loadPersisted` fills
+  // every bot seat with that single value when migrating.
+  botDifficulties?: (BotDifficulty | null)[];
   // Legacy fields kept for back-compat parsing only.
   mode?: "human" | "bot";
   botSeat?: SeatIndex | null;
@@ -145,6 +150,11 @@ export class Room extends DurableObject<Env> {
   private engineState: State | null = null;
   private botSeats: SeatIndex[] = [];
   private botDifficulty: BotDifficulty = DEFAULT_BOT_DIFFICULTY;
+  // Per-seat bot difficulty. Indexed by seat; `null` for human seats.
+  // Initialized at room create from the request's `difficulty` (single
+  // value applied to all bot seats) and mutated per-seat by the host
+  // via the `SetBotDifficulty` ws action while the room is in lobby.
+  private botDifficulties: (BotDifficulty | null)[] = [];
   private rematchSeats: boolean[] = [false, false];
   private disconnects: DisconnectState[] = [];
   // Best-of-N match state. `totalRounds === 1` means legacy single-game
@@ -253,6 +263,17 @@ export class Room extends DurableObject<Env> {
       (persisted.botFanOut ?? []).map((entry) => [entry.seat, entry.at] as const),
     );
     this.lobbyHold = persisted.lobbyHold ?? false;
+    // Per-seat difficulties. Migration path for pre-DUR-62 snapshots:
+    // if `botDifficulties` is missing, fall back to the single
+    // `botDifficulty` (or DEFAULT) for every bot seat.
+    if (persisted.botDifficulties && persisted.botDifficulties.length === this.playerCount) {
+      this.botDifficulties = persisted.botDifficulties.slice();
+    } else {
+      this.botDifficulties = new Array<BotDifficulty | null>(this.playerCount).fill(null);
+      for (const seat of this.botSeats) {
+        this.botDifficulties[seat] = this.botDifficulty;
+      }
+    }
     this.totalRounds = persisted.totalRounds ?? 1;
     this.currentRound = persisted.currentRound ?? 1;
     this.scores = persisted.scores ?? new Array<number>(this.playerCount).fill(0);
@@ -295,6 +316,7 @@ export class Room extends DurableObject<Env> {
     this.seats = new Array<Seat | null>(playerCount).fill(null);
     this.rematchSeats = new Array<boolean>(playerCount).fill(false);
     this.botDifficulty = parseDifficulty(body.difficulty);
+    this.botDifficulties = new Array<BotDifficulty | null>(playerCount).fill(null);
     this.lobbyHold = body.lobbyHold === true;
     const requestedRounds = Number(body.rounds);
     this.totalRounds =
@@ -316,6 +338,7 @@ export class Room extends DurableObject<Env> {
         name: names[i] ?? `Bot ${botCount - i}`,
         token: randomBase64Url(TOKEN_BYTES),
       };
+      this.botDifficulties[seatIndex] = this.botDifficulty;
     }
     this.botSeats.sort((a, b) => a - b);
     const host = this.addPlayer("Host");
@@ -376,6 +399,8 @@ export class Room extends DurableObject<Env> {
         // continue to land on this seat.
         this.seats[seat] = { name: "Guest", token: existing.token };
       }
+      // Clear the per-seat difficulty — the seat is now human.
+      if (seat < this.botDifficulties.length) this.botDifficulties[seat] = null;
       this.alarms.cancel("bot-think");
       this.botFanOut.delete(seat);
       this.broadcastRoomState();
@@ -469,7 +494,36 @@ export class Room extends DurableObject<Env> {
         await this.persist();
         return;
       }
+      case "SetBotDifficulty": {
+        const result = this.handleSetBotDifficulty(seat, msg.seat, msg.difficulty);
+        if (!result.ok) {
+          this.send(ws, { type: "Error", code: result.reason, message: result.reason });
+        }
+        await this.persist();
+        return;
+      }
     }
+  }
+
+  // Host-only mutation. Only valid before the engine starts (lobby
+  // phase). Updates the per-seat difficulty for a bot seat and rebroadcasts
+  // RoomState so every connected peer re-renders the lobby roster.
+  private handleSetBotDifficulty(
+    sender: SeatIndex,
+    targetSeat: number,
+    difficulty: BotDifficulty,
+  ): { ok: true } | { ok: false; reason: "FORBIDDEN_ACTION" } {
+    if (sender !== 0) return { ok: false, reason: "FORBIDDEN_ACTION" };
+    if (this.engineState !== null) return { ok: false, reason: "FORBIDDEN_ACTION" };
+    if (!this.botSeats.includes(targetSeat as SeatIndex)) {
+      return { ok: false, reason: "FORBIDDEN_ACTION" };
+    }
+    if (targetSeat < 0 || targetSeat >= this.botDifficulties.length) {
+      return { ok: false, reason: "FORBIDDEN_ACTION" };
+    }
+    this.botDifficulties[targetSeat] = difficulty;
+    this.broadcastRoomState();
+    return { ok: true };
   }
 
   override async webSocketClose(
@@ -1232,13 +1286,21 @@ export class Room extends DurableObject<Env> {
       const baseDelay = computeThinkDelay({
         state: this.engineState,
         seat,
-        difficulty: this.botDifficulty,
+        difficulty: this.difficultyFor(seat),
         bounds: this.thinkBounds,
       });
       const delay = baseDelay <= 0 ? 0 : baseDelay;
       this.botFanOut.set(seat, now + delay);
     }
     this.refreshBotFanOutAlarm();
+  }
+
+  // Per-seat difficulty lookup with a single-source-of-truth fallback.
+  // Reads from `botDifficulties[seat]`; if that entry is missing (e.g.
+  // legacy persisted state mid-migration), falls back to the global
+  // `botDifficulty`. Always returns a non-null BotDifficulty.
+  private difficultyFor(seat: SeatIndex): BotDifficulty {
+    return this.botDifficulties[seat] ?? this.botDifficulty;
   }
 
   // Earliest of the pending fan-out deadlines decides when bot-think fires.
@@ -1334,7 +1396,7 @@ export class Room extends DurableObject<Env> {
     const baseDelay = computeThinkDelay({
       state: this.engineState,
       seat: actingSeat,
-      difficulty: this.botDifficulty,
+      difficulty: this.difficultyFor(actingSeat),
       bounds: this.thinkBounds,
     });
     if (baseDelay <= 0) {
@@ -1500,7 +1562,7 @@ export class Room extends DurableObject<Env> {
     }
     const active = activeActorSeat(this.engineState);
     if (!this.botSeats.includes(active)) return false;
-    const action = bot.choose(this.engineState, { difficulty: this.botDifficulty });
+    const action = bot.choose(this.engineState, { difficulty: this.difficultyFor(active) });
     const result = this.applyEnforcedAction(action);
     if (!result.ok) {
       this.sendErrorToHumans("BOT_ILLEGAL_ACTION", `bot rejected: ${result.reason}`);
@@ -1528,7 +1590,18 @@ export class Room extends DurableObject<Env> {
   }
 
   private broadcastRoomState(): void {
-    const seats: RoomSeat[] = this.seats.map((s) => ({ name: s ? s.name : null }));
+    const botSeatSet = new Set<SeatIndex>(this.botSeats);
+    const seats: RoomSeat[] = this.seats.map((s, idx) => {
+      const isBot = botSeatSet.has(idx as SeatIndex);
+      const out: RoomSeat = {
+        name: s ? s.name : null,
+        kind: isBot ? "bot" : "human",
+      };
+      if (isBot) {
+        out.difficulty = this.difficultyFor(idx as SeatIndex);
+      }
+      return out;
+    });
     const rematchRequested: number[] = [];
     for (let i = 0; i < this.rematchSeats.length; i++) {
       if (this.rematchSeats[i]) rematchRequested.push(i);
@@ -1654,6 +1727,7 @@ export class Room extends DurableObject<Env> {
       currentRound: this.currentRound,
       scores: this.scores.slice(),
       matchOver: this.matchOver,
+      botDifficulties: this.botDifficulties.slice(),
     };
     await this.ctx.storage.put(STORAGE_KEY, snapshot);
   }

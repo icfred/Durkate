@@ -3,6 +3,8 @@ export type {
   JoinRoom,
   LeaveRoom,
   RequestRematch,
+  SetBotDifficulty,
+  StartGame,
   SubmitAction,
 } from "./client";
 export type {
@@ -46,6 +48,8 @@ export {
   requestRematchSchema,
   roomStateMessageSchema,
   serverMessageSchema,
+  setBotDifficultySchema,
   snapshotMessageSchema,
+  startGameSchema,
   submitActionSchema,
 } from "./zod";

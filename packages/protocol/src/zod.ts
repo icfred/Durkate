@@ -65,12 +65,19 @@ export const startGameSchema = z.object({
   type: z.literal("StartGame"),
 });
 
+export const setBotDifficultySchema = z.object({
+  type: z.literal("SetBotDifficulty"),
+  seat: seatSchema,
+  difficulty: z.enum(["easy", "medium", "hard"]),
+});
+
 export const clientMessageSchema = z.discriminatedUnion("type", [
   joinRoomSchema,
   leaveRoomSchema,
   submitActionSchema,
   requestRematchSchema,
   startGameSchema,
+  setBotDifficultySchema,
 ]);
 
 export function parseClientMessage(raw: unknown): ClientMessage {
@@ -184,7 +191,13 @@ const matchStateSchema = z.object({
 export const roomStateMessageSchema = z.object({
   type: z.literal("RoomState"),
   roomId: z.string(),
-  seats: z.array(z.object({ name: z.string().nullable() })),
+  seats: z.array(
+    z.object({
+      name: z.string().nullable(),
+      kind: z.enum(["human", "bot"]).optional(),
+      difficulty: z.enum(["easy", "medium", "hard"]).optional(),
+    }),
+  ),
   you: seatSchema.nullable(),
   rematchRequested: z.array(seatSchema),
   disconnect: disconnectStateSchema.nullable().optional(),

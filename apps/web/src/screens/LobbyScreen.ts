@@ -55,6 +55,11 @@ export interface LobbyScreenOptions {
    * start when seats fill.
    */
   onStart?(): void;
+  /**
+   * Host-side per-bot difficulty cycle. Wired to the `SetBotDifficulty`
+   * WS action via the store. Omit (or no-op) for non-host clients.
+   */
+  onCycleBotDifficulty?(seat: number): void;
   copyToClipboard?(text: string): Promise<void> | void;
 }
 
@@ -92,7 +97,6 @@ export class LobbyScreen extends Container implements Screen {
   private readonly focus = new FocusManager();
   private readonly panel: Panel;
   private readonly mode: Mode;
-  private readonly roomCode: string;
   private readonly playerCount: number;
   private readonly botCount: number;
   private readonly humansExpected: number;
@@ -111,6 +115,9 @@ export class LobbyScreen extends Container implements Screen {
   private readonly fieldLocalY: number;
   private readonly onJoin: (code: string) => void;
   private readonly holdsForStart: boolean;
+  private readonly roster: Container;
+  private readonly onCycleBotDifficulty: ((seat: number) => void) | undefined;
+  private rosterRows: Container[] = [];
   private overlay: TextInputOverlayHandle | null = null;
   private inputValue = "";
   private currentStatus: LobbyStatus;
@@ -124,7 +131,7 @@ export class LobbyScreen extends Container implements Screen {
   constructor(options: LobbyScreenOptions) {
     super();
     this.mode = options.mode;
-    this.roomCode = options.roomCode;
+    void options.roomCode;
     this.playerCount = options.playerCount ?? 2;
     this.botCount = options.botCount ?? (options.mode === "bot" ? 1 : 0);
     this.humansExpected = humansExpected(this.mode, this.playerCount, this.botCount);
@@ -185,12 +192,15 @@ export class LobbyScreen extends Container implements Screen {
     this.layoutStatus();
     this.readyContent.addChild(this.status);
 
+    // Count-of-humans label kept as a backstop only for the test
+    // fixtures that assert on "1 / 3 JOINED"-style text. The roster
+    // below is the canonical view of who is in the room.
     if (this.mode !== "bot" && this.humansExpected > 1) {
       this.joinedLabel = new Text({
         text: this.joinedLabelText(options.initialRoom),
         style: {
           fontFamily: typography.family,
-          fontSize: typography.size.sm,
+          fontSize: typography.size.xs,
           fill: color.textMuted,
           letterSpacing: typography.letterSpacing.wide,
         },
@@ -202,39 +212,22 @@ export class LobbyScreen extends Container implements Screen {
       this.joinedLabel = null;
     }
 
-    const codeBaseY =
+    // Per-seat roster. Built lazily on every room update so the host
+    // can flip a bot's difficulty (or a friend can join via the invite
+    // link) and the rows reflect the new state without rebuilding the
+    // whole panel. The container starts empty here; first render
+    // happens during `update()` below.
+    this.roster = new Container();
+    this.roster.label = "lobby-roster";
+    this.roster.y =
       (this.joinedLabel
         ? this.joinedLabel.y + this.joinedLabel.height
-        : this.status.y + this.status.height) + spacing.lg;
+        : this.status.y + this.status.height) + spacing.md;
+    this.readyContent.addChild(this.roster);
+    this.onCycleBotDifficulty = options.onCycleBotDifficulty;
+    const initialRosterH = this.renderRoster(options.initialRoom);
 
-    const roomLabel = new Text({
-      text: "ROOM",
-      style: {
-        fontFamily: typography.family,
-        fontSize: typography.size.xs,
-        fill: color.textMuted,
-        letterSpacing: typography.letterSpacing.wide,
-      },
-    });
-    roomLabel.x = Math.round((PANEL_W - roomLabel.width) / 2);
-    roomLabel.y = codeBaseY;
-    this.readyContent.addChild(roomLabel);
-
-    const roomCodeText = new Text({
-      text: this.roomCode,
-      style: {
-        fontFamily: typography.family,
-        fontSize: typography.size.xl,
-        fontWeight: typography.weight.bold,
-        fill: color.accent,
-        letterSpacing: typography.letterSpacing.stamp,
-      },
-    });
-    roomCodeText.x = Math.round((PANEL_W - roomCodeText.width) / 2);
-    roomCodeText.y = roomLabel.y + roomLabel.height + spacing.xs;
-    this.readyContent.addChild(roomCodeText);
-
-    let nextY = roomCodeText.y + roomCodeText.height + spacing.md;
+    let nextY = this.roster.y + initialRosterH + spacing.md;
 
     if (this.shareUrls.length > 0) {
       // One share label + one share URL + one copy button — no per-token
@@ -464,6 +457,110 @@ export class LobbyScreen extends Container implements Screen {
       this.layoutStatus();
       this.layoutJoinedLabel();
     }
+    this.renderRoster(room);
+  }
+
+  // Render the seat roster: one row per seat with name + role tag. Bot
+  // rows expose a difficulty cycle button when the host wired up the
+  // callback. Returns the rendered height so the constructor can place
+  // the next block (invite link / friend join field) below it.
+  private renderRoster(room: RoomMembership | null): number {
+    for (const row of this.rosterRows) {
+      this.roster.removeChild(row);
+      row.destroy({ children: true });
+    }
+    this.rosterRows = [];
+
+    const seats = room?.seats ?? [];
+    const youSeat = room?.you ?? null;
+    const rowH = 28;
+    const rowGap = 4;
+    const seatLabelW = 60;
+    const cycleBtnW = 80;
+    const cycleBtnH = 22;
+    const padX = spacing.md;
+
+    for (let i = 0; i < this.playerCount; i += 1) {
+      const seat = seats[i];
+      const row = new Container();
+      row.label = `lobby-seat-${i}`;
+      row.y = i * (rowH + rowGap);
+
+      const seatLabel = new Text({
+        text: `SEAT ${i + 1}`,
+        style: {
+          fontFamily: typography.family,
+          fontSize: typography.size.xs,
+          fill: color.textMuted,
+          letterSpacing: typography.letterSpacing.wide,
+        },
+      });
+      seatLabel.x = padX;
+      seatLabel.y = Math.round((rowH - seatLabel.height) / 2);
+      row.addChild(seatLabel);
+
+      const isLocalSeat = youSeat !== null && youSeat === i;
+      const name = seat?.name ?? null;
+      const isBot = seat?.kind === "bot";
+      const displayName = isLocalSeat ? "YOU" : (name ?? "—");
+      const nameText = new Text({
+        text: displayName,
+        style: {
+          fontFamily: typography.family,
+          fontSize: typography.size.sm,
+          fontWeight: typography.weight.bold,
+          fill: name === null && !isLocalSeat ? color.textDim : color.text,
+          letterSpacing: typography.letterSpacing.tight,
+        },
+      });
+      nameText.x = padX + seatLabelW;
+      nameText.y = Math.round((rowH - nameText.height) / 2);
+      row.addChild(nameText);
+
+      // Right-aligned role tag. Bot rows additionally render a small
+      // difficulty cycle button — host-only; the callback is undefined
+      // for non-host seats and we hide the button in that case.
+      const tagText = isBot
+        ? `BOT • ${(seat?.difficulty ?? "medium").toUpperCase()}`
+        : isLocalSeat
+          ? ""
+          : name !== null
+            ? "HUMAN"
+            : "EMPTY";
+      const tag = new Text({
+        text: tagText,
+        style: {
+          fontFamily: typography.family,
+          fontSize: typography.size.xs,
+          fill: color.textMuted,
+          letterSpacing: typography.letterSpacing.wide,
+        },
+      });
+      tag.y = Math.round((rowH - tag.height) / 2);
+      row.addChild(tag);
+
+      let rightEdge = PANEL_W - padX;
+      if (isBot && this.onCycleBotDifficulty) {
+        const cycle = new Button({
+          label: "CYCLE",
+          width: cycleBtnW,
+          height: cycleBtnH,
+          onActivate: withClickSound(() => this.onCycleBotDifficulty?.(i)),
+        });
+        attachButtonHover(cycle);
+        cycle.x = rightEdge - cycleBtnW;
+        cycle.y = Math.round((rowH - cycleBtnH) / 2);
+        row.addChild(cycle);
+        this.focus.register(cycle);
+        rightEdge = cycle.x - spacing.sm;
+      }
+      tag.x = rightEdge - tag.width;
+
+      this.roster.addChild(row);
+      this.rosterRows.push(row);
+    }
+
+    return this.playerCount * rowH + Math.max(0, this.playerCount - 1) * rowGap;
   }
 
   private joinedLabelText(room: RoomMembership | null): string {
