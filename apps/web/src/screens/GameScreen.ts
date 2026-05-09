@@ -391,6 +391,7 @@ export class GameScreen extends Container implements Screen {
   private readonly setError: (code: string, message: string) => void;
   private connectionStatus: ConnectionStatus;
   private reconnectingBanner: Container | null = null;
+  private reconnectingBannerTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly now: () => number;
   private room: RoomMembership | null = null;
   private readonly ticker: Ticker;
@@ -651,6 +652,7 @@ export class GameScreen extends Container implements Screen {
     this.subscribeConnectionUnsub?.();
     this.detachFocusNavSfx();
     this.subscribeRoomUnsub?.();
+    this.cancelReconnectingBannerTimer();
     this.ticker.remove(this.tickCallback);
     this.cancelAnims();
     this.focus.detach();
@@ -666,20 +668,41 @@ export class GameScreen extends Container implements Screen {
   private applyConnectionStatus(): void {
     // Only suspend when the connection is actively dropped or
     // mid-recovery. "idle" (controller not started) and "open" both
-    // accept input — the suspend is for the closed → connecting →
-    // error transitions where the wsClient is mid-retry and the
-    // sender would silently drop.
+    // accept input. Suspend covers closed / connecting / error where
+    // the sender would silently drop and Enter would fire SFX.
     const offline =
       this.connectionStatus === "closed" ||
       this.connectionStatus === "connecting" ||
       this.connectionStatus === "error";
     if (offline) {
       this.focus.suspend();
-      this.showReconnectingBanner();
+      // Only surface the badge if the disconnect persists past 500ms.
+      // Wrangler-dev / prod-DO hibernation churn through closed →
+      // connecting → open in under that, and a banner flash on every
+      // transient drop reads as broken even though everything's fine.
+      // Hard `error` (max retries) shows immediately.
+      if (this.connectionStatus === "error") {
+        this.cancelReconnectingBannerTimer();
+        this.showReconnectingBanner();
+      } else if (this.reconnectingBanner === null && this.reconnectingBannerTimer === null) {
+        this.reconnectingBannerTimer = setTimeout(() => {
+          this.reconnectingBannerTimer = null;
+          if (this.connectionStatus !== "open" && this.connectionStatus !== "idle") {
+            this.showReconnectingBanner();
+          }
+        }, 500);
+      }
     } else {
+      this.cancelReconnectingBannerTimer();
       this.focus.resume();
       this.hideReconnectingBanner();
     }
+  }
+
+  private cancelReconnectingBannerTimer(): void {
+    if (this.reconnectingBannerTimer === null) return;
+    clearTimeout(this.reconnectingBannerTimer);
+    this.reconnectingBannerTimer = null;
   }
 
   private showReconnectingBanner(): void {
