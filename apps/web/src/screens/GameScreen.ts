@@ -885,7 +885,6 @@ export class GameScreen extends Container implements Screen {
   }
 
   private renderOpponentSlots(snapshot: Snapshot): void {
-    const positions = radialOpponentPositions(snapshot.playerCount);
     const seats: SeatIndex[] = [];
     for (let i = 1; i < snapshot.playerCount; i += 1) {
       seats.push(((snapshot.you.seat + i) % snapshot.playerCount) as SeatIndex);
@@ -914,15 +913,33 @@ export class GameScreen extends Container implements Screen {
       const isFirst = idx === 0;
       slot.cardStack.label = isFirst ? "opponent-hand" : `opponent-hand-${seat}`;
       slot.layoutChildren();
-      const pos = positions[idx];
-      if (pos) {
-        slot.x = Math.round(this.viewWidth * pos.xFrac);
-        slot.y = Math.round(this.viewHeight * pos.yFrac);
-      }
       const isActor = seat === snapshot.attacker || seat === snapshot.defender;
       slot.setTurnActive(isActor);
     });
+    this.layoutOpponentSlots(snapshot);
     this.refreshOpponentSlotState();
+  }
+
+  // Reposition every opponent slot to its radial coordinate. Split out from
+  // `renderOpponentSlots` so resizes and other layout passes (which don't
+  // re-render slot contents) can re-pin slots after `viewWidth/Height`
+  // change. Called from both `renderOpponentSlots` and `layoutSections` —
+  // without the latter, the very first render runs with `viewWidth=0` (the
+  // GameScreen constructor calls `render()` before `layout()` is invoked
+  // by the router) and slots stick to the top-left until the next snapshot.
+  private layoutOpponentSlots(snapshot: Snapshot): void {
+    const positions = radialOpponentPositions(snapshot.playerCount);
+    const seats: SeatIndex[] = [];
+    for (let i = 1; i < snapshot.playerCount; i += 1) {
+      seats.push(((snapshot.you.seat + i) % snapshot.playerCount) as SeatIndex);
+    }
+    seats.forEach((seat, idx) => {
+      const slot = this.opponentSlots.get(seat);
+      const pos = positions[idx];
+      if (!slot || !pos) return;
+      slot.x = Math.round(this.viewWidth * pos.xFrac);
+      slot.y = Math.round(this.viewHeight * pos.yFrac);
+    });
   }
 
   private refreshOpponentSlotState(): void {
@@ -945,17 +962,23 @@ export class GameScreen extends Container implements Screen {
   private renderTable(snapshot: Snapshot): void {
     const startX = tableStartX(snapshot.table.length);
     const pairColumnWidth = CARD_W + HAND_GAP;
+    // Add every attack first, then every defense, so each defense renders
+    // above all attacks. The defense card is offset right by 25% of CARD_W
+    // and overlaps the next pair's attack by ~9px — interleaving attack/
+    // defense per pair would cause the next attack to clip the previous
+    // pair's defense in that overlap.
     snapshot.table.forEach((pair: TablePair, i: number) => {
       const attackView = new CardView(pair.attack);
       attackView.x = startX + i * pairColumnWidth;
       attackView.y = 0;
       this.tableRow.addChild(attackView);
-      if (pair.defense) {
-        const defenseView = new CardView(pair.defense);
-        defenseView.x = startX + i * pairColumnWidth + Math.round(CARD_W * 0.25);
-        defenseView.y = Math.round(CARD_H * 0.4);
-        this.tableRow.addChild(defenseView);
-      }
+    });
+    snapshot.table.forEach((pair: TablePair, i: number) => {
+      if (!pair.defense) return;
+      const defenseView = new CardView(pair.defense);
+      defenseView.x = startX + i * pairColumnWidth + Math.round(CARD_W * 0.25);
+      defenseView.y = Math.round(CARD_H * 0.4);
+      this.tableRow.addChild(defenseView);
     });
   }
 
@@ -1150,6 +1173,8 @@ export class GameScreen extends Container implements Screen {
 
     if (!this.snapshot) return;
 
+    this.layoutOpponentSlots(this.snapshot);
+
     this.turnLabel.x = Math.round((this.viewWidth - this.turnLabel.width) / 2);
     this.turnLabel.y = Math.round(
       this.viewHeight / 2 - CARD_H / 2 - this.turnLabel.height - spacing.sm,
@@ -1169,7 +1194,12 @@ export class GameScreen extends Container implements Screen {
     this.rightStack.x = this.viewWidth - SECTION_PADDING - CARD_W;
     this.rightStack.y = Math.round(this.viewHeight / 2 - CARD_H / 2);
 
-    const handW = this.myHandRow.width;
+    // Compute hand width from card count, not from `myHandRow.width`. The
+    // bounding box inflates when the focused card is mid-scale (HandCardEffects
+    // lerp), so reading `.width` causes the row to shift left/right between
+    // frames as room state arrives during the focus-grow animation.
+    const handCount = this.snapshot.you.hand.length;
+    const handW = handCount > 0 ? handCount * CARD_W + (handCount - 1) * HAND_GAP : 0;
     this.myHandRow.x = Math.round((this.viewWidth - handW) / 2);
     this.myHandRow.y = this.viewHeight - SECTION_PADDING - CARD_H;
 
@@ -1181,10 +1211,16 @@ export class GameScreen extends Container implements Screen {
     }
 
     this.keyHint.x = Math.round((this.viewWidth - this.keyHint.width) / 2);
+    // Reserve clearance above the hand so the focused-card lift/scale doesn't
+    // crash into the hint text. Lift = FOCUS_LIFT_PX; scale grows the card
+    // upward by CARD_H * (FOCUS_SCALE_LEGAL - 1) — round up plus a small pad.
+    const handTopClearance = this.spectatorBanner.visible
+      ? spacing.sm
+      : Math.ceil(FOCUS_LIFT_PX + CARD_H * (FOCUS_SCALE_LEGAL - 1)) + spacing.sm;
     this.keyHint.y =
       (this.spectatorBanner.visible ? this.spectatorBanner.y : this.myHandRow.y) -
       this.keyHint.height -
-      spacing.sm;
+      handTopClearance;
 
     if (this.errorBanner.visible) {
       const bw = this.errorBanner.width;
