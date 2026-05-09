@@ -410,3 +410,109 @@ describe("All-bots autoplay 2x speedup", () => {
   // integration test that grinds the human to game-elimination naturally is
   // covered by the existing 1H+3B `Multi-bot driver` flow.
 });
+
+describe("Best-of-N match", () => {
+  it("default totalRounds=1 omits the match block in RoomState", async () => {
+    const res = await postRooms({ playerCount: 2, botCount: 1 });
+    const body = (await res.json()) as CreateRoomResponse;
+    const ws = await openWs(body.roomId, body.hostToken);
+    const q = new MessageQueue(ws);
+    const rs = await findUntil(q, isRoomState);
+    // null/undefined either way is fine — the test is "no multi-round
+    // payload leaks for legacy single-game rooms".
+    expect(rs.match ?? null).toBeNull();
+    ws.close();
+  });
+
+  it("multi-round room broadcasts match state and advances on StartGame", async () => {
+    const res = await postRooms({ playerCount: 2, botCount: 1, rounds: 3 });
+    const body = (await res.json()) as CreateRoomResponse;
+    const stub = env.ROOMS.get(env.ROOMS.idFromName(body.roomId));
+    const ws = await openWs(body.roomId, body.hostToken);
+    const q = new MessageQueue(ws);
+
+    const initial = await findUntil(q, isRoomState);
+    expect(initial.match).toMatchObject({
+      currentRound: 1,
+      totalRounds: 3,
+      scores: [0, 0],
+      matchOver: false,
+    });
+
+    // Simulate round-1 finishing as a host loss via a direct seam:
+    // synthesize a game-over with seat 0 as durak. The match logic
+    // doesn't care how the round ended, only the durak field.
+    await runInDurableObject(stub, async (room: Room) => {
+      room.testForceGameOver(0);
+    });
+
+    // Score should record seat-0 loss; round counter still 1 (advance
+    // is on StartGame, not on round end).
+    let postRoundMatch: {
+      currentRound: number;
+      totalRounds: number;
+      scores: number[];
+      matchOver: boolean;
+    } | null = null;
+    await runInDurableObject(stub, async (room: Room) => {
+      postRoundMatch = room.testMatchState();
+    });
+    expect(postRoundMatch).toMatchObject({
+      currentRound: 1,
+      totalRounds: 3,
+      scores: [1, 0],
+      matchOver: false,
+    });
+
+    // Host advances to round 2.
+    ws.send(JSON.stringify({ type: "StartGame" }));
+    let advanced = false;
+    for (let i = 0; i < 30 && !advanced; i++) {
+      await new Promise<void>((r) => setTimeout(r, 10));
+      await runInDurableObject(stub, async (room: Room) => {
+        const m = room.testMatchState();
+        if (m && m.currentRound === 2) advanced = true;
+      });
+    }
+    expect(advanced).toBe(true);
+
+    ws.close();
+  });
+
+  it("flips matchOver after the final round ends", async () => {
+    const res = await postRooms({ playerCount: 2, botCount: 1, rounds: 2 });
+    const body = (await res.json()) as CreateRoomResponse;
+    const stub = env.ROOMS.get(env.ROOMS.idFromName(body.roomId));
+    const ws = await openWs(body.roomId, body.hostToken);
+    const q = new MessageQueue(ws);
+    await findUntil(q, isRoomState);
+
+    // Round 1: host loses.
+    await runInDurableObject(stub, async (room: Room) => {
+      room.testForceGameOver(0);
+    });
+    ws.send(JSON.stringify({ type: "StartGame" }));
+    // Wait for round 2 to start.
+    let advanced = false;
+    for (let i = 0; i < 30 && !advanced; i++) {
+      await new Promise<void>((r) => setTimeout(r, 10));
+      await runInDurableObject(stub, async (room: Room) => {
+        const m = room.testMatchState();
+        if (m && m.currentRound === 2) advanced = true;
+      });
+    }
+    expect(advanced).toBe(true);
+
+    // Round 2: bot loses. Match should now be over (BO2 cap reached).
+    await runInDurableObject(stub, async (room: Room) => {
+      room.testForceGameOver(1);
+    });
+    let final: { matchOver: boolean; scores: number[] } | null = null;
+    await runInDurableObject(stub, async (room: Room) => {
+      final = room.testMatchState();
+    });
+    expect(final).toMatchObject({ matchOver: true, scores: [1, 1] });
+
+    ws.close();
+  });
+});

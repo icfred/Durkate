@@ -585,6 +585,37 @@ export class Room extends DurableObject<Env> {
     return Array.from(this.botFanOut.entries()).map(([seat, at]) => ({ seat, at }));
   }
 
+  // Test seam: snapshot the match state the way `broadcastRoomState`
+  // builds it. Returns null for legacy single-round rooms so tests can
+  // assert on the multi-round case explicitly.
+  testMatchState(): {
+    currentRound: number;
+    totalRounds: number;
+    scores: number[];
+    matchOver: boolean;
+  } | null {
+    if (this.totalRounds <= 1) return null;
+    return {
+      currentRound: this.currentRound,
+      totalRounds: this.totalRounds,
+      scores: this.scores.slice(),
+      matchOver: this.matchOver,
+    };
+  }
+
+  // Test seam: synthesize a game-over with a designated durak so the
+  // match-flow tests can drive round transitions without playing real
+  // hands. Mirrors what the engine produces on natural game-over.
+  testForceGameOver(durak: SeatIndex): void {
+    this.engineState = {
+      phase: "game-over",
+      durak,
+      playerCount: this.playerCount,
+    } as State;
+    this.bumpStaleIfFinished();
+    this.broadcastRoomState();
+  }
+
   // Test seam: synthesize a hand-empty for the given seat so tests can
   // exercise spectator semantics without grinding to game-over by hand.
   testEliminateSeat(seat: SeatIndex): void {
