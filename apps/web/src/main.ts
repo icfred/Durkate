@@ -124,10 +124,32 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
     const snap = { players: pendingPlayers, rounds: pendingRounds };
     for (const l of pendingListeners) l(snap);
   };
+  const cancelPendingCycle = () => {
+    if (cycleTimer !== null) {
+      clearTimeout(cycleTimer);
+      cycleTimer = null;
+    }
+    if (pendingPlayers !== null || pendingRounds !== null) {
+      pendingPlayers = null;
+      pendingRounds = null;
+      notifyPending();
+    }
+  };
   const scheduleCycleFlush = () => {
     if (cycleTimer !== null) clearTimeout(cycleTimer);
     cycleTimer = setTimeout(() => {
       cycleTimer = null;
+      // Bail if the user has already left the lobby (e.g. clicked
+      // START within the 300ms debounce window). Without this guard
+      // the timer fires mid-game, calls runRoomCreation which sets
+      // phase=lobby, and yanks the player out of the in-progress game
+      // into a fresh empty room.
+      if (appStore.getState().phase !== "lobby") {
+        pendingPlayers = null;
+        pendingRounds = null;
+        notifyPending();
+        return;
+      }
       const s = appStore.getState();
       const players = pendingPlayers ?? s.playerCount ?? 2;
       const rounds = pendingRounds ?? s.room?.match?.totalRounds ?? 3;
@@ -142,6 +164,16 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
       });
     }, 300);
   };
+  // Cancel any queued cycle whenever the user leaves the lobby — START
+  // (snapshot → phase=game), BACK (phase=menu), or any other phase
+  // change. Belt-and-suspenders alongside the in-callback guard above
+  // so the pending flag clears immediately and the lobby labels
+  // re-sync to the actual room state when the user returns.
+  appStore.subscribe((next, prev) => {
+    if (prev.phase === "lobby" && next.phase !== "lobby") {
+      cancelPendingCycle();
+    }
+  });
 
   const router = new ScreenRouter({
     stage: app.stage,
