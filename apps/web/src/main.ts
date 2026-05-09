@@ -2,7 +2,6 @@ import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/700.css";
 
 import type { BotDifficulty } from "@durak/protocol";
-import { loadSkinAssets } from "@durak/skins-spike";
 import { color, typography } from "@durak/ui";
 import { Application } from "pixi.js";
 import { bindMuteShortcut, installAudioGestureUnlock } from "./audio/index.js";
@@ -10,10 +9,6 @@ import { bindDevtoolsShortcut, DevPanel, subscribeAutoplay } from "./devtools/in
 import { gameOverFixture } from "./fixtures/gameOverFixtures.js";
 import { createConnectionController } from "./net/connection.js";
 import { CreateRoomError, createRoom, httpFromWsUrl } from "./net/rooms.js";
-import { AnimSandboxScreen } from "./sandbox/anims/AnimSandboxScreen.js";
-import { SfxSandboxScreen } from "./sandbox/sfx/SfxSandboxScreen.js";
-import { SkinSandboxScreen } from "./sandbox/skins/SkinSandboxScreen.js";
-import { SkinTunerScreen } from "./sandbox/skins/SkinTunerScreen.js";
 import { ScreenRouter } from "./screenRouter.js";
 import { GameOverScreen } from "./screens/GameOverScreen.js";
 import { GameScreen } from "./screens/GameScreen.js";
@@ -46,48 +41,8 @@ await app.init({
 });
 mount.appendChild(app.canvas);
 
-const sandboxParam = new URLSearchParams(window.location.search).get("sandbox");
-if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
-  // Load skin assets at runtime via the procedural generator. The pre-baked
-  // atlas in /public/skins/ was built around the old bitmap-only patterns
-  // and can't represent the procedural ones; we'll re-introduce a bake step
-  // later if startup cost ever matters.
-  const skinAssets = await loadSkinAssets(app.renderer);
-  const tunerInitialCode = new URLSearchParams(window.location.search).get("code") ?? undefined;
-  const screen =
-    sandboxParam === "skins"
-      ? new SkinSandboxScreen({ assets: skinAssets, ticker: app.ticker })
-      : new SkinTunerScreen({
-          assets: skinAssets,
-          ticker: app.ticker,
-          canvas: app.canvas,
-          ...(tunerInitialCode !== undefined && { initialCode: tunerInitialCode }),
-        });
-  screen.layout(app.screen.width, app.screen.height);
-  app.stage.addChild(screen);
-  app.renderer.on("resize", () => {
-    screen.layout(app.screen.width, app.screen.height);
-  });
-  installAudioGestureUnlock();
-} else if (sandboxParam === "anims") {
-  const screen = new AnimSandboxScreen({ ticker: app.ticker });
-  screen.layout(app.screen.width, app.screen.height);
-  app.stage.addChild(screen);
-  app.renderer.on("resize", () => {
-    screen.layout(app.screen.width, app.screen.height);
-  });
-} else if (sandboxParam === "sfx") {
-  const screen = new SfxSandboxScreen();
-  screen.layout(app.screen.width, app.screen.height);
-  app.stage.addChild(screen);
-  app.renderer.on("resize", () => {
-    screen.layout(app.screen.width, app.screen.height);
-  });
-  installAudioGestureUnlock();
-  bindMuteShortcut();
-} else {
-  applyBootRouting();
-
+applyBootRouting();
+{
   const wsUrl = resolveWsUrl();
   const httpUrl = resolveHttpServerUrl(wsUrl);
 

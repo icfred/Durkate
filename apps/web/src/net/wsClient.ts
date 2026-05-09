@@ -72,7 +72,6 @@ export function connect(options: WsConnectOptions): WsConnection {
   let closedByCaller = false;
 
   const setStatus = (status: ConnectionStatus, error?: string) => {
-    console.info("[ws] status", status, { attempts, ...(error !== undefined && { error }) });
     handlers.onStatus(status, error === undefined ? { attempts } : { attempts, error });
   };
 
@@ -88,17 +87,15 @@ export function connect(options: WsConnectOptions): WsConnection {
       setStatus("open");
     };
     next.onmessage = (event) => onMessage(event.data);
-    next.onerror = (event) => {
+    next.onerror = () => {
       // The follow-up `close` event drives the lifecycle; just surface the
       // error status so the UI can react.
-      console.warn("[ws] onerror", event);
       setStatus("error", "socket error");
     };
     next.onclose = (event) => {
       socket = null;
       const reason = event.reason ?? "";
       const code = event.code ?? 0;
-      console.warn("[ws] onclose", { code, reason, closedByCaller, attempts });
       if (closedByCaller) {
         setStatus("closed");
         return;
