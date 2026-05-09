@@ -223,7 +223,16 @@ describe("createConnectionController", () => {
     conns[0]?.handlers.onSnapshot({ type: "Snapshot", snapshot: makeSnapshot(0) });
     expect(appStore.getState().phase).toBe("game");
 
+    // Transient `closed` (the wsClient is about to auto-reconnect) keeps
+    // the user in `game`. Only a terminal `error` bounces back to the
+    // lobby so a one-frame disconnect doesn't yank the screen away.
     conns[0]?.handlers.onStatus("closed", { attempts: 1 });
+    expect(appStore.getState().phase).toBe("game");
+
+    conns[0]?.handlers.onStatus("error", {
+      attempts: 5,
+      error: "max reconnect attempts reached",
+    });
     const state = appStore.getState();
     expect(state.phase).toBe("lobby");
     expect(state.mode).toBe("friend");

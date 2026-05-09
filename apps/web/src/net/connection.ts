@@ -80,7 +80,15 @@ export function createConnectionController(
     onStatus: (status, info) => {
       const state = store.getState();
       state.setConnectionStatus(status, info);
-      if (status === "closed" && state.phase === "game" && state.roomCode && state.mode) {
+      // Only bounce to the lobby on a terminal `error` status. The
+      // wsClient auto-retries through `closed` events with backoff —
+      // bouncing on every transient `closed` would surface a one-frame
+      // lobby flash any time the worker hibernated and dropped the
+      // socket, even though the very next reconnect succeeds and
+      // `sendCurrentState` replays the in-progress engine state. After
+      // a permanent failure (max reconnect attempts) the user gets the
+      // explicit "lost the room" landing instead of a stale game view.
+      if (status === "error" && state.phase === "game" && state.roomCode && state.mode) {
         state.showLobby({
           mode: state.mode,
           roomCode: state.roomCode,
