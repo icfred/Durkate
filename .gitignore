@@ -52,6 +52,7 @@ tools/spikes/out/
 
 # AI agent workflow
 .claude/
+.mcp.json
 CLAUDE.md
 PROJECT_CONTEXT.md
 docs/agent_voice.md

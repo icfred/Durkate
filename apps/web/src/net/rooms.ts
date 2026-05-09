@@ -61,6 +61,12 @@ export async function createRoom(options: CreateRoomOptions): Promise<CreateRoom
   }
   if (!response.ok) {
     const text = await response.text().catch(() => "");
+    // Friendlier message for the rate limit — the worker returns
+    // `{"error":"rate limit exceeded"}` JSON which read raw was
+    // accidentally surfaced to the user as the lobby "RETRY" caption.
+    if (response.status === 429) {
+      throw new CreateRoomError("Hit the create-room rate limit. Try again in a moment.", 429);
+    }
     throw new CreateRoomError(text || response.statusText, response.status);
   }
   let json: unknown;

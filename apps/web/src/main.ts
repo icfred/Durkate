@@ -108,6 +108,41 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
     void runRoomCreation(payload, httpUrl);
   };
 
+  // Lobby cycle debounce. Each PLAYERS/ROUNDS click updates the
+  // pending values immediately (subscribers fan out so the lobby
+  // labels refresh without a screen rebuild) and schedules a single
+  // `startGame` ~300ms after the last click. Without this, every
+  // click fires its own `POST /rooms` and the worker's 10/min/IP
+  // bucket trips after a handful of cycles.
+  let pendingPlayers: number | null = null;
+  let pendingRounds: number | null = null;
+  let cycleTimer: ReturnType<typeof setTimeout> | null = null;
+  const pendingListeners = new Set<
+    (next: { players: number | null; rounds: number | null }) => void
+  >();
+  const notifyPending = () => {
+    const snap = { players: pendingPlayers, rounds: pendingRounds };
+    for (const l of pendingListeners) l(snap);
+  };
+  const scheduleCycleFlush = () => {
+    if (cycleTimer !== null) clearTimeout(cycleTimer);
+    cycleTimer = setTimeout(() => {
+      cycleTimer = null;
+      const s = appStore.getState();
+      const players = pendingPlayers ?? s.playerCount ?? 2;
+      const rounds = pendingRounds ?? s.room?.match?.totalRounds ?? 3;
+      pendingPlayers = null;
+      pendingRounds = null;
+      notifyPending();
+      startGame({
+        playerCount: players as 2 | 3 | 4 | 5 | 6,
+        botCount: Math.max(0, players - 1),
+        difficulty: "medium",
+        rounds,
+      });
+    }, 300);
+  };
+
   const router = new ScreenRouter({
     stage: app.stage,
     build(state: AppState): Screen {
@@ -170,49 +205,41 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
             const next = order[(order.indexOf(current) + 1) % order.length] ?? "medium";
             appStore.getState().setBotDifficulty(seatIndex, next);
           };
-          // Player-count and rounds cycles tear the room down and
-          // recreate it with the new config — the lobby is the ONLY
-          // setup surface, so this is how those settings get changed.
-          // The connection controller closes the old ws and opens the
-          // new one when `roomCode` flips. Both handlers read the
-          // freshest values from the store and accept a direction so
-          // arrow keys can step the value either way.
+          // Player-count and rounds cycles. Each click updates the
+          // pending value immediately (so the lobby label flips
+          // instantly), then a debounced timer fires the actual
+          // `startGame` once the user pauses — coalescing rapid arrow
+          // spam into a single `POST /rooms` so we don't trip the
+          // worker rate limiter.
           lobbyOpts.onCyclePlayers = (dir) => {
             const s = appStore.getState();
-            const cur = s.playerCount ?? 2;
-            const playersOrder = [2, 3, 4, 5, 6];
-            const idx = playersOrder.indexOf(cur);
-            const nextIdx =
-              ((idx === -1 ? 0 : idx) + dir + playersOrder.length) % playersOrder.length;
-            const next = playersOrder[nextIdx] ?? 2;
-            const rounds = s.room?.match?.totalRounds ?? 1;
-            // Remember which control the user just touched so the
-            // rebuilt lobby can restore focus there instead of
-            // auto-focusing PLAYERS.
+            const cur = pendingPlayers ?? s.playerCount ?? 2;
+            const order = [2, 3, 4, 5, 6];
+            const idx = order.indexOf(cur);
+            const nextIdx = ((idx === -1 ? 0 : idx) + dir + order.length) % order.length;
+            pendingPlayers = order[nextIdx] ?? 2;
             s.setLobbyFocusHint("players");
-            startGame({
-              playerCount: next as 2 | 3 | 4 | 5 | 6,
-              botCount: next - 1,
-              difficulty: "medium",
-              rounds,
-            });
+            notifyPending();
+            scheduleCycleFlush();
           };
           lobbyOpts.onCycleRounds = (dir) => {
             const s = appStore.getState();
-            const players = s.playerCount ?? 2;
-            // Best-of-N options the lobby surfaces: 3, 5, 7.
+            const cur = pendingRounds ?? s.room?.match?.totalRounds ?? 3;
             const order = [3, 5, 7];
-            const cur = s.room?.match?.totalRounds ?? 3;
             const idx = order.indexOf(cur);
             const nextIdx = ((idx === -1 ? 0 : idx) + dir + order.length) % order.length;
-            const next = order[nextIdx] ?? 3;
+            pendingRounds = order[nextIdx] ?? 3;
             s.setLobbyFocusHint("rounds");
-            startGame({
-              playerCount: players as 2 | 3 | 4 | 5 | 6,
-              botCount: Math.max(0, players - 1),
-              difficulty: "medium",
-              rounds: next,
-            });
+            notifyPending();
+            scheduleCycleFlush();
+          };
+          lobbyOpts.pendingPlayers = pendingPlayers;
+          lobbyOpts.pendingRounds = pendingRounds;
+          lobbyOpts.subscribePending = (listener) => {
+            pendingListeners.add(listener);
+            return () => {
+              pendingListeners.delete(listener);
+            };
           };
           return new LobbyScreen(lobbyOpts);
         }

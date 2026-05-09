@@ -79,6 +79,22 @@ export interface LobbyScreenOptions {
    * stays on the control they just adjusted.
    */
   initialFocus?: "players" | "rounds";
+  /**
+   * Pending values for PLAYERS / ROUNDS while the host is mid-cycle.
+   * Click handlers debounce the actual room recreation, so the UI
+   * mirrors the user's chosen value immediately even though the
+   * server-side state hasn't caught up yet. `null` = no pending
+   * change; fall back to the room's actual values.
+   */
+  pendingPlayers?: number | null;
+  pendingRounds?: number | null;
+  /**
+   * Push pending value updates into the live lobby so labels refresh
+   * without rebuilding the screen on every keypress.
+   */
+  subscribePending?(
+    listener: (next: { players: number | null; rounds: number | null }) => void,
+  ): () => void;
   copyToClipboard?(text: string): Promise<void> | void;
 }
 
@@ -139,10 +155,16 @@ export class LobbyScreen extends Container implements Screen {
   private rosterRows: Container[] = [];
   private readonly playersControl: Container | null;
   private readonly roundsControl: Container | null;
-  // Track the live Button instance so `update()` can refresh the
-  // ROUNDS label when the first RoomState arrives (the initial render
-  // happens before `state.room.match` is populated).
+  // Track the live Button instances so `update()` and the
+  // pending-value subscriber can refresh their labels without
+  // rebuilding the lobby on every cycle.
   private roundsButton: Button | null = null;
+  private playersButton: Button | null = null;
+  private readonly unsubscribePending: (() => void) | null;
+  // Last known rounds value from room state, used as the fallback
+  // when the pending-value subscriber clears (e.g. after the server
+  // catches up to the cycled config).
+  private lastRoundsValue = 1;
   // Tag for the currently-focused cycle control. Set by the patched
   // `setFocus` on PLAYERS / ROUNDS buttons; consumed by the capture-
   // phase keydown handler so arrow-key presses adjust the value
@@ -243,9 +265,12 @@ export class LobbyScreen extends Container implements Screen {
       const rounds = options.rounds ?? 1;
       const cellW = PANEL_W - spacing.lg * 2;
 
+      const playersDisplay = options.pendingPlayers ?? this.playerCount;
+      const roundsDisplay = options.pendingRounds ?? rounds;
+
       const playersCb = options.onCyclePlayers;
       const playersOpts: Parameters<typeof this.makeConfigCell>[0] = {
-        label: `PLAYERS: ${this.playerCount}`,
+        label: `PLAYERS: ${playersDisplay}`,
         x: spacing.lg,
         y: nextY,
         w: cellW,
@@ -256,12 +281,13 @@ export class LobbyScreen extends Container implements Screen {
       }
       this.playersControl = this.makeConfigCell(playersOpts);
       this.readyContent.addChild(this.playersControl);
+      this.playersButton = findChildButton(this.playersControl);
       if (playersCb) this.cycleHandlers.players = playersCb;
       nextY += CONFIG_CELL_H + spacing.sm;
 
       const roundsCb = options.onCycleRounds;
       const roundsOpts: Parameters<typeof this.makeConfigCell>[0] = {
-        label: roundsLabel(rounds),
+        label: roundsLabel(roundsDisplay),
         x: spacing.lg,
         y: nextY,
         w: cellW,
@@ -425,6 +451,26 @@ export class LobbyScreen extends Container implements Screen {
     if (options.initialFocus === "rounds" && this.roundsButton) {
       this.focus.focus(this.roundsButton);
     }
+
+    // Pending-value subscriber: when the user cycles, main.ts updates
+    // the pending values immediately and only fires the actual room
+    // recreation after a debounce. The lobby labels track those
+    // pending values so the UI is responsive even though the server
+    // round-trip is delayed.
+    this.unsubscribePending = options.subscribePending
+      ? options.subscribePending((next) => this.applyPending(next))
+      : null;
+  }
+
+  private applyPending(next: { players: number | null; rounds: number | null }): void {
+    if (this.playersButton) {
+      const value = next.players ?? this.playerCount;
+      this.playersButton.setLabel(`PLAYERS: ${value}`);
+    }
+    if (this.roundsButton) {
+      const value = next.rounds ?? this.lastRoundsValue;
+      this.roundsButton.setLabel(roundsLabel(value));
+    }
   }
 
   layout(viewWidth: number, viewHeight: number): void {
@@ -436,6 +482,7 @@ export class LobbyScreen extends Container implements Screen {
   dispose(): void {
     this.unsubscribeRoom?.();
     this.unsubscribeCreation?.();
+    this.unsubscribePending?.();
     this.detachBackNav?.();
     this.detachFocusNavSfx();
     this.overlay?.unmount();
@@ -476,10 +523,9 @@ export class LobbyScreen extends Container implements Screen {
       this.layoutJoinedLabel();
     }
     this.renderRoster(room);
-    if (this.roundsButton) {
-      const totalRounds = room?.match?.totalRounds ?? 1;
-      this.roundsButton.setLabel(roundsLabel(totalRounds));
-    }
+    const totalRounds = room?.match?.totalRounds ?? 1;
+    this.lastRoundsValue = totalRounds;
+    if (this.roundsButton) this.roundsButton.setLabel(roundsLabel(totalRounds));
   }
 
   // Render the seat roster: one row per seat with name + role tag. Bot
