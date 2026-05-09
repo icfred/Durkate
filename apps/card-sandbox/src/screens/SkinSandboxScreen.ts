@@ -15,8 +15,6 @@ const SEED = 0xc0ffee;
 const DISPLAY_SCALE = 1.2;
 const CELL_W = CARD_W * DISPLAY_SCALE;
 const CELL_H = CARD_H * DISPLAY_SCALE;
-// Gap between unscaled cells. Once the focused card scales up the ripple
-// pushes neighbours outward into the surrounding free space.
 const CELL_GAP = spacing.md;
 // Ripple parameters. `FOCUS_BOOST` is the scale multiplier the focused
 // card lerps toward; surrounding cards lerp toward 1. `OFFSET_PEAK` is
@@ -36,6 +34,12 @@ function sampleCard(i: number): Card {
   return { suit, rank };
 }
 
+interface SkinTile {
+  code: string;
+  view: SkinnedCard;
+  baseView: CardView;
+}
+
 interface CardSlot {
   // Either a skinned card (with a rolled code) or the special help tile.
   view: SkinnedCard | HelpCard;
@@ -49,8 +53,9 @@ interface CardSlot {
   // when the bottom row is incomplete).
   row: number;
   col: number;
-  // Base / target / current display position; per-frame lerp converges
-  // current toward target.
+  // Centre-of-cell base / current position. Each view has pivot at its
+  // own centre so scale expands symmetrically; world position therefore
+  // tracks the cell centre rather than the top-left corner.
   baseX: number;
   baseY: number;
   curX: number;
@@ -61,8 +66,6 @@ interface CardSlot {
 export interface SkinSandboxScreenOptions {
   assets: SkinAssets;
   ticker: Ticker;
-  /** How many skin cards to roll. Help card is added on top, in the centre. */
-  cardCount?: number;
   /** Hook for the host to spawn the explainer modal when the help card fires. */
   onShowHelp(): void;
   /** Hook for click-to-tuner navigation. */
@@ -73,11 +76,16 @@ export class SkinSandboxScreen extends Container implements Screen {
   private readonly ticker: Ticker;
   private readonly assets: SkinAssets;
   private readonly grid: Container;
+  // Persistent pool of rolled skin tiles. Survives resizes so the user
+  // doesn't see the deck reshuffle when the grid rebuilds — the tiles
+  // are simply re-slotted, with extras hidden when the new layout has
+  // fewer cells.
+  private readonly tiles: SkinTile[] = [];
+  private helpTile: HelpCard | null = null;
   private readonly slots: CardSlot[] = [];
   private readonly tickCallback: TickerCallback<unknown>;
   private readonly onShowHelp: () => void;
   private readonly onOpenTuner: (code: string) => void;
-  private readonly cardCount: number;
   private rngState = SEED;
   private viewWidth = 0;
   private viewHeight = 0;
@@ -93,7 +101,6 @@ export class SkinSandboxScreen extends Container implements Screen {
     super();
     this.ticker = options.ticker;
     this.assets = options.assets;
-    this.cardCount = options.cardCount ?? 36;
     this.onShowHelp = options.onShowHelp;
     this.onOpenTuner = options.onOpenTuner;
 
@@ -118,86 +125,26 @@ export class SkinSandboxScreen extends Container implements Screen {
     this.detachKey = null;
   }
 
-  // Compute grid dimensions from the viewport, build/refresh card slots,
-  // place them at base positions, and reset display state. Called on
-  // initial mount and on any resize.
   private relayout(): void {
     if (this.viewWidth <= 0 || this.viewHeight <= 0) return;
     const margin = spacing.lg;
     const innerW = Math.max(CELL_W, this.viewWidth - margin * 2);
+    const innerH = Math.max(CELL_H, this.viewHeight - margin * 2);
     const cols = Math.max(1, Math.floor((innerW + CELL_GAP) / (CELL_W + CELL_GAP)));
-    // Total tiles = cardCount + 1 (help slot). Compute rows so the grid
-    // fits the cardCount with the help slot dropped into the centre cell.
-    const total = this.cardCount + 1;
-    const rows = Math.max(1, Math.ceil(total / cols));
-    this.cols = cols;
-    this.rows = rows;
+    const rows = Math.max(1, Math.floor((innerH + CELL_GAP) / (CELL_H + CELL_GAP)));
+    const total = cols * rows;
     const helpRow = Math.floor(rows / 2);
     const helpCol = Math.floor(cols / 2);
     const helpIndex = helpRow * cols + helpCol;
+    this.cols = cols;
+    this.rows = rows;
 
-    this.ensureSlots(total, helpIndex);
-    // Centre the grid horizontally; vertically anchor near the top with a
-    // generous margin so the ripple has room to push neighbours.
-    const gridW = cols * CELL_W + (cols - 1) * CELL_GAP;
-    const gridH = rows * CELL_H + (rows - 1) * CELL_GAP;
-    const offsetX = Math.round((this.viewWidth - gridW) / 2);
-    const offsetY = Math.max(spacing.lg, Math.round((this.viewHeight - gridH) / 2));
-    this.grid.x = offsetX;
-    this.grid.y = offsetY;
-
-    for (let i = 0; i < this.slots.length; i++) {
-      const slot = this.slots[i];
-      if (!slot) continue;
-      const row = Math.floor(i / cols);
-      const col = i % cols;
-      slot.row = row;
-      slot.col = col;
-      slot.baseX = col * (CELL_W + CELL_GAP);
-      slot.baseY = row * (CELL_H + CELL_GAP);
-      slot.curX = slot.baseX;
-      slot.curY = slot.baseY;
-      slot.curScale = DISPLAY_SCALE;
-      slot.view.x = slot.baseX;
-      slot.view.y = slot.baseY;
-      slot.view.scale.set(DISPLAY_SCALE);
-    }
-  }
-
-  // Allocate or resize the slot list to match `total`, dropping the help
-  // tile at `helpIndex` and rolling fresh codes for the others.
-  private ensureSlots(total: number, helpIndex: number): void {
-    // Tear down any existing slots — simpler than reordering when grid
-    // dimensions change. Cards are cheap to recreate at this scale.
-    for (const slot of this.slots) {
-      this.grid.removeChild(slot.view);
-      slot.view.destroy({ children: true });
-    }
-    this.slots.length = 0;
-
-    for (let i = 0; i < total; i++) {
-      if (i === helpIndex) {
-        const help = new HelpCard();
-        help.onActivate = () => this.onShowHelp();
-        this.grid.addChild(help);
-        this.slots.push({
-          view: help,
-          setFocus: (f) => help.setFocus(f),
-          isHelp: true,
-          code: null,
-          row: 0,
-          col: 0,
-          baseX: 0,
-          baseY: 0,
-          curX: 0,
-          curY: 0,
-          curScale: DISPLAY_SCALE,
-        });
-        this.attachHover(this.slots.length - 1);
-        continue;
-      }
+    // Make sure we have enough rolled skin tiles for every non-help cell.
+    const skinNeeded = total - 1;
+    while (this.tiles.length < skinNeeded) {
+      const idx = this.tiles.length;
       const code = rollCode(this.nextRand);
-      const baseView = new CardView(sampleCard(i));
+      const baseView = new CardView(sampleCard(idx));
       const view = new SkinnedCard({
         base: baseView,
         baseWidth: CARD_W,
@@ -207,32 +154,94 @@ export class SkinSandboxScreen extends Container implements Screen {
       view.applySkin(decode(code), { pattern: true, tint: true, finish: true });
       view.eventMode = "static";
       view.cursor = "pointer";
-      const slotCode = code;
-      view.on("pointertap", () => this.onOpenTuner(slotCode));
-      this.grid.addChild(view);
+      // Pivot at centre so scale expands symmetrically — without this
+      // the focused card grew down + right out of its cell and crowded
+      // its neighbours on those edges.
+      view.pivot.set(CARD_W / 2, CARD_H / 2);
+      view.on("pointertap", () => this.onOpenTuner(code));
+      this.tiles.push({ code, view, baseView });
+    }
+    if (!this.helpTile) {
+      this.helpTile = new HelpCard();
+      this.helpTile.pivot.set(CARD_W / 2, CARD_H / 2);
+      this.helpTile.onActivate = () => this.onShowHelp();
+    }
+
+    // Detach everything from the grid; we'll re-add only the visible
+    // slots so leftover tiles don't paint at stale positions.
+    this.grid.removeChildren();
+    this.slots.length = 0;
+    let skinCursor = 0;
+    for (let i = 0; i < total; i++) {
+      const row = Math.floor(i / cols);
+      const col = i % cols;
+      // Centre-of-cell coords. View.position is the world coord of the
+      // pivot, which is the card centre.
+      const baseX = col * (CELL_W + CELL_GAP) + CELL_W / 2;
+      const baseY = row * (CELL_H + CELL_GAP) + CELL_H / 2;
+      if (i === helpIndex) {
+        const help = this.helpTile;
+        if (!help) continue;
+        this.grid.addChild(help);
+        this.slots.push({
+          view: help,
+          setFocus: (f) => help.setFocus(f),
+          isHelp: true,
+          code: null,
+          row,
+          col,
+          baseX,
+          baseY,
+          curX: baseX,
+          curY: baseY,
+          curScale: DISPLAY_SCALE,
+        });
+        help.x = baseX;
+        help.y = baseY;
+        help.scale.set(DISPLAY_SCALE);
+        this.attachHover(this.slots.length - 1);
+        continue;
+      }
+      const tile = this.tiles[skinCursor++];
+      if (!tile) continue;
+      this.grid.addChild(tile.view);
       this.slots.push({
-        view,
-        setFocus: (f) => baseView.setFocus(f),
+        view: tile.view,
+        setFocus: (f) => tile.baseView.setFocus(f),
         isHelp: false,
-        code,
-        row: 0,
-        col: 0,
-        baseX: 0,
-        baseY: 0,
-        curX: 0,
-        curY: 0,
+        code: tile.code,
+        row,
+        col,
+        baseX,
+        baseY,
+        curX: baseX,
+        curY: baseY,
         curScale: DISPLAY_SCALE,
       });
+      tile.view.x = baseX;
+      tile.view.y = baseY;
+      tile.view.scale.set(DISPLAY_SCALE);
       this.attachHover(this.slots.length - 1);
     }
+
+    // Centre the grid in the viewport. Width includes per-cell width +
+    // gaps; baseX/baseY are cell centres so the leftmost column starts
+    // at baseX_first - CELL_W/2 = 0 in grid-local coordinates.
+    const gridW = cols * CELL_W + (cols - 1) * CELL_GAP;
+    const gridH = rows * CELL_H + (rows - 1) * CELL_GAP;
+    this.grid.x = Math.round((this.viewWidth - gridW) / 2);
+    this.grid.y = Math.round((this.viewHeight - gridH) / 2);
+
+    // Reset focus when the grid shape changes — the previous focused
+    // index may now point at a different cell.
+    this.focusedIndex = -1;
   }
 
-  // Hover binds the slot index for both ripple focus and focus-clearing on
-  // pointer-out. The card listeners re-resolve `slots[index]` lazily so
-  // re-layouts don't leave stale references behind.
   private attachHover(index: number): void {
     const view = this.slots[index]?.view;
     if (!view) return;
+    view.removeAllListeners("pointerenter");
+    view.removeAllListeners("pointerleave");
     view.on("pointerenter", () => {
       this.setFocusedIndex(index);
     });
