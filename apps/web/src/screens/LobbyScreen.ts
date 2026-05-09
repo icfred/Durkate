@@ -15,8 +15,10 @@ import { attachBackNav } from "./backNav.js";
 import type { Screen } from "./types.js";
 
 const PANEL_W = 540;
-const PANEL_H_BASE = 520;
+const PANEL_H_BASE = 600;
 const PANEL_H_PER_EXTRA_SHARE = 70;
+const CONFIG_CELL_H = 36;
+const DIVIDER_PAD = spacing.md;
 const FIELD_W = 240;
 const FIELD_H = 48;
 const COPY_BUTTON_W = 140;
@@ -60,6 +62,15 @@ export interface LobbyScreenOptions {
    * WS action via the store. Omit (or no-op) for non-host clients.
    */
   onCycleBotDifficulty?(seat: number): void;
+  /**
+   * Best-of-N rounds for this room. Drives the ROUNDS cycle button
+   * label. Omit (or 1) on legacy single-round flows.
+   */
+  rounds?: number;
+  /** Host-side cycle: bumps `playerCount` and re-creates the room. */
+  onCyclePlayers?(): void;
+  /** Host-side cycle: bumps `rounds` and re-creates the room. */
+  onCycleRounds?(): void;
   copyToClipboard?(text: string): Promise<void> | void;
 }
 
@@ -118,6 +129,12 @@ export class LobbyScreen extends Container implements Screen {
   private readonly roster: Container;
   private readonly onCycleBotDifficulty: ((seat: number) => void) | undefined;
   private rosterRows: Container[] = [];
+  private readonly playersControl: Container | null;
+  private readonly roundsControl: Container | null;
+  // Track the live Button instance so `update()` can refresh the
+  // ROUNDS label when the first RoomState arrives (the initial render
+  // happens before `state.room.match` is populated).
+  private roundsButton: Button | null = null;
   private overlay: TextInputOverlayHandle | null = null;
   private inputValue = "";
   private currentStatus: LobbyStatus;
@@ -182,52 +199,72 @@ export class LobbyScreen extends Container implements Screen {
       text: headlineFor(this.mode, this.currentStatus, this.humansExpected),
       style: {
         fontFamily: typography.family,
-        fontSize: typography.size.md,
-        fontWeight: typography.weight.bold,
-        fill: color.accent,
+        fontSize: typography.size.sm,
+        fill: color.textMuted,
         letterSpacing: typography.letterSpacing.wide,
       },
     });
-    this.status.y = heading.y + heading.height + spacing.md;
+    this.status.y = heading.y + heading.height + spacing.xs;
     this.layoutStatus();
     this.readyContent.addChild(this.status);
 
-    // Count-of-humans label kept as a backstop only for the test
-    // fixtures that assert on "1 / 3 JOINED"-style text. The roster
-    // below is the canonical view of who is in the room.
-    if (this.mode !== "bot" && this.humansExpected > 1) {
-      this.joinedLabel = new Text({
-        text: this.joinedLabelText(options.initialRoom),
-        style: {
-          fontFamily: typography.family,
-          fontSize: typography.size.xs,
-          fill: color.textMuted,
-          letterSpacing: typography.letterSpacing.wide,
-        },
-      });
-      this.joinedLabel.y = this.status.y + this.status.height + spacing.xs;
-      this.layoutJoinedLabel();
-      this.readyContent.addChild(this.joinedLabel);
+    let nextY = this.status.y + this.status.height + spacing.lg;
+    this.addDivider(nextY);
+    nextY += DIVIDER_PAD;
+
+    // Config row: PLAYERS and ROUNDS cycle controls. Host-only — when
+    // the cycle callbacks aren't wired (joiner, or a future read-only
+    // mode) the row renders the values as plain labels.
+    if (options.onCyclePlayers || options.onCycleRounds || options.rounds !== undefined) {
+      const rounds = options.rounds ?? 1;
+      const configY = nextY;
+      const colW = (PANEL_W - spacing.lg * 2) / 2;
+
+      const playersOpts: Parameters<typeof this.makeConfigCell>[0] = {
+        label: `PLAYERS: ${this.playerCount}`,
+        x: spacing.lg,
+        y: configY,
+        w: colW,
+      };
+      if (options.onCyclePlayers) playersOpts.onActivate = options.onCyclePlayers;
+      this.playersControl = this.makeConfigCell(playersOpts);
+      this.readyContent.addChild(this.playersControl);
+
+      const roundsOpts: Parameters<typeof this.makeConfigCell>[0] = {
+        label: roundsLabel(rounds),
+        x: spacing.lg + colW,
+        y: configY,
+        w: colW,
+      };
+      if (options.onCycleRounds) roundsOpts.onActivate = options.onCycleRounds;
+      this.roundsControl = this.makeConfigCell(roundsOpts);
+      this.readyContent.addChild(this.roundsControl);
+      this.roundsButton = findChildButton(this.roundsControl);
+
+      nextY += CONFIG_CELL_H + spacing.lg;
+      this.addDivider(nextY);
+      nextY += DIVIDER_PAD;
     } else {
-      this.joinedLabel = null;
+      this.playersControl = null;
+      this.roundsControl = null;
     }
+
+    this.joinedLabel = null;
 
     // Per-seat roster. Built lazily on every room update so the host
     // can flip a bot's difficulty (or a friend can join via the invite
     // link) and the rows reflect the new state without rebuilding the
-    // whole panel. The container starts empty here; first render
-    // happens during `update()` below.
+    // whole panel.
     this.roster = new Container();
     this.roster.label = "lobby-roster";
-    this.roster.y =
-      (this.joinedLabel
-        ? this.joinedLabel.y + this.joinedLabel.height
-        : this.status.y + this.status.height) + spacing.md;
+    this.roster.y = nextY;
     this.readyContent.addChild(this.roster);
     this.onCycleBotDifficulty = options.onCycleBotDifficulty;
     const initialRosterH = this.renderRoster(options.initialRoom);
 
-    let nextY = this.roster.y + initialRosterH + spacing.md;
+    nextY = this.roster.y + initialRosterH + spacing.lg;
+    this.addDivider(nextY);
+    nextY += DIVIDER_PAD;
 
     if (this.shareUrls.length > 0) {
       // One share label + one share URL + one copy button — no per-token
@@ -458,6 +495,10 @@ export class LobbyScreen extends Container implements Screen {
       this.layoutJoinedLabel();
     }
     this.renderRoster(room);
+    if (this.roundsButton) {
+      const totalRounds = room?.match?.totalRounds ?? 1;
+      this.roundsButton.setLabel(roundsLabel(totalRounds));
+    }
   }
 
   // Render the seat roster: one row per seat with name + role tag. Bot
@@ -610,6 +651,65 @@ export class LobbyScreen extends Container implements Screen {
     this.status.x = Math.round((PANEL_W - this.status.width) / 2);
   }
 
+  // Thin horizontal hairline drawn into readyContent to delimit the
+  // panel's sections (config, roster, invite, actions). Color matches
+  // the inactive border token so it reads as a separator, not a stroke.
+  private addDivider(y: number): void {
+    const g = new Graphics();
+    g.moveTo(spacing.lg, 0)
+      .lineTo(PANEL_W - spacing.lg, 0)
+      .stroke({
+        color: color.border,
+        width: 1,
+        alignment: 0.5,
+      });
+    g.y = y;
+    this.readyContent.addChild(g);
+  }
+
+  // A clickable config cell: bordered rect with centred label, used for
+  // the PLAYERS / ROUNDS cycle controls. When `onActivate` is missing,
+  // renders as a plain label (no border, no focus registration) so
+  // joiner clients can still read the values.
+  private makeConfigCell(opts: {
+    label: string;
+    x: number;
+    y: number;
+    w: number;
+    onActivate?: () => void;
+  }): Container {
+    const cell = new Container();
+    cell.x = opts.x;
+    cell.y = opts.y;
+    if (opts.onActivate) {
+      const button = new Button({
+        label: opts.label,
+        width: opts.w - spacing.sm,
+        height: CONFIG_CELL_H,
+        onActivate: withClickSound(opts.onActivate),
+      });
+      attachButtonHover(button);
+      button.x = Math.round((opts.w - (opts.w - spacing.sm)) / 2);
+      cell.addChild(button);
+      this.focus.register(button);
+    } else {
+      const text = new Text({
+        text: opts.label,
+        style: {
+          fontFamily: typography.family,
+          fontSize: typography.size.sm,
+          fontWeight: typography.weight.bold,
+          fill: color.text,
+          letterSpacing: typography.letterSpacing.wide,
+        },
+      });
+      text.x = Math.round((opts.w - text.width) / 2);
+      text.y = Math.round((CONFIG_CELL_H - text.height) / 2);
+      cell.addChild(text);
+    }
+    return cell;
+  }
+
   private layoutJoinedLabel(): void {
     if (!this.joinedLabel) return;
     this.joinedLabel.x = Math.round((PANEL_W - this.joinedLabel.width) / 2);
@@ -673,6 +773,17 @@ export class LobbyScreen extends Container implements Screen {
     this.fieldText.x = Math.round((FIELD_W - this.fieldText.width) / 2);
     this.fieldText.y = Math.round((FIELD_H - this.fieldText.height) / 2);
   }
+}
+
+function roundsLabel(rounds: number): string {
+  return rounds <= 1 ? "ROUNDS: SINGLE" : `ROUNDS: BEST OF ${rounds}`;
+}
+
+function findChildButton(c: Container): Button | null {
+  for (const child of c.children) {
+    if (child instanceof Button) return child;
+  }
+  return null;
 }
 
 function defaultCopyToClipboard(text: string): Promise<void> | void {

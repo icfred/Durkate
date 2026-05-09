@@ -181,7 +181,7 @@ describe("LobbyScreen creation overlay", () => {
 });
 
 describe("LobbyScreen N-aware FFA", () => {
-  it("shows X / Y joined when the room expects multiple humans", () => {
+  it("shows the seat roster instead of an X / Y JOINED counter", () => {
     const screen = new LobbyScreen({
       mode: "ffa",
       roomCode: "ABCD",
@@ -191,7 +191,11 @@ describe("LobbyScreen N-aware FFA", () => {
       initialRoom: makeRoom(["host", null, null]),
       onJoin: vi.fn(),
     });
-    expect(collectText(screen)).toContain("1 / 3 JOINED");
+    const labels = collectText(screen);
+    // No more "1 / 3 JOINED" — the roster is the canonical view.
+    expect(labels.some((l) => /\d+\s*\/\s*\d+\s*JOINED/.test(l))).toBe(false);
+    expect(labels).toContain("SEAT 1");
+    expect(labels).toContain("SEAT 4");
     screen.dispose();
   });
 

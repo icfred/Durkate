@@ -91,25 +91,19 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
   const wsUrl = resolveWsUrl();
   const httpUrl = resolveHttpServerUrl(wsUrl);
 
-  // Single entry from the unified Game Setup screen. Picks the right
-  // `mode` for the worker based on shape:
-  //   - 2 players, 1 bot, no humans-to-invite → "bot" (auto-start, no
-  //     share code needed; the legacy 1v1-vs-bot flow).
-  //   - 2 players, 0 bots → "friend" (auto-start when both humans
-  //     attach; reserved second seat token for the share link).
-  //   - everything else → "ffa" with lobbyHold so the host can review
-  //     and share before play begins.
+  // Single entry — every room goes through the unified ffa+lobbyHold
+  // path so the lobby is the only setup surface. The host can adjust
+  // player count, rounds, and per-bot difficulty in the lobby itself
+  // and start when ready. Non-host seats default to bots; humans
+  // joining via the invite link swap into a bot's seat.
   const startGame = (config: GameSetupConfig) => {
-    const isBotOnly = config.playerCount === 2 && config.botCount === 1;
-    const isFriendOnly = config.playerCount === 2 && config.botCount === 0;
-    const mode: "bot" | "friend" | "ffa" = isBotOnly ? "bot" : isFriendOnly ? "friend" : "ffa";
     const payload: RoomCreationStart = {
-      mode,
+      mode: "ffa",
       playerCount: config.playerCount,
       botCount: config.botCount,
+      lobbyHold: true,
     };
     if (config.botCount > 0) payload.difficulty = config.difficulty;
-    if (mode === "ffa") payload.lobbyHold = true;
     if (config.rounds > 1) payload.rounds = config.rounds;
     void runRoomCreation(payload, httpUrl);
   };
@@ -123,35 +117,26 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
             onStart: startGame,
           });
         case "lobby": {
-          const mode = state.mode ?? "friend";
+          const mode = state.mode ?? "ffa";
           const roomCode = state.roomCode ?? "";
           const playerCount = state.playerCount ?? 2;
-          const botCount = state.botCount ?? (mode === "bot" ? 1 : 0);
+          const botCount = state.botCount ?? Math.max(0, playerCount - 1);
           const tokens = state.joinTokens;
-          // Bot mode never has share tokens. For everything else surface
-          // whatever the server returned — for friend mode that's the
-          // reserved-human seat tokens; for FFA lobby-hold it's the
-          // bot-seat swap tokens (server hides bot tokens in non-hold
-          // FFA so this stays correct without an explicit mode check).
           const shareTokens =
-            mode === "bot"
-              ? []
-              : tokens.length > 0
-                ? tokens
-                : state.shareToken
-                  ? [state.shareToken]
-                  : [];
+            tokens.length > 0 ? tokens : state.shareToken ? [state.shareToken] : [];
           const shareUrls = shareTokens.map((token) =>
             buildShareUrl(window.location.origin, roomCode, token, {
               playerCount,
               botCount,
             }),
           );
+          const totalRounds = state.room?.match?.totalRounds ?? 1;
           const lobbyOpts: ConstructorParameters<typeof LobbyScreen>[0] = {
             mode,
             roomCode,
             playerCount,
             botCount,
+            rounds: totalRounds,
             shareUrls,
             initialRoom: state.room,
             initialCreation: state.roomCreation,
@@ -169,23 +154,52 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
             },
             onBack: () => appStore.getState().showMenu(),
           };
-          // FFA lobby-hold: surface a START NOW button that releases
-          // the hold via the StartGame WS message. Bot/friend modes
-          // auto-start when seats fill so they don't need this.
-          if (mode === "ffa") {
-            lobbyOpts.onStart = () => appStore.getState().startGame();
-          }
-          // Per-bot difficulty cycle. The current difficulty rides on
-          // the seat's `difficulty` field in RoomState; we read the
-          // freshest value from the store at click time (the room may
-          // have updated between renders) and rotate easy → medium →
-          // hard → easy.
+          // Always-on START NOW: every room created from PLAY is
+          // ffa+lobbyHold so the host explicitly releases the hold.
+          // Joiners (entering via invite link) hit this branch too,
+          // but their StartGame is rejected server-side (host-only).
+          lobbyOpts.onStart = () => appStore.getState().startGame();
+          // Per-bot difficulty cycle. Reads the freshest difficulty from
+          // the store at click time and rotates easy → medium → hard.
           lobbyOpts.onCycleBotDifficulty = (seatIndex: number) => {
             const seat = appStore.getState().room?.seats[seatIndex];
             const current = seat?.difficulty ?? "medium";
             const order = ["easy", "medium", "hard"] as const;
             const next = order[(order.indexOf(current) + 1) % order.length] ?? "medium";
             appStore.getState().setBotDifficulty(seatIndex, next);
+          };
+          // Player-count and rounds cycles tear the room down and
+          // recreate it with the new config — the lobby is the ONLY
+          // setup surface, so this is how those settings get changed.
+          // The connection controller closes the old ws and opens the
+          // new one when `roomCode` flips. Both handlers read the
+          // freshest values from the store at click time so cycling
+          // one config doesn't reset the other.
+          lobbyOpts.onCyclePlayers = () => {
+            const s = appStore.getState();
+            const cur = s.playerCount ?? 2;
+            const next = cur >= 6 ? 2 : cur + 1;
+            const rounds = s.room?.match?.totalRounds ?? 1;
+            startGame({
+              playerCount: next as 2 | 3 | 4 | 5 | 6,
+              botCount: next - 1,
+              difficulty: "medium",
+              rounds,
+            });
+          };
+          lobbyOpts.onCycleRounds = () => {
+            const s = appStore.getState();
+            const players = s.playerCount ?? 2;
+            const order = [1, 3, 5, 7, 9];
+            const cur = s.room?.match?.totalRounds ?? 1;
+            const idx = order.indexOf(cur);
+            const next = order[(idx + 1) % order.length] ?? 3;
+            startGame({
+              playerCount: players as 2 | 3 | 4 | 5 | 6,
+              botCount: Math.max(0, players - 1),
+              difficulty: "medium",
+              rounds: next,
+            });
           };
           return new LobbyScreen(lobbyOpts);
         }
