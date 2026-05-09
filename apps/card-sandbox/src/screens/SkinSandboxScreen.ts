@@ -6,13 +6,11 @@ import { CARD_H, CARD_W, CardView } from "../cards/CardView.js";
 import { HelpCard } from "./HelpCard.js";
 import type { Screen } from "./types.js";
 
-const SEED = 0xc0ffee;
-
 // Display scale — bumps the rendered card size from the 60×88 base used by
 // the Durak game (where cards live in a tighter HUD) to something more
 // presentational. Layout uses the scaled width/height so neighbours stay
 // outside the rendered footprint.
-const DISPLAY_SCALE = 1.2;
+const DISPLAY_SCALE = 1.5;
 const CELL_W = CARD_W * DISPLAY_SCALE;
 const CELL_H = CARD_H * DISPLAY_SCALE;
 const CELL_GAP = spacing.md;
@@ -86,7 +84,9 @@ export class SkinSandboxScreen extends Container implements Screen {
   private readonly tickCallback: TickerCallback<unknown>;
   private readonly onShowHelp: () => void;
   private readonly onOpenTuner: (code: string) => void;
-  private rngState = SEED;
+  // Fresh seed every page load — refreshing the page now reshuffles the
+  // grid so the showcase reads as alive instead of frozen.
+  private rngState = Math.floor(Math.random() * 0xffffffff) >>> 0 || 1;
   private viewWidth = 0;
   private viewHeight = 0;
   private cols = 0;

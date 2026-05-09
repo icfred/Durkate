@@ -120,6 +120,7 @@ async function mountScreen(name: ScreenName): Promise<Screen> {
     assets,
     ticker: app.ticker,
     canvas: app.canvas,
+    onBack: () => navigateTo("skins"),
     ...(code !== undefined && { initialCode: code }),
   });
 }

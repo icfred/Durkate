@@ -14,6 +14,8 @@ export interface CycleOptions<T> {
   onChange(value: T): void;
   /** Display formatter. Defaults to `String(v).toUpperCase()`. */
   format?(value: T): string;
+  /** When true, append a `(N/M)` position indicator after the value. */
+  showIndex?: boolean;
   /** Override width. Default {@link DEFAULT_WIDTH}. */
   width?: number;
   /** Override height. Default {@link DEFAULT_HEIGHT}. */
@@ -32,6 +34,7 @@ export class Cycle<T> extends Container implements Focusable {
   private readonly w: number;
   private readonly h: number;
   private readonly format: (value: T) => string;
+  private readonly showIndex: boolean;
   private readonly onChange: (value: T) => void;
   private current: T;
   private hovered = false;
@@ -43,6 +46,7 @@ export class Cycle<T> extends Container implements Focusable {
     this.current = options.value;
     this.onChange = options.onChange;
     this.format = options.format ?? ((v) => String(v).toUpperCase());
+    this.showIndex = options.showIndex ?? false;
     this.w = options.width ?? DEFAULT_WIDTH;
     this.h = options.height ?? DEFAULT_HEIGHT;
 
@@ -121,7 +125,12 @@ export class Cycle<T> extends Container implements Focusable {
       .roundRect(0, 0, this.w, this.h, radius.sm)
       .fill({ color: fill })
       .stroke({ color: border, width: stroke.base, alignment: 0 });
-    this.valueText.text = `< ${this.format(this.current)} >`;
+    let label = this.format(this.current);
+    if (this.showIndex) {
+      const idx = this.values.indexOf(this.current);
+      label = `${label}  ${idx + 1}/${this.values.length}`;
+    }
+    this.valueText.text = `< ${label} >`;
     this.valueText.x = Math.round((this.w - this.valueText.width) / 2);
     this.valueText.y = Math.round((this.h - this.valueText.height) / 2);
   }

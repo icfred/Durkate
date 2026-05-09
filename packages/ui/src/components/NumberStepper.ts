@@ -6,6 +6,12 @@ const DEFAULT_WIDTH = 80;
 const DEFAULT_HEIGHT = 18;
 const REPEAT_INITIAL_MS = 380;
 const REPEAT_INTERVAL_MS = 60;
+// Pointer must travel beyond this many pixels before a press is treated as
+// a drag-to-scrub instead of a click. Below the threshold we still fall
+// through to the increment/decrement step on `pointerup`.
+const DRAG_THRESHOLD_PX = 4;
+// Pixels of horizontal travel per discrete step. Smaller = faster scrub.
+const DRAG_PIXELS_PER_STEP = 4;
 
 export interface NumberStepperOptions {
   /** Initial value. */
@@ -48,6 +54,16 @@ export class NumberStepper extends Container implements Focusable {
   private focused = false;
   private repeatTimer: ReturnType<typeof setTimeout> | null = null;
   private repeatInterval: ReturnType<typeof setInterval> | null = null;
+  // Drag-to-scrub state. While a press is held we accumulate horizontal
+  // pointer movement; once it crosses DRAG_THRESHOLD_PX the press becomes
+  // a drag, click-on-release is suppressed, and value steps come from
+  // movement instead of the hold-repeat timer.
+  private pressDirection: 1 | -1 | 0 = 0;
+  private pressStartX = 0;
+  private pressStartValue = 0;
+  private pressMoved = false;
+  private readonly windowMove: (event: PointerEvent) => void;
+  private readonly windowUp: () => void;
 
   constructor(options: NumberStepperOptions) {
     super();
@@ -87,19 +103,22 @@ export class NumberStepper extends Container implements Focusable {
     this.addChild(this.hintText);
 
     this.eventMode = "static";
-    this.cursor = "pointer";
+    this.cursor = "ew-resize";
     this.on("pointerover", () => {
       this.hovered = true;
       this.redraw();
     });
     this.on("pointerout", () => {
       this.hovered = false;
-      this.cancelRepeat();
       this.redraw();
     });
     this.on("pointerdown", (e: FederatedPointerEvent) => this.beginPress(e));
-    this.on("pointerup", () => this.cancelRepeat());
-    this.on("pointerupoutside", () => this.cancelRepeat());
+
+    // Drag tracking is bound at the window level so the pointer can leave
+    // the stepper's hit area mid-drag without losing the gesture. They're
+    // installed lazily on each press and torn down on release.
+    this.windowMove = (event) => this.handleDragMove(event);
+    this.windowUp = () => this.endPress();
 
     this.redraw();
   }
@@ -134,18 +153,59 @@ export class NumberStepper extends Container implements Focusable {
 
   override destroy(...args: Parameters<Container["destroy"]>): void {
     this.cancelRepeat();
+    window.removeEventListener("pointermove", this.windowMove);
+    window.removeEventListener("pointerup", this.windowUp);
+    window.removeEventListener("pointercancel", this.windowUp);
     super.destroy(...args);
   }
 
   private beginPress(e: FederatedPointerEvent): void {
     const local = this.toLocal(e.global);
     const dir: 1 | -1 = local.x < this.w / 2 ? -1 : 1;
-    this.applyStep(dir);
-    // Hold-to-repeat: an initial pause prevents accidental double-stepping
-    // on a quick tap, then the interval fires until release.
+    this.pressDirection = dir;
+    this.pressStartX = e.global.x;
+    this.pressStartValue = this.value;
+    this.pressMoved = false;
+    // Hold-to-repeat is armed but only fires if the press becomes a drag
+    // never crosses the drag threshold. The actual click-step happens on
+    // release once we know whether the user dragged or tapped.
     this.repeatTimer = setTimeout(() => {
-      this.repeatInterval = setInterval(() => this.applyStep(dir), REPEAT_INTERVAL_MS);
+      if (!this.pressMoved) {
+        this.repeatInterval = setInterval(() => this.applyStep(dir), REPEAT_INTERVAL_MS);
+      }
     }, REPEAT_INITIAL_MS);
+    window.addEventListener("pointermove", this.windowMove);
+    window.addEventListener("pointerup", this.windowUp);
+    window.addEventListener("pointercancel", this.windowUp);
+  }
+
+  private handleDragMove(event: PointerEvent): void {
+    if (this.pressDirection === 0) return;
+    const dx = event.clientX - this.pressStartX;
+    if (!this.pressMoved && Math.abs(dx) >= DRAG_THRESHOLD_PX) {
+      this.pressMoved = true;
+      // Once a drag begins, cancel the hold-repeat so it doesn't double up
+      // with movement-driven stepping.
+      this.cancelRepeat();
+    }
+    if (!this.pressMoved) return;
+    const stepsTravelled = Math.trunc(dx / DRAG_PIXELS_PER_STEP);
+    const next = this.pressStartValue + stepsTravelled * this.step;
+    this.setValue(next);
+  }
+
+  private endPress(): void {
+    window.removeEventListener("pointermove", this.windowMove);
+    window.removeEventListener("pointerup", this.windowUp);
+    window.removeEventListener("pointercancel", this.windowUp);
+    const wasDrag = this.pressMoved;
+    const dir = this.pressDirection;
+    this.cancelRepeat();
+    this.pressDirection = 0;
+    this.pressMoved = false;
+    // Tap-without-drag: fire the increment/decrement step once. Drag
+    // releases already settled on a value, no follow-up step needed.
+    if (!wasDrag && dir !== 0) this.applyStep(dir);
   }
 
   private cancelRepeat(): void {

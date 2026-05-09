@@ -71,6 +71,8 @@ export interface SkinTunerScreenOptions {
   canvas?: HTMLCanvasElement;
   /** Optional starting code (e.g. via `?code=…`). */
   initialCode?: string;
+  /** Wire the in-tuner BACK button to host-driven navigation. */
+  onBack?(): void;
 }
 
 // Each form control registers a `pull` closure with the screen so a
@@ -86,7 +88,7 @@ export class SkinTunerScreen extends Container implements Screen {
   private readonly panel: Panel;
   private readonly panelInner: Container;
   private readonly codeText: Text;
-  private readonly noSkinBtn: Button;
+  private readonly backBtn: Button | null;
   private readonly tickCallback: TickerCallback<unknown>;
   private readonly scrollMask: Graphics;
   private readonly pulls: Pull[] = [];
@@ -163,14 +165,21 @@ export class SkinTunerScreen extends Container implements Screen {
       },
     });
 
-    // Hold a reference so `setLabel` reflects the toggled state when
-    // re-renders bypass the in-section build closure.
-    this.noSkinBtn = new Button({
-      label: this.skinsActive ? "NO-SKIN PRESET" : "[NO-SKIN PRESET]",
-      width: ROW_WIDTH,
-      height: 28,
-      onActivate: () => this.toggleSkins(),
-    });
+    // BACK lives outside the scrolling panel so it stays reachable
+    // from any scroll position. Conditional because the screen is also
+    // mounted directly via deep-link in tests / standalone harnesses
+    // where there's no host nav.
+    if (options.onBack) {
+      this.backBtn = new Button({
+        label: "← BACK",
+        width: 100,
+        height: 32,
+        onActivate: options.onBack,
+      });
+      this.addChild(this.backBtn);
+    } else {
+      this.backBtn = null;
+    }
 
     this.buildPanel();
     this.applyAll();
@@ -180,9 +189,16 @@ export class SkinTunerScreen extends Container implements Screen {
   }
 
   layout(viewWidth: number, viewHeight: number): void {
+    // BACK pinned to the top-left when present; the panel slides down to
+    // make room so the title still reads cleanly.
+    const topInset = this.backBtn ? this.backBtn.height + spacing.sm : 0;
+    if (this.backBtn) {
+      this.backBtn.x = spacing.md;
+      this.backBtn.y = spacing.md;
+    }
     this.panel.x = spacing.md;
-    this.panel.y = spacing.md;
-    const panelH = Math.max(200, viewHeight - spacing.md * 2);
+    this.panel.y = spacing.md + topInset;
+    const panelH = Math.max(200, viewHeight - spacing.md * 2 - topInset);
     this.panel.resize(PANEL_WIDTH, panelH);
     this.maskHeight = panelH;
     this.scrollMask.clear().rect(0, 0, PANEL_WIDTH, panelH).fill({ color: 0xffffff });
@@ -263,35 +279,49 @@ export class SkinTunerScreen extends Container implements Screen {
     root.add(title);
     root.add(this.codeText);
 
-    // Three full-width action buttons. Stack so the spacing between
-    // them is consistent without per-button arithmetic.
-    const actions = new Stack({ direction: "vertical", gap: spacing.xs });
+    // Two paired action buttons (ROLL / RESET). Half the row each so
+    // they're visually parallel and the eye doesn't read them as a
+    // mini-list of options. Sized exactly to ROW_WIDTH so they line up
+    // with the section content below.
+    const actionGap = spacing.xs;
+    const actionWidth = Math.floor((ROW_WIDTH - actionGap) / 2);
+    const actions = new Stack({ direction: "horizontal", gap: actionGap });
     actions.add(
       new Button({
-        label: "ROLL RANDOM CODE",
-        width: ROW_WIDTH,
+        label: "ROLL CODE",
+        width: actionWidth,
         height: 28,
         onActivate: () => this.rollNewCode(),
       }),
     );
-    actions.add(this.noSkinBtn);
     actions.add(
       new Button({
-        label: "RESET TUNABLES",
-        width: ROW_WIDTH,
+        label: "RESET",
+        width: actionWidth,
         height: 28,
         onActivate: () => this.resetTunables(),
       }),
     );
     root.add(actions);
 
-    // AXES — header + a horizontal stack of toggle chips. Inline group,
-    // so ToggleChip is the right primitive over a per-row Cycle.
-    root.add(new SectionHeader("AXES"));
-    const axisRow = new Stack({ direction: "horizontal", gap: spacing.xs });
+    // TOGGLES — SKIN gates the whole shader stack; PATTERN / TINT /
+    // FINISH gate individual layers. Bundled together because they're
+    // visual on/off switches rather than form values.
+    root.add(new SectionHeader("TOGGLES"));
+    const togglesRow = new Stack({ direction: "horizontal", gap: spacing.xs });
+    togglesRow.add(
+      new ToggleChip({
+        label: "SKIN",
+        active: this.skinsActive,
+        onChange: (active) => {
+          this.skinsActive = active;
+          this.applyAll();
+        },
+      }),
+    );
     const axisKeys: ReadonlyArray<keyof Axes> = ["pattern", "tint", "finish"];
     for (const key of axisKeys) {
-      axisRow.add(
+      togglesRow.add(
         new ToggleChip({
           label: String(key).toUpperCase(),
           active: this.axes[key],
@@ -302,7 +332,7 @@ export class SkinTunerScreen extends Container implements Screen {
         }),
       );
     }
-    root.add(axisRow);
+    root.add(togglesRow);
 
     // PATTERN
     root.add(new SectionHeader("PATTERN"));
@@ -587,6 +617,10 @@ export class SkinTunerScreen extends Container implements Screen {
       value: binding.read(),
       onChange: binding.write,
       width: CONTROL_WIDTH,
+      // Position indicator helps when the values aren't self-numbered
+      // (FINISH, BODY, PALETTE), and is harmless when they are (PATTERN
+      // labels are P0..PN, the N/M echo just confirms the bound).
+      showIndex: true,
     });
     this.pulls.push(() => cycle.setValue(binding.read(), true));
     return new LabelRow({ label, control: cycle, width: ROW_WIDTH, height: LABEL_ROW_HEIGHT });
@@ -618,12 +652,6 @@ export class SkinTunerScreen extends Container implements Screen {
   }
 
   // ─── State ──────────────────────────────────────────────────────────
-
-  private toggleSkins(): void {
-    this.skinsActive = !this.skinsActive;
-    this.noSkinBtn.setLabel(this.skinsActive ? "NO-SKIN PRESET" : "[NO-SKIN PRESET]");
-    this.applyAll();
-  }
 
   private rollNewCode(): void {
     this.code = rollCode(this.nextRand);
