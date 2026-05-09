@@ -12,6 +12,7 @@ import {
 } from "../anim/index.js";
 import { attachFocusNavSfx, playSfx } from "../audio/index.js";
 import { CARD_H, CARD_W, CardView, cardKey, SUIT_GLYPH } from "../cards/CardView.js";
+import type { ConnectionStatus } from "../net/wsClient.js";
 import { appStore, type RoomMembership, type ServerError } from "../store.js";
 import type { Screen } from "./types.js";
 
@@ -341,6 +342,14 @@ export interface GameScreenOptions {
   subscribeError?: (listener: (error: ServerError | null) => void) => () => void;
   initialRoom?: RoomMembership | null;
   subscribeRoom?: (listener: (room: RoomMembership | null) => void) => () => void;
+  /**
+   * Connection status. When the wsClient is mid-reconnect (status !==
+   * "open"), the GameScreen renders a RECONNECTING badge and suspends
+   * keyboard activation so user inputs aren't silently dropped.
+   */
+  initialConnectionStatus?: ConnectionStatus;
+  subscribeConnection?: (listener: (status: ConnectionStatus) => void) => () => void;
+  setError?: (code: string, message: string) => void;
   ticker?: Ticker;
   now?: () => number;
 }
@@ -378,6 +387,10 @@ export class GameScreen extends Container implements Screen {
   private readonly subscribeErrorUnsub: (() => void) | null;
   private readonly detachFocusNavSfx: () => void;
   private readonly subscribeRoomUnsub: (() => void) | null;
+  private readonly subscribeConnectionUnsub: (() => void) | null;
+  private readonly setError: (code: string, message: string) => void;
+  private connectionStatus: ConnectionStatus;
+  private reconnectingBanner: Container | null = null;
   private readonly now: () => number;
   private room: RoomMembership | null = null;
   private readonly ticker: Ticker;
@@ -590,6 +603,24 @@ export class GameScreen extends Container implements Screen {
     this.room = options.initialRoom ?? appStore.getState().room;
     this.subscribeRoomUnsub = subscribeRoom((room) => this.handleRoom(room));
 
+    // Connection state. When status flips off "open" the reconnecting
+    // banner shows + FocusManager is suspended so Enter / arrow inputs
+    // can't fire SFX or dispatch actions that would silently drop.
+    this.setError = options.setError ?? ((c, m) => appStore.getState().setError(c, m));
+    this.connectionStatus =
+      options.initialConnectionStatus ?? appStore.getState().connection.status;
+    const subscribeConnection =
+      options.subscribeConnection ??
+      ((listener) =>
+        appStore.subscribe((next, prev) => {
+          if (next.connection.status !== prev.connection.status) {
+            listener(next.connection.status);
+          }
+        }));
+    this.subscribeConnectionUnsub = subscribeConnection((status) =>
+      this.handleConnectionStatus(status),
+    );
+
     this.now = options.now ?? (() => Date.now());
 
     this.ticker = options.ticker ?? Ticker.shared;
@@ -600,6 +631,10 @@ export class GameScreen extends Container implements Screen {
     this.detachFocusNavSfx = attachFocusNavSfx(this.focus);
     this.render();
     this.renderDisconnectBanner();
+    // Sync the focus suspension to whatever status we booted with.
+    // If the screen is constructed mid-reconnect (e.g. on a hot reload),
+    // start in the suspended state so Enter doesn't fire spurious actions.
+    this.applyConnectionStatus();
   }
 
   layout(viewWidth: number, viewHeight: number): void {
@@ -613,12 +648,77 @@ export class GameScreen extends Container implements Screen {
     this.subscribeUnsub?.();
     this.subscribeEventsUnsub?.();
     this.subscribeErrorUnsub?.();
+    this.subscribeConnectionUnsub?.();
     this.detachFocusNavSfx();
     this.subscribeRoomUnsub?.();
     this.ticker.remove(this.tickCallback);
     this.cancelAnims();
     this.focus.detach();
     this.focus.clear();
+  }
+
+  private handleConnectionStatus(status: ConnectionStatus): void {
+    if (this.connectionStatus === status) return;
+    this.connectionStatus = status;
+    this.applyConnectionStatus();
+  }
+
+  private applyConnectionStatus(): void {
+    // Only suspend when the connection is actively dropped or
+    // mid-recovery. "idle" (controller not started) and "open" both
+    // accept input — the suspend is for the closed → connecting →
+    // error transitions where the wsClient is mid-retry and the
+    // sender would silently drop.
+    const offline =
+      this.connectionStatus === "closed" ||
+      this.connectionStatus === "connecting" ||
+      this.connectionStatus === "error";
+    if (offline) {
+      this.focus.suspend();
+      this.showReconnectingBanner();
+    } else {
+      this.focus.resume();
+      this.hideReconnectingBanner();
+    }
+  }
+
+  private showReconnectingBanner(): void {
+    if (this.reconnectingBanner !== null) return;
+    const banner = new Container();
+    banner.label = "reconnecting-banner";
+    const bg = new Graphics();
+    const text = new Text({
+      text: "RECONNECTING…",
+      style: {
+        fontFamily: typography.family,
+        fontSize: typography.size.sm,
+        fontWeight: typography.weight.bold,
+        fill: color.text,
+        letterSpacing: typography.letterSpacing.wide,
+      },
+    });
+    const padX = spacing.md;
+    const padY = spacing.xs;
+    const w = Math.round(text.width + padX * 2);
+    const h = Math.round(text.height + padY * 2);
+    bg.roundRect(0, 0, w, h, 4)
+      .fill({ color: color.bgRaised })
+      .stroke({ color: color.accent, width: 2, alignment: 0 });
+    text.x = padX;
+    text.y = padY;
+    banner.addChild(bg);
+    banner.addChild(text);
+    banner.x = Math.round((this.viewWidth - w) / 2);
+    banner.y = SECTION_PADDING;
+    this.addChild(banner);
+    this.reconnectingBanner = banner;
+  }
+
+  private hideReconnectingBanner(): void {
+    if (this.reconnectingBanner === null) return;
+    this.removeChild(this.reconnectingBanner);
+    this.reconnectingBanner.destroy({ children: true });
+    this.reconnectingBanner = null;
   }
 
   update(snapshot: Snapshot | null): void {
@@ -1637,7 +1737,13 @@ export class GameScreen extends Container implements Screen {
     if (!snapshot) return;
     if (this.isSpectating(snapshot)) return;
     const action = legalPlay(snapshot, card);
-    if (!action) return;
+    if (!action) {
+      // The card was legal when it got focus but a snapshot arrived
+      // between then and Enter — give the player a visible reason
+      // their input went nowhere instead of just an SFX-and-silence.
+      this.setError("MOVE_NO_LONGER_LEGAL", "That move is no longer legal.");
+      return;
+    }
     this.submitAction(action);
   }
 }

@@ -259,6 +259,33 @@ interface InternalState extends AppState {
   __sender: ClientSender | null;
 }
 
+// Single-source connection-status guard for every outbound action.
+// Pre-DUR-67 each call site had its own `console.warn + return` which
+// the user couldn't see. Now we surface a `lastError` instead — the
+// existing GameScreen / LobbyScreen error subscriptions render that as
+// a toast, so the player gets feedback that their click went nowhere
+// and why.
+function dispatchClient(
+  get: () => AppState,
+  set: (partial: Partial<AppState>) => void,
+  label: string,
+  msg: ClientMessage,
+): void {
+  const state = get() as InternalState;
+  if (state.connection.status !== "open" || !state.__sender) {
+    console.warn(`[store] dropped ${label}; not connected`);
+    set({
+      lastError: {
+        code: "NOT_CONNECTED",
+        message: "Not connected — try again in a moment.",
+        seq: (state.lastError?.seq ?? 0) + 1,
+      },
+    });
+    return;
+  }
+  state.__sender(msg);
+}
+
 export const appStore = createStore<AppState>((set, get) => {
   const internal: InternalState = {
     phase: "menu",
@@ -376,38 +403,12 @@ export const appStore = createStore<AppState>((set, get) => {
     setSender: (sender) => {
       (get() as InternalState).__sender = sender;
     },
-    submitAction: (action) => {
-      const state = get() as InternalState;
-      if (state.connection.status !== "open" || !state.__sender) {
-        console.warn("[store] dropped submitAction; not connected", action);
-        return;
-      }
-      state.__sender({ type: "SubmitAction", action });
-    },
-    requestRematch: () => {
-      const state = get() as InternalState;
-      if (state.connection.status !== "open" || !state.__sender) {
-        console.warn("[store] dropped requestRematch; not connected");
-        return;
-      }
-      state.__sender({ type: "RequestRematch" });
-    },
-    startGame: () => {
-      const state = get() as InternalState;
-      if (state.connection.status !== "open" || !state.__sender) {
-        console.warn("[store] dropped startGame; not connected");
-        return;
-      }
-      state.__sender({ type: "StartGame" });
-    },
-    setBotDifficulty: (seat, difficulty) => {
-      const state = get() as InternalState;
-      if (state.connection.status !== "open" || !state.__sender) {
-        console.warn("[store] dropped setBotDifficulty; not connected");
-        return;
-      }
-      state.__sender({ type: "SetBotDifficulty", seat, difficulty });
-    },
+    submitAction: (action) =>
+      dispatchClient(get, set, "SubmitAction", { type: "SubmitAction", action }),
+    requestRematch: () => dispatchClient(get, set, "RequestRematch", { type: "RequestRematch" }),
+    startGame: () => dispatchClient(get, set, "StartGame", { type: "StartGame" }),
+    setBotDifficulty: (seat, difficulty) =>
+      dispatchClient(get, set, "SetBotDifficulty", { type: "SetBotDifficulty", seat, difficulty }),
     lobbyFocusHint: null,
     setLobbyFocusHint: (hint) => set({ lobbyFocusHint: hint }),
     toggleMute: () => {
