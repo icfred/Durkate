@@ -351,8 +351,6 @@ export class GameScreen extends Container implements Screen {
   private readonly turnLabel: Text;
   private readonly turnTimerBar: Graphics;
   private lastTimerTickSecond: number | null = null;
-  private readonly forcedActionBanner: Container;
-  private readonly forcedActionBg: Graphics;
   private readonly forcedActionText: Text;
   private readonly keyHint: Text;
   private readonly errorBanner: Container;
@@ -456,25 +454,22 @@ export class GameScreen extends Container implements Screen {
 
     // Forced-action affordance. When the player has no legal card play
     // (no defense, no throw-in) the only legal action is a single keybind
-    // — Take Pile, End Round, or Pass. This banner surfaces that action
-    // prominently so it doesn't get lost in the small key-hint text.
-    this.forcedActionBanner = new Container();
-    this.forcedActionBanner.label = "forced-action-banner";
-    this.forcedActionBanner.visible = false;
-    this.forcedActionBg = new Graphics();
+    // — Take Pile, End Round, or Pass. Rendered as bold accent-coloured
+    // text above the keyhint, no panel chrome — it has to read as part
+    // of the in-match HUD vocabulary, not a modal.
     this.forcedActionText = new Text({
       text: "",
       style: {
         fontFamily: typography.family,
-        fontSize: typography.size.lg,
+        fontSize: typography.size.md,
         fontWeight: typography.weight.bold,
-        fill: color.text,
+        fill: color.accent,
         letterSpacing: typography.letterSpacing.wide,
       },
     });
-    this.forcedActionBanner.addChild(this.forcedActionBg);
-    this.forcedActionBanner.addChild(this.forcedActionText);
-    this.addChild(this.forcedActionBanner);
+    this.forcedActionText.label = "forced-action-text";
+    this.forcedActionText.visible = false;
+    this.addChild(this.forcedActionText);
 
     this.errorBanner = new Container();
     this.errorBanner.label = "error-banner";
@@ -852,7 +847,7 @@ export class GameScreen extends Container implements Screen {
       this.spectatorBanner.visible = false;
       this.turnLabel.visible = false;
       this.keyHint.visible = false;
-      this.forcedActionBanner.visible = false;
+      this.forcedActionText.visible = false;
       this.turnTimerBar.visible = false;
       this.turnPulseActive = false;
       return;
@@ -1202,9 +1197,13 @@ export class GameScreen extends Container implements Screen {
 
   private layoutTurnTimer(): void {
     if (!this.turnTimerBar.visible) return;
-    // Sit centered just below the turn label.
+    // Sit centered above the turn label, not below. Below-the-label
+    // placed the bar between the label and the table card row, where
+    // it z-fought the card stack on tight viewports. Anchoring above
+    // the label keeps the bar well clear of the table while still
+    // reading as a header for the same "your turn" cluster.
     this.turnTimerBar.x = Math.round((this.viewWidth - TURN_BAR_W) / 2);
-    this.turnTimerBar.y = this.turnLabel.y + this.turnLabel.height + spacing.xs;
+    this.turnTimerBar.y = this.turnLabel.y - TURN_BAR_H - spacing.xs;
   }
 
   private renderTurnLabel(snapshot: Snapshot): void {
@@ -1221,40 +1220,30 @@ export class GameScreen extends Container implements Screen {
     this.renderForcedAction(snapshot);
   }
 
-  // Surface a prominent banner when the only legal move for the local
-  // player is a single keybind (Take Pile / End Round / Pass) — i.e. no
-  // legal card play exists. This sits between the table and the hand so
-  // the player sees the forced action without scanning the keyhint text.
+  // Surface the only legal action when the player has no card play
+  // (Take Pile / End Round / Pass). Rendered as bold accent-colored
+  // text that sits above the keyhint — same visual vocabulary as the
+  // turn label, no panel chrome. The hint text below picks up the
+  // same keybind so the keyboard cue is reinforced rather than
+  // duplicated.
   private renderForcedAction(snapshot: Snapshot): void {
     const forced = forcedActionFor(snapshot, this.room?.pendingClose ?? null);
     if (!forced) {
-      this.forcedActionBanner.visible = false;
+      this.forcedActionText.visible = false;
       return;
     }
     this.forcedActionText.text = `${forced.label}  [${forced.key}]`;
-    const padX = spacing.lg;
-    const padY = spacing.sm;
-    const w = Math.round(this.forcedActionText.width + padX * 2);
-    const h = Math.round(this.forcedActionText.height + padY * 2);
-    this.forcedActionBg
-      .clear()
-      .roundRect(0, 0, w, h, 6)
-      .fill({ color: color.bgRaised })
-      .stroke({ color: color.accent, width: 2, alignment: 0 });
-    this.forcedActionText.x = padX;
-    this.forcedActionText.y = padY;
-    this.forcedActionBanner.visible = true;
-    this.layoutForcedActionBanner();
+    this.forcedActionText.visible = true;
+    this.layoutForcedAction();
   }
 
-  private layoutForcedActionBanner(): void {
-    if (!this.forcedActionBanner.visible) return;
-    const w = this.forcedActionBg.width;
-    this.forcedActionBanner.x = Math.round((this.viewWidth - w) / 2);
-    // Sit just below the table row so it's visually grouped with the
-    // current bout, not the hand. tableRow.y is the top of the table.
-    const tableBottomY = this.tableRow.y + CARD_H + Math.round(CARD_H * 0.4);
-    this.forcedActionBanner.y = tableBottomY + spacing.md;
+  private layoutForcedAction(): void {
+    if (!this.forcedActionText.visible) return;
+    this.forcedActionText.x = Math.round((this.viewWidth - this.forcedActionText.width) / 2);
+    // Anchor the affordance directly above the keyhint so the player's
+    // eye walks: hand → keyhint → forced action. Keeps the in-bout
+    // table area clean and never collides with cards.
+    this.forcedActionText.y = this.keyHint.y - this.forcedActionText.height - spacing.sm;
   }
 
   private layoutSections(): void {
@@ -1277,8 +1266,6 @@ export class GameScreen extends Container implements Screen {
     // adding a card no longer shifts the cards already on the table.
     this.tableRow.x = Math.round(this.viewWidth / 2);
     this.tableRow.y = Math.round(this.viewHeight / 2 - CARD_H / 2);
-
-    this.layoutForcedActionBanner();
 
     this.leftStack.x = SECTION_PADDING;
     this.leftStack.y = Math.round(this.viewHeight / 2 - CARD_H / 2);
@@ -1313,6 +1300,7 @@ export class GameScreen extends Container implements Screen {
       (this.spectatorBanner.visible ? this.spectatorBanner.y : this.myHandRow.y) -
       this.keyHint.height -
       handTopClearance;
+    this.layoutForcedAction();
 
     if (this.errorBanner.visible) {
       const bw = this.errorBanner.width;
@@ -1711,6 +1699,12 @@ function forcedActionFor(
   if (seat === attacker) {
     if (table.length === 0) return null;
     if (hasLegalThrowIn(snapshot)) return null;
+    // END ROUND is only legal once every attack on the table is
+    // defended — the engine rejects it otherwise. Without this guard
+    // the banner shows "END ROUND" while the defender is still
+    // working through undefended attacks, which both reads as
+    // premature and would error if the player actually pressed E.
+    if (table.some((p) => !p.defense)) return null;
     return { label: "END ROUND", key: "E" };
   }
   return null;

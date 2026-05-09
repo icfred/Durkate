@@ -88,11 +88,10 @@ const takepile: Snapshot = {
   talonCount: 12,
   trump,
   trumpSuit,
-  table: [
-    { attack: { suit: "diamonds", rank: 6 } },
-    { attack: { suit: "clubs", rank: 6 } },
-    { attack: { suit: "spades", rank: 6 } },
-  ],
+  // Single undefended trump-ace attack — nothing in the standard deck
+  // beats a trump 14, so the defender's only legal action is TAKE PILE.
+  // Drives the forced-action affordance for fixture-based testing.
+  table: [{ attack: { suit: "hearts", rank: 14 } }],
   attacker: 0,
   defender: 1,
   discard: [
@@ -103,7 +102,7 @@ const takepile: Snapshot = {
   you: {
     seat: 1,
     hand: [
-      { suit: "diamonds", rank: 7 },
+      { suit: "spades", rank: 7 },
       { suit: "clubs", rank: 8 },
     ],
   },
