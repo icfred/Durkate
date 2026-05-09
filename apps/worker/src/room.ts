@@ -17,6 +17,7 @@ import {
   type CreateRoomResponse,
   type DisconnectState,
   type ErrorMessage,
+  type MatchState,
   type PendingCloseState,
   parseClientMessage,
   type RoomSeat,
@@ -51,6 +52,10 @@ interface PersistedRoom {
   pendingCloseBy?: SeatIndex | null;
   botFanOut?: { seat: SeatIndex; at: number }[];
   lobbyHold?: boolean;
+  totalRounds?: number;
+  currentRound?: number;
+  scores?: number[];
+  matchOver?: boolean;
   // Legacy fields kept for back-compat parsing only.
   mode?: "human" | "bot";
   botSeat?: SeatIndex | null;
@@ -73,6 +78,11 @@ interface InitRequestBody {
    * connects with a bot-seat token replaces that bot.
    */
   lobbyHold?: boolean;
+  /**
+   * Best-of-N rounds. Defaults to 1 (single game, legacy semantics).
+   * Capped at 9 by the protocol layer.
+   */
+  rounds?: number;
 }
 
 const TOKEN_BYTES = 32;
@@ -137,6 +147,19 @@ export class Room extends DurableObject<Env> {
   private botDifficulty: BotDifficulty = DEFAULT_BOT_DIFFICULTY;
   private rematchSeats: boolean[] = [false, false];
   private disconnects: DisconnectState[] = [];
+  // Best-of-N match state. `totalRounds === 1` means legacy single-game
+  // behaviour: rematch resets via the existing flow, no inter-round
+  // screen. For `totalRounds > 1` the host advances rounds via the
+  // `StartGame` ws message after each game-over, with `scores[seat]`
+  // tracking the durak count per seat across the match.
+  private totalRounds = 1;
+  private currentRound = 1;
+  private scores: number[] = [];
+  private matchOver = false;
+  // True once the current round's durak has been recorded into `scores`.
+  // Resets when the next round starts. Prevents double-counting if
+  // `bumpStaleIfFinished` is called multiple times while in game-over.
+  private currentRoundScored = false;
   // FFA throw-in window (ADR-0011). When non-null, the engine has not yet
   // applied the stored kind — it sits behind a `close-window` alarm that
   // fires after `closesAt`. THROW_IN extends, PASS appends, every active
@@ -230,6 +253,13 @@ export class Room extends DurableObject<Env> {
       (persisted.botFanOut ?? []).map((entry) => [entry.seat, entry.at] as const),
     );
     this.lobbyHold = persisted.lobbyHold ?? false;
+    this.totalRounds = persisted.totalRounds ?? 1;
+    this.currentRound = persisted.currentRound ?? 1;
+    this.scores = persisted.scores ?? new Array<number>(this.playerCount).fill(0);
+    if (this.scores.length !== this.playerCount) {
+      this.scores = new Array<number>(this.playerCount).fill(0);
+    }
+    this.matchOver = persisted.matchOver ?? false;
     this.alarms.load(persisted.deadlines);
   }
 
@@ -266,6 +296,14 @@ export class Room extends DurableObject<Env> {
     this.rematchSeats = new Array<boolean>(playerCount).fill(false);
     this.botDifficulty = parseDifficulty(body.difficulty);
     this.lobbyHold = body.lobbyHold === true;
+    const requestedRounds = Number(body.rounds);
+    this.totalRounds =
+      Number.isInteger(requestedRounds) && requestedRounds >= 1 && requestedRounds <= 9
+        ? requestedRounds
+        : 1;
+    this.currentRound = 1;
+    this.scores = new Array<number>(playerCount).fill(0);
+    this.matchOver = false;
     // Bots fill seats from the back so seat 0 stays human (the host).
     // Pick distinct display names from the pool so no two bots in the
     // room share a name (avoids the confusing "× 5 vs Bot 1" UI).
@@ -634,11 +672,32 @@ export class Room extends DurableObject<Env> {
       this.pendingCloseBy = null;
       this.botFanOut.clear();
       this.botChainCount = 0;
+      this.recordRoundResult();
       if (!this.alarms.has("stale")) {
         this.alarms.schedule("stale", Date.now() + STALE_MS);
       }
     } else {
       this.alarms.cancel("stale");
+    }
+  }
+
+  // Record the just-finished round's durak into `scores` and check if
+  // the match is over. Idempotent — guarded by `currentRoundScored` so
+  // repeated calls (every action while in game-over re-runs
+  // `bumpStaleIfFinished`) don't double-count. No-op for single-round
+  // rooms (`totalRounds === 1`) which keep legacy semantics.
+  private recordRoundResult(): void {
+    if (this.totalRounds <= 1) return;
+    if (this.currentRoundScored) return;
+    if (this.engineState === null || this.engineState.phase !== "game-over") return;
+    const durak = this.engineState.durak;
+    if (durak !== null && durak >= 0 && durak < this.scores.length) {
+      const prev = this.scores[durak] ?? 0;
+      this.scores[durak] = prev + 1;
+    }
+    this.currentRoundScored = true;
+    if (this.currentRound >= this.totalRounds) {
+      this.matchOver = true;
     }
   }
 
@@ -825,22 +884,57 @@ export class Room extends DurableObject<Env> {
     return { ok: true };
   }
 
-  // Host (seat 0) presses "start" in the FFA lobby. Releases the
-  // lobbyHold flag and fires the same auto-start check the WS upgrade
-  // path runs — so the game begins immediately when both conditions
-  // (all seats filled + everyone connected) already held.
+  // Host (seat 0) presses "start". Two responsibilities:
+  //   1. Releases the FFA lobby hold and starts round 1, OR
+  //   2. Advances to the next round in a multi-round match after a
+  //      game-over (totalRounds > 1, !matchOver).
+  // Either path is host-only and rejects if the precondition isn't met.
   private releaseLobbyHold(
     seat: SeatIndex,
   ): { ok: true } | { ok: false; reason: "FORBIDDEN_ACTION" } {
-    if (this.engineState !== null) return { ok: false, reason: "FORBIDDEN_ACTION" };
-    if (!this.lobbyHold) return { ok: false, reason: "FORBIDDEN_ACTION" };
     if (seat !== 0) return { ok: false, reason: "FORBIDDEN_ACTION" };
-    this.lobbyHold = false;
-    this.broadcastRoomState();
-    if (this.allSeatsFilled() && this.attachedSeatCount() === this.playerCount) {
-      this.startGame(newSeed());
+    // Path 1: lobby hold release (round 1 of a fresh room).
+    if (this.lobbyHold) {
+      if (this.engineState !== null) return { ok: false, reason: "FORBIDDEN_ACTION" };
+      this.lobbyHold = false;
+      this.broadcastRoomState();
+      if (this.allSeatsFilled() && this.attachedSeatCount() === this.playerCount) {
+        this.startGame(newSeed());
+      }
+      return { ok: true };
     }
-    return { ok: true };
+    // Path 2: advance to the next round of a multi-round match.
+    if (
+      this.totalRounds > 1 &&
+      !this.matchOver &&
+      this.engineState !== null &&
+      this.engineState.phase === "game-over"
+    ) {
+      this.advanceToNextRound();
+      return { ok: true };
+    }
+    return { ok: false, reason: "FORBIDDEN_ACTION" };
+  }
+
+  // Advance the match to the next round: bump `currentRound`, clear the
+  // engine, and start a fresh game with the same seats. Called from
+  // `StartGame` (host's "next round" press) after a game-over scored.
+  private advanceToNextRound(): void {
+    this.cancelTurnTimer();
+    this.alarms.cancel("stale");
+    this.alarms.cancel("bot-think");
+    this.alarms.cancel("close-window");
+    this.botChainCount = 0;
+    this.pendingClose = null;
+    this.pendingCloseBy = null;
+    this.botFanOut.clear();
+    this.pendingThrowIn = null;
+    this.engineState = null;
+    this.rematchSeats = new Array<boolean>(this.playerCount).fill(false);
+    this.currentRound += 1;
+    this.currentRoundScored = false;
+    this.broadcastRoomState();
+    this.startGame(newSeed());
   }
 
   private shouldFireRematch(): boolean {
@@ -866,6 +960,13 @@ export class Room extends DurableObject<Env> {
     this.pendingThrowIn = null;
     this.engineState = null;
     this.rematchSeats = new Array<boolean>(this.playerCount).fill(false);
+    // Rematch always restarts the entire match — zero scores, back to
+    // round 1, matchOver cleared. Single-round rooms keep `totalRounds`
+    // as 1 so this is a no-op for legacy flow.
+    this.currentRound = 1;
+    this.scores = new Array<number>(this.playerCount).fill(0);
+    this.matchOver = false;
+    this.currentRoundScored = false;
     this.broadcastRoomState();
     this.startGame(newSeed());
   }
@@ -1416,6 +1517,17 @@ export class Room extends DurableObject<Env> {
     // close window — the close-window banner already owns the visible
     // timer in that state.
     const turnDeadline = pendingClose === null ? (this.alarms.get("turn-timeout") ?? null) : null;
+    // Match block — only attached when this is a multi-round room. Single-
+    // round rooms (totalRounds === 1) keep the legacy field shape.
+    const match: MatchState | null =
+      this.totalRounds > 1
+        ? {
+            currentRound: this.currentRound,
+            totalRounds: this.totalRounds,
+            scores: this.scores.slice(),
+            matchOver: this.matchOver,
+          }
+        : null;
     for (const ws of this.ctx.getWebSockets()) {
       const seat = this.seatForWebSocket(ws);
       if (seat === undefined) continue;
@@ -1431,6 +1543,7 @@ export class Room extends DurableObject<Env> {
         eliminated,
         pendingClose,
         turnDeadline,
+        match,
       };
       this.send(ws, msg);
     }
@@ -1506,6 +1619,10 @@ export class Room extends DurableObject<Env> {
       pendingCloseBy: this.pendingCloseBy,
       botFanOut: Array.from(this.botFanOut.entries()).map(([seat, at]) => ({ seat, at })),
       lobbyHold: this.lobbyHold,
+      totalRounds: this.totalRounds,
+      currentRound: this.currentRound,
+      scores: this.scores.slice(),
+      matchOver: this.matchOver,
     };
     await this.ctx.storage.put(STORAGE_KEY, snapshot);
   }

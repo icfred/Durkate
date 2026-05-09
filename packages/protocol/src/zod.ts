@@ -174,6 +174,13 @@ const pendingCloseStateSchema = z.object({
   passed: z.array(seatSchema),
 });
 
+const matchStateSchema = z.object({
+  currentRound: z.number().int().min(1),
+  totalRounds: z.number().int().min(1),
+  scores: z.array(z.number().int().nonnegative()),
+  matchOver: z.boolean(),
+});
+
 export const roomStateMessageSchema = z.object({
   type: z.literal("RoomState"),
   roomId: z.string(),
@@ -186,6 +193,7 @@ export const roomStateMessageSchema = z.object({
   eliminated: z.array(seatSchema).optional(),
   pendingClose: pendingCloseStateSchema.nullable().optional(),
   turnDeadline: z.number().nullable().optional(),
+  match: matchStateSchema.nullable().optional(),
 });
 
 export const serverMessageSchema = z.discriminatedUnion("type", [

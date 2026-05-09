@@ -278,6 +278,7 @@ describe("createConnectionController", () => {
       eliminated: [],
       pendingClose: null,
       turnDeadline: null,
+      match: null,
     });
     stop();
   });

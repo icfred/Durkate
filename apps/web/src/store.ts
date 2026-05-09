@@ -3,6 +3,7 @@ import type {
   BotDifficulty,
   ClientMessage,
   DisconnectState,
+  MatchState,
   PendingCloseState,
   RoomSeat,
   SeatIndex,
@@ -73,6 +74,13 @@ export interface RoomMembership {
    * window — that banner owns the visible countdown in that state.
    */
   turnDeadline: number | null;
+  /**
+   * Best-of-N match state. Null on legacy single-round rooms — clients
+   * fall back to the existing rematch flow. Populated when the server
+   * is running a multi-round match (totalRounds > 1). Optional in the
+   * interface so existing test fixtures don't need updating.
+   */
+  match?: MatchState | null;
 }
 
 export type RoomCreationState =

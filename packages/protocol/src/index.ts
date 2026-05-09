@@ -27,6 +27,7 @@ export type {
   DisconnectState,
   ErrorMessage,
   EventsMessage,
+  MatchState,
   PendingCloseState,
   RoomSeat,
   RoomStateMessage,

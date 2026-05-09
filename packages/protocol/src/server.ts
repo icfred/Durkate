@@ -39,6 +39,21 @@ export interface PendingCloseState {
   passed: SeatIndex[];
 }
 
+/**
+ * Best-of-N match state. `currentRound` is 1-indexed and refers to the
+ * round currently in play (or just completed if the match itself is
+ * done). `scores[seat]` is that seat's "durak count" — the number of
+ * rounds in which they ended up the durak. The match winner is the seat
+ * with the lowest score (fewest losses). `totalRounds` is the cap.
+ */
+export interface MatchState {
+  currentRound: number;
+  totalRounds: number;
+  scores: number[];
+  /** True once the match itself is complete (winner decided). */
+  matchOver: boolean;
+}
+
 export interface RoomStateMessage {
   type: "RoomState";
   roomId: string;
@@ -67,6 +82,11 @@ export interface RoomStateMessage {
    * seat; a server-side alarm enforces the deadline.
    */
   turnDeadline?: number | null;
+  /**
+   * Best-of-N match state. Omitted on legacy single-round rooms so the
+   * client can fall back to its existing one-and-done flow.
+   */
+  match?: MatchState | null;
 }
 
 export type ServerMessage = SnapshotMessage | EventsMessage | ErrorMessage | RoomStateMessage;

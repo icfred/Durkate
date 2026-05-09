@@ -74,6 +74,7 @@ export function createConnectionController(
         eliminated: msg.eliminated ?? [],
         pendingClose: msg.pendingClose ?? null,
         turnDeadline: msg.turnDeadline ?? null,
+        match: msg.match ?? null,
       });
     },
     onStatus: (status, info) => {

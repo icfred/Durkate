@@ -14,6 +14,8 @@ export interface CreateRoomOptions {
    * the FFA flow so the host can review / share before play begins.
    */
   lobbyHold?: boolean | undefined;
+  /** Best-of-N rounds. Defaults to 1 (single game). Capped at 9. */
+  rounds?: number | undefined;
   serverUrl: string;
   /** Test seam: replaces global fetch. */
   fetchImpl?: typeof fetch;
@@ -37,6 +39,7 @@ export async function createRoom(options: CreateRoomOptions): Promise<CreateRoom
     botCount: number;
     difficulty?: BotDifficulty;
     lobbyHold?: boolean;
+    rounds?: number;
   } = {
     playerCount: options.playerCount,
     botCount: options.botCount,
@@ -45,6 +48,7 @@ export async function createRoom(options: CreateRoomOptions): Promise<CreateRoom
     body.difficulty = options.difficulty;
   }
   if (options.lobbyHold === true) body.lobbyHold = true;
+  if (options.rounds !== undefined && options.rounds > 1) body.rounds = options.rounds;
   let response: Response;
   try {
     response = await fetchImpl(url, {

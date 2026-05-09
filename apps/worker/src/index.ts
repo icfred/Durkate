@@ -136,12 +136,14 @@ const worker: ExportedHandler<Env> = {
         botCount: number;
         difficulty?: typeof normalized.difficulty;
         lobbyHold?: boolean;
+        rounds?: number;
       } = {
         playerCount: normalized.playerCount,
         botCount: normalized.botCount,
       };
       if (normalized.difficulty !== undefined) initBody.difficulty = normalized.difficulty;
       if (normalized.lobbyHold !== undefined) initBody.lobbyHold = normalized.lobbyHold;
+      if (normalized.rounds !== undefined) initBody.rounds = normalized.rounds;
       const initRes = await stub.fetch("https://room/init", {
         method: "POST",
         body: JSON.stringify(initBody),

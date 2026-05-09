@@ -23,6 +23,12 @@ export interface NPlayerCreateRoomRequest {
    * started until the host signals ready.
    */
   lobbyHold?: boolean | undefined;
+  /**
+   * Best-of-N rounds in the match. The match ends as soon as one seat
+   * has won more than half the rounds, OR all `rounds` have been played.
+   * Defaults to 1 (single-game), legacy semantics. Capped at 9.
+   */
+  rounds?: number | undefined;
 }
 
 export interface NormalizedCreateRoomRequest {
@@ -30,6 +36,7 @@ export interface NormalizedCreateRoomRequest {
   botCount: number;
   difficulty?: BotDifficulty | undefined;
   lobbyHold?: boolean | undefined;
+  rounds?: number | undefined;
 }
 
 export interface CreateRoomResponse {
@@ -69,6 +76,7 @@ export const nPlayerCreateRoomRequestSchema = z
     botCount: z.number().int().nonnegative(),
     difficulty: botDifficultySchema.optional(),
     lobbyHold: z.boolean().optional(),
+    rounds: z.number().int().min(1).max(9).optional(),
   })
   .refine((v) => v.botCount < v.playerCount, {
     message: "botCount must be < playerCount",
@@ -120,6 +128,7 @@ export function normalizeCreateRoomRequest(req: CreateRoomRequest): NormalizedCr
     };
     if (req.difficulty !== undefined) out.difficulty = req.difficulty;
     if (req.lobbyHold !== undefined) out.lobbyHold = req.lobbyHold;
+    if (req.rounds !== undefined) out.rounds = req.rounds;
     return out;
   }
   const out: NormalizedCreateRoomRequest = {
