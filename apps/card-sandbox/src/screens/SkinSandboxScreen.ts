@@ -133,8 +133,11 @@ export class SkinSandboxScreen extends Container implements Screen {
     const cols = Math.max(1, Math.floor((innerW + CELL_GAP) / (CELL_W + CELL_GAP)));
     const rows = Math.max(1, Math.floor((innerH + CELL_GAP) / (CELL_H + CELL_GAP)));
     const total = cols * rows;
-    const helpRow = Math.floor(rows / 2);
-    const helpCol = Math.floor(cols / 2);
+    // Help card pinned to the top-right cell — the calculated centre
+    // drifted with column count and never read as "the centre" on even
+    // grids. Top-right is unambiguous and consistent on every viewport.
+    const helpRow = 0;
+    const helpCol = cols - 1;
     const helpIndex = helpRow * cols + helpCol;
     this.cols = cols;
     this.rows = rows;
@@ -290,12 +293,9 @@ export class SkinSandboxScreen extends Container implements Screen {
     if (this.slots.length === 0 || this.cols === 0) return;
     let idx = this.focusedIndex;
     if (idx === -1) {
-      // Cold start — drop into the centre tile (the help card) so the
-      // first arrow press is predictable. The user said the "?" "always
-      // spawns in the middle", so anchoring focus there matches.
-      const helpRow = Math.floor(this.rows / 2);
-      const helpCol = Math.floor(this.cols / 2);
-      idx = helpRow * this.cols + helpCol;
+      // Cold start — drop focus on the help card so the first arrow
+      // press is predictable.
+      idx = this.cols - 1;
     } else {
       const row = Math.floor(idx / this.cols);
       const col = idx % this.cols;

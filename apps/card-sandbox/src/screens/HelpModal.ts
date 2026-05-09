@@ -3,8 +3,12 @@ import { Container, Graphics, Text } from "pixi.js";
 import type { Screen } from "./types.js";
 
 const PANEL_W = 480;
-const PANEL_H = 360;
+// Panel height computed at construction time from actual title + body +
+// button heights so we never see the close button overlap the last line
+// of the body, regardless of how many lines the explainer grows to.
 const BACKDROP_ALPHA = 0.7;
+const CLOSE_BTN_W = 160;
+const CLOSE_BTN_H = 44;
 
 export interface HelpModalOptions {
   onClose(): void;
@@ -17,6 +21,7 @@ export interface HelpModalOptions {
 export class HelpModal extends Container implements Screen {
   private readonly backdrop: Graphics;
   private readonly panel: Panel;
+  private readonly panelHeight: number;
   private readonly focus: FocusManager;
   private readonly detachEscape: () => void;
 
@@ -30,13 +35,6 @@ export class HelpModal extends Container implements Screen {
     this.backdrop.on("pointertap", () => options.onClose());
     this.addChild(this.backdrop);
 
-    this.panel = new Panel({ width: PANEL_W, height: PANEL_H });
-    // The panel itself swallows pointer events so backdrop clicks don't
-    // dismiss the modal when the user clicks inside the body.
-    this.panel.eventMode = "static";
-    this.panel.on("pointertap", (event) => event.stopPropagation());
-    this.addChild(this.panel);
-
     const title = new Text({
       text: "CARD SANDBOX",
       style: {
@@ -47,9 +45,6 @@ export class HelpModal extends Container implements Screen {
         letterSpacing: typography.letterSpacing.stamp,
       },
     });
-    title.x = Math.round((PANEL_W - title.width) / 2);
-    title.y = spacing.xl;
-    this.panel.addChild(title);
 
     const lines = [
       "A live showcase of the procedural card-back",
@@ -72,18 +67,37 @@ export class HelpModal extends Container implements Screen {
         lineHeight: 22,
       },
     });
+
+    // Layout vertically; panel height tracks actual content so a longer
+    // body never gets buried under the close button.
+    const titleY = spacing.xl;
+    const bodyY = titleY + title.height + spacing.lg;
+    const buttonY = bodyY + body.height + spacing.lg;
+    this.panelHeight = buttonY + CLOSE_BTN_H + spacing.xl;
+
+    this.panel = new Panel({ width: PANEL_W, height: this.panelHeight });
+    // The panel itself swallows pointer events so backdrop clicks don't
+    // dismiss the modal when the user clicks inside the body.
+    this.panel.eventMode = "static";
+    this.panel.on("pointertap", (event) => event.stopPropagation());
+    this.addChild(this.panel);
+
+    title.x = Math.round((PANEL_W - title.width) / 2);
+    title.y = titleY;
+    this.panel.addChild(title);
+
     body.x = Math.round((PANEL_W - body.width) / 2);
-    body.y = title.y + title.height + spacing.lg;
+    body.y = bodyY;
     this.panel.addChild(body);
 
     const closeBtn = new Button({
       label: "CLOSE",
-      width: 160,
-      height: 44,
+      width: CLOSE_BTN_W,
+      height: CLOSE_BTN_H,
       onActivate: () => options.onClose(),
     });
-    closeBtn.x = Math.round((PANEL_W - 160) / 2);
-    closeBtn.y = PANEL_H - 44 - spacing.xl;
+    closeBtn.x = Math.round((PANEL_W - CLOSE_BTN_W) / 2);
+    closeBtn.y = buttonY;
     this.panel.addChild(closeBtn);
 
     this.focus = new FocusManager();
@@ -98,7 +112,7 @@ export class HelpModal extends Container implements Screen {
       .rect(0, 0, viewWidth, viewHeight)
       .fill({ color: 0x000000, alpha: BACKDROP_ALPHA });
     this.panel.x = Math.round((viewWidth - PANEL_W) / 2);
-    this.panel.y = Math.round((viewHeight - PANEL_H) / 2);
+    this.panel.y = Math.round((viewHeight - this.panelHeight) / 2);
   }
 
   dispose(): void {
