@@ -60,8 +60,13 @@ export class CardView extends Container implements Focusable {
   // true black) inside an off-white outline. The outline colour is the
   // workhorse — it pops against the dark card body of every colorway.
   private readonly cornerText: Text;
+  // Bottom strip used as a trump indicator. Lives on its own layer (above
+  // the skin, below the border) and is empty unless `setTrump(true)` is
+  // called, so non-trump cards pay nothing for it.
+  private readonly trumpStrip: Graphics;
   private focused = false;
   private legalState: LegalState = "neutral";
+  private isTrump = false;
   readonly card: Card | null;
   readonly faceDown: boolean;
   onActivate: (() => void) | undefined;
@@ -77,6 +82,10 @@ export class CardView extends Container implements Focusable {
 
     this.bg = new Graphics();
     this.skinLayer.addChild(this.bg);
+
+    this.trumpStrip = new Graphics();
+    this.trumpStrip.label = "card-trump-strip";
+    this.addChild(this.trumpStrip);
 
     this.borderLayer = new Graphics();
     this.borderLayer.label = "card-border-layer";
@@ -135,6 +144,15 @@ export class CardView extends Container implements Focusable {
     this.redraw();
   }
 
+  // Mark this card as a trump. Adds a permanent bottom-edge accent strip
+  // so the player can scan trumps at a glance — independent of focus/legal
+  // state, which already use the brick-red border.
+  setTrump(trump: boolean): void {
+    if (this.isTrump === trump) return;
+    this.isTrump = trump;
+    this.redraw();
+  }
+
   activate(): void {
     this.onActivate?.();
   }
@@ -155,6 +173,16 @@ export class CardView extends Container implements Focusable {
     // operate on. No stroke here — the border lives on its own un-filtered
     // layer above.
     this.bg.clear().roundRect(0, 0, CARD_W, CARD_H, 4).fill({ color: surface });
+    // trumpStrip: thin accent bar along the bottom edge, only drawn for
+    // trump face-up cards. Sits above the skin so cosmetic filters don't
+    // wash it out, and below the border so the focus ring still wins.
+    this.trumpStrip.clear();
+    if (this.isTrump && isFace) {
+      const stripH = 5;
+      this.trumpStrip
+        .roundRect(2, CARD_H - stripH - 2, CARD_W - 4, stripH, 1)
+        .fill({ color: color.warn });
+    }
     // borderLayer: stroke only, drawn on the same path. Sits above the
     // skinLayer so it is never reached by SkinnedCard's filters and reads as
     // a clean contour even on holographic / chrome cards.

@@ -32,6 +32,15 @@ const ERROR_TOAST_MS = 3000;
 const TURN_PULSE_PERIOD_MS = 1200;
 const THINKING_PULSE_PERIOD_MS = 900;
 
+// Turn timer bar geometry. `TURN_BUDGET_MS` is the assumed full-turn
+// budget used as the denominator when drawing the bar fraction — the
+// worker hands us absolute deadlines, not remaining time, so we estimate
+// the full extent from the prod default. If the worker is configured to
+// a different value the bar just starts at a non-100% fill, never wraps.
+const TURN_BAR_W = 200;
+const TURN_BAR_H = 4;
+const TURN_BUDGET_MS = 30000;
+
 const FADE_IN_MS = 80;
 const PLAY_MOVE_MS = 220;
 const TAKE_MOVE_MS = 280;
@@ -340,7 +349,11 @@ export class GameScreen extends Container implements Screen {
   private readonly focus = new FocusManager();
   private readonly waiting: Text;
   private readonly turnLabel: Text;
-  private readonly turnTimerText: Text;
+  private readonly turnTimerBar: Graphics;
+  private lastTimerTickSecond: number | null = null;
+  private readonly forcedActionBanner: Container;
+  private readonly forcedActionBg: Graphics;
+  private readonly forcedActionText: Text;
   private readonly keyHint: Text;
   private readonly errorBanner: Container;
   private readonly errorBannerBg: Graphics;
@@ -419,22 +432,14 @@ export class GameScreen extends Container implements Screen {
     this.turnLabel.visible = false;
     this.addChild(this.turnLabel);
 
-    // Turn timer countdown. Sits alongside the turn label and counts
-    // down to the server's turn-timeout deadline. Goes red as time
-    // runs out so it reads as urgent at a glance.
-    this.turnTimerText = new Text({
-      text: "",
-      style: {
-        fontFamily: typography.family,
-        fontSize: typography.size.sm,
-        fontWeight: typography.weight.bold,
-        fill: color.textMuted,
-        letterSpacing: typography.letterSpacing.wide,
-      },
-    });
-    this.turnTimerText.label = "turn-timer";
-    this.turnTimerText.visible = false;
-    this.addChild(this.turnTimerText);
+    // Turn timer progress bar. Sits just below the turn label and drains
+    // smoothly as the deadline approaches. Drops to a danger fill in the
+    // last 5 seconds and triggers a per-second `timerTick` SFX cue so the
+    // pressure registers without the player needing to read a number.
+    this.turnTimerBar = new Graphics();
+    this.turnTimerBar.label = "turn-timer";
+    this.turnTimerBar.visible = false;
+    this.addChild(this.turnTimerBar);
 
     this.keyHint = new Text({
       text: "",
@@ -448,6 +453,28 @@ export class GameScreen extends Container implements Screen {
     this.keyHint.label = "key-hint";
     this.keyHint.visible = false;
     this.addChild(this.keyHint);
+
+    // Forced-action affordance. When the player has no legal card play
+    // (no defense, no throw-in) the only legal action is a single keybind
+    // — Take Pile, End Round, or Pass. This banner surfaces that action
+    // prominently so it doesn't get lost in the small key-hint text.
+    this.forcedActionBanner = new Container();
+    this.forcedActionBanner.label = "forced-action-banner";
+    this.forcedActionBanner.visible = false;
+    this.forcedActionBg = new Graphics();
+    this.forcedActionText = new Text({
+      text: "",
+      style: {
+        fontFamily: typography.family,
+        fontSize: typography.size.lg,
+        fontWeight: typography.weight.bold,
+        fill: color.text,
+        letterSpacing: typography.letterSpacing.wide,
+      },
+    });
+    this.forcedActionBanner.addChild(this.forcedActionBg);
+    this.forcedActionBanner.addChild(this.forcedActionText);
+    this.addChild(this.forcedActionBanner);
 
     this.errorBanner = new Container();
     this.errorBanner.label = "error-banner";
@@ -825,6 +852,8 @@ export class GameScreen extends Container implements Screen {
       this.spectatorBanner.visible = false;
       this.turnLabel.visible = false;
       this.keyHint.visible = false;
+      this.forcedActionBanner.visible = false;
+      this.turnTimerBar.visible = false;
       this.turnPulseActive = false;
       return;
     }
@@ -1086,6 +1115,7 @@ export class GameScreen extends Container implements Screen {
       view.onActivate = () => this.tryPlayCard(card);
       const isLegal = legalPlay(snapshot, card) !== null;
       view.setLegalState(isLegal ? "legal" : "illegal");
+      view.setTrump(card.suit === snapshot.trumpSuit);
       this.myHandRow.addChild(view);
       // Only legal cards are focusable. Arrow keys skip illegal ones
       // entirely so the player can't "select" a card they can't play.
@@ -1127,31 +1157,54 @@ export class GameScreen extends Container implements Screen {
     // The pendingClose banner already owns the visible countdown during
     // its window; suppress this timer to avoid two duelling clocks.
     if (deadline === null || this.room?.pendingClose || !this.snapshot) {
-      this.turnTimerText.visible = false;
+      this.turnTimerBar.visible = false;
+      this.lastTimerTickSecond = null;
       return;
     }
     const remainingMs = deadline - this.now();
     if (remainingMs <= 0) {
-      this.turnTimerText.visible = false;
+      this.turnTimerBar.visible = false;
+      this.lastTimerTickSecond = null;
       return;
     }
-    const remaining = (remainingMs / 1000).toFixed(1);
-    this.turnTimerText.text = `${remaining}s`;
-    // Red once <5s remain so the deadline reads as urgent without
-    // needing an extra animation. The accent (mid-game muted) is
-    // enough at >5s.
-    this.turnTimerText.style.fill = remainingMs < 5000 ? color.danger : color.accent;
-    this.turnTimerText.visible = true;
+    // Estimate the full turn budget from the deadline. Worker config sets
+    // TURN_TIMEOUT_MS=30000 in prod; we use it only as a denominator for
+    // the bar fraction so a slightly different value just changes the
+    // starting fill, never the drain feel.
+    const totalMs = TURN_BUDGET_MS;
+    const frac = Math.max(0, Math.min(1, remainingMs / totalMs));
+    const isLowTime = remainingMs < 5000;
+    this.turnTimerBar.clear();
+    // Background track — full width, dimmed.
+    this.turnTimerBar.roundRect(0, 0, TURN_BAR_W, TURN_BAR_H, 1).fill({ color: color.bgRaised });
+    // Fill — drains right-to-left as time passes.
+    const fillW = Math.max(0, Math.round(TURN_BAR_W * frac));
+    if (fillW > 0) {
+      this.turnTimerBar
+        .roundRect(0, 0, fillW, TURN_BAR_H, 1)
+        .fill({ color: isLowTime ? color.danger : color.accent });
+    }
+    this.turnTimerBar.visible = true;
     this.layoutTurnTimer();
+
+    // Per-second tick SFX in the last 5s. Track the integer second so we
+    // fire once per crossing rather than every frame.
+    if (isLowTime) {
+      const secondsLeft = Math.ceil(remainingMs / 1000);
+      if (this.lastTimerTickSecond !== secondsLeft) {
+        if (this.lastTimerTickSecond !== null) playSfx("timerTick");
+        this.lastTimerTickSecond = secondsLeft;
+      }
+    } else {
+      this.lastTimerTickSecond = null;
+    }
   }
 
   private layoutTurnTimer(): void {
-    if (!this.turnTimerText.visible) return;
-    // Sit immediately to the right of the (centered) turnLabel with a
-    // small gap, so the pair reads as a single "Your turn — defend  3.4s"
-    // line.
-    this.turnTimerText.x = this.turnLabel.x + this.turnLabel.width + spacing.sm;
-    this.turnTimerText.y = this.turnLabel.y;
+    if (!this.turnTimerBar.visible) return;
+    // Sit centered just below the turn label.
+    this.turnTimerBar.x = Math.round((this.viewWidth - TURN_BAR_W) / 2);
+    this.turnTimerBar.y = this.turnLabel.y + this.turnLabel.height + spacing.xs;
   }
 
   private renderTurnLabel(snapshot: Snapshot): void {
@@ -1165,6 +1218,43 @@ export class GameScreen extends Container implements Screen {
 
   private renderKeyHint(snapshot: Snapshot): void {
     this.keyHint.text = keyHintFor(snapshot, this.room?.pendingClose ?? null);
+    this.renderForcedAction(snapshot);
+  }
+
+  // Surface a prominent banner when the only legal move for the local
+  // player is a single keybind (Take Pile / End Round / Pass) — i.e. no
+  // legal card play exists. This sits between the table and the hand so
+  // the player sees the forced action without scanning the keyhint text.
+  private renderForcedAction(snapshot: Snapshot): void {
+    const forced = forcedActionFor(snapshot, this.room?.pendingClose ?? null);
+    if (!forced) {
+      this.forcedActionBanner.visible = false;
+      return;
+    }
+    this.forcedActionText.text = `${forced.label}  [${forced.key}]`;
+    const padX = spacing.lg;
+    const padY = spacing.sm;
+    const w = Math.round(this.forcedActionText.width + padX * 2);
+    const h = Math.round(this.forcedActionText.height + padY * 2);
+    this.forcedActionBg
+      .clear()
+      .roundRect(0, 0, w, h, 6)
+      .fill({ color: color.bgRaised })
+      .stroke({ color: color.accent, width: 2, alignment: 0 });
+    this.forcedActionText.x = padX;
+    this.forcedActionText.y = padY;
+    this.forcedActionBanner.visible = true;
+    this.layoutForcedActionBanner();
+  }
+
+  private layoutForcedActionBanner(): void {
+    if (!this.forcedActionBanner.visible) return;
+    const w = this.forcedActionBg.width;
+    this.forcedActionBanner.x = Math.round((this.viewWidth - w) / 2);
+    // Sit just below the table row so it's visually grouped with the
+    // current bout, not the hand. tableRow.y is the top of the table.
+    const tableBottomY = this.tableRow.y + CARD_H + Math.round(CARD_H * 0.4);
+    this.forcedActionBanner.y = tableBottomY + spacing.md;
   }
 
   private layoutSections(): void {
@@ -1187,6 +1277,8 @@ export class GameScreen extends Container implements Screen {
     // adding a card no longer shifts the cards already on the table.
     this.tableRow.x = Math.round(this.viewWidth / 2);
     this.tableRow.y = Math.round(this.viewHeight / 2 - CARD_H / 2);
+
+    this.layoutForcedActionBanner();
 
     this.leftStack.x = SECTION_PADDING;
     this.leftStack.y = Math.round(this.viewHeight / 2 - CARD_H / 2);
@@ -1596,6 +1688,32 @@ function turnLabelFor(snapshot: Snapshot): string {
   if (hasLegalThrowIn(snapshot)) return "Your turn — throw in or pass";
   if (seat === attacker) return "Your turn — throw in or pass";
   return "Opponent's turn";
+}
+
+// When the local player has no legal card play, return the single
+// keybind action they can take so the HUD can surface it prominently.
+// Returns null when card plays exist (the player has a real choice) or
+// when there's no action to surface (waiting on someone else).
+function forcedActionFor(
+  snapshot: Snapshot,
+  pendingClose: PendingCloseState | null = null,
+): { label: string; key: string } | null {
+  const { seat, attacker, defender, table } = snapshot;
+  if (pendingClose && seat !== defender) {
+    if (hasLegalThrowIn(snapshot)) return null;
+    return { label: "PASS", key: "P" };
+  }
+  if (seat === defender) {
+    if (hasLegalDefense(snapshot)) return null;
+    if (table.some((p) => !p.defense)) return { label: "TAKE PILE", key: "T" };
+    return null;
+  }
+  if (seat === attacker) {
+    if (table.length === 0) return null;
+    if (hasLegalThrowIn(snapshot)) return null;
+    return { label: "END ROUND", key: "E" };
+  }
+  return null;
 }
 
 function keyHintFor(snapshot: Snapshot, pendingClose: PendingCloseState | null = null): string {

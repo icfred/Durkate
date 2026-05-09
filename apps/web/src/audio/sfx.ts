@@ -11,7 +11,8 @@ export type SfxName =
   | "actionError"
   | "roundEnd"
   | "talonDraw"
-  | "dealStart";
+  | "dealStart"
+  | "timerTick";
 
 export type SfxClip = (ctx: AudioContext, target: AudioNode, now: number) => void;
 
@@ -303,6 +304,21 @@ const dealStart: SfxClip = (ctx, target, now) => {
   });
 };
 
+// Short low-time clock tick. Plays once per second in the last 5s of a
+// turn deadline. Square wave for a sharp blip, brief envelope so it
+// doesn't bleed into the next tick.
+const timerTick: SfxClip = (ctx, target, now) => {
+  tone(ctx, target, {
+    type: "square",
+    startFreq: 880,
+    startTime: now,
+    duration: 0.07,
+    peakGain: 0.08,
+    attack: 0.002,
+    release: 0.06,
+  });
+};
+
 export const sfxClips: Record<SfxName, SfxClip> = {
   playCard,
   takePile,
@@ -317,6 +333,7 @@ export const sfxClips: Record<SfxName, SfxClip> = {
   roundEnd,
   talonDraw,
   dealStart,
+  timerTick,
 };
 
 export const SFX_NAMES: readonly SfxName[] = [
@@ -333,4 +350,5 @@ export const SFX_NAMES: readonly SfxName[] = [
   "roundEnd",
   "talonDraw",
   "dealStart",
+  "timerTick",
 ];
