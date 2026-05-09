@@ -33,6 +33,40 @@ const ERROR_TOAST_MS = 3000;
 const TURN_PULSE_PERIOD_MS = 1200;
 const THINKING_PULSE_PERIOD_MS = 900;
 
+// Map engine RejectReason codes (and a few server-only codes) to friendly
+// player-facing flavour. The raw codes leak through as both `code` and
+// `message` from the server, so we render via this map instead. Unknown
+// codes fall back to the message text the server provided.
+const REJECT_REASON_TEXT: Record<string, string> = {
+  WRONG_PHASE: "Can't do that right now",
+  INVALID_SEAT: "That seat isn't yours",
+  NOT_ATTACKER: "Wait — it's not your attack",
+  NOT_DEFENDER: "You aren't defending this round",
+  DEFENDER_CANNOT_ATTACK: "Defenders defend, not attack — beat the cards or take the pile",
+  DEFENDER_CANNOT_PASS: "You're the defender — beat or take, no pass",
+  ELIMINATED_CANNOT_PASS: "You're already out for this round",
+  CARD_NOT_IN_HAND: "That card isn't in your hand any more",
+  TABLE_NOT_EMPTY: "Table's still in play — wait for the round to close",
+  TABLE_EMPTY: "Throw-ins need an attack on the table to match",
+  RANK_NOT_ON_TABLE: "Throw-ins must match a rank already on the table",
+  ATTACK_LIMIT_REACHED: "Attack limit reached — six cards is the bout cap",
+  DEFENDER_OVERWHELMED: "Defender's hand can't take another attack — pile is full",
+  INVALID_TARGET: "That attack isn't on the table any more",
+  TARGET_ALREADY_DEFENDED: "Already beaten — pick a different target",
+  DOES_NOT_BEAT: "That card can't beat the attack",
+  ATTACKS_UNDEFENDED: "Defend the open attacks first, or take the pile",
+  TIMEOUT_NOT_ACTIVE_SEAT: "Not your move",
+  GAME_NOT_STARTED: "Round hasn't started yet",
+  FORBIDDEN_ACTION: "Action not allowed in this state",
+  BAD_MESSAGE: "Server didn't understand the message",
+  BOT_LOOP_CAP: "Bot ran out of moves — please wait",
+  BOT_ILLEGAL_ACTION: "Bot made an invalid play",
+};
+
+function formatRejectReason(code: string, fallback: string): string {
+  return REJECT_REASON_TEXT[code] ?? fallback;
+}
+
 // Turn timer bar geometry. `TURN_BUDGET_MS` is the assumed full-turn
 // budget used as the denominator when drawing the bar fraction — the
 // worker hands us absolute deadlines, not remaining time, so we estimate
@@ -883,7 +917,7 @@ export class GameScreen extends Container implements Screen {
       this.errorVisibleMs = 0;
       return;
     }
-    this.errorBannerText.text = `${error.code}: ${error.message}`;
+    this.errorBannerText.text = formatRejectReason(error.code, error.message);
     this.drawErrorBanner();
     this.errorBanner.visible = true;
     this.errorVisibleMs = 0;

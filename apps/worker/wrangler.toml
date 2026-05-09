@@ -26,6 +26,6 @@ new_sqlite_classes = ["Room"]
 # from the top level, and `--env <name>` appends `-<name>` to the worker name
 # unless explicitly overridden, both of which broke the first prod deploy.
 [vars]
-ALLOWED_ORIGINS = "https://durak-icfred.web.app"
+ALLOWED_ORIGINS = "https://durak-web.pages.dev,https://durak-icfred.web.app"
 TURN_TIMEOUT_MS = "30000"
 DISCONNECT_FORFEIT_MS = "30000"

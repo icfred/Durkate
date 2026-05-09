@@ -825,10 +825,11 @@ export class Room extends DurableObject<Env> {
       return false;
     }
     this.engineState = result.state;
+    this.trackEliminations(result.events);
+    this.bumpStaleIfFinished();
     this.broadcast(result.events);
     this.scheduleTurnTimer();
     this.armBotTurnIfNeeded();
-    this.bumpStaleIfFinished();
     return true;
   }
 
@@ -867,9 +868,11 @@ export class Room extends DurableObject<Env> {
     this.alarms.cancel("forfeit");
     this.alarms.cancel("close-window");
     this.botChainCount = 0;
-    this.broadcast([{ type: "GAME_OVER", durak: seat }]);
-    this.broadcastRoomState();
+    const forfeitEvents: Event[] = [{ type: "GAME_OVER", durak: seat }];
+    this.trackEliminations(forfeitEvents);
     this.bumpStaleIfFinished();
+    this.broadcastRoomState();
+    this.broadcast(forfeitEvents);
     return true;
   }
 
@@ -1110,10 +1113,11 @@ export class Room extends DurableObject<Env> {
       if (!result.ok) return { ok: false, reason: result.reason };
       this.engineState = result.state;
       this.cancelTurnTimer();
+      this.trackEliminations(result.events);
+      this.bumpStaleIfFinished();
       this.broadcast(result.events);
       this.armBotTurnIfNeeded();
       this.scheduleTurnTimer();
-      this.bumpStaleIfFinished();
       return { ok: true, state: this.engineState, events: result.events };
     }
 
@@ -1153,11 +1157,19 @@ export class Room extends DurableObject<Env> {
     if (!result.ok) return { ok: false, reason: result.reason };
     this.engineState = result.state;
     this.cancelTurnTimer();
-    this.broadcast(result.events);
+    this.trackEliminations(result.events);
     this.advancePastEliminatedActor();
+    // Run scoring before fanning out events: when this action triggers
+    // GAME_OVER, clients receive the updated RoomState (scores, matchOver)
+    // first, so the GameOverScreen builds with correct match standings
+    // instead of stale zeros.
+    this.bumpStaleIfFinished();
+    this.broadcast(result.events);
+    // Bot-turn announcement and turn timer come after the events so the
+    // `thinkingSeats` RoomState lands once clients have applied the move
+    // that produced the new active seat.
     this.armBotTurnIfNeeded();
     this.scheduleTurnTimer();
-    this.bumpStaleIfFinished();
     return { ok: true, state: this.engineState, events: result.events };
   }
 
@@ -1219,6 +1231,11 @@ export class Room extends DurableObject<Env> {
     if (this.engineState === null || this.engineState.phase !== "in-round") return false;
     if (this.playerCount <= 2) return false;
     if (this.closeWindowMs <= 0) return false;
+    // Once enough players have been eliminated that only the defender + one
+    // attacker remain, the throw-in window has nobody to wait on — skip it
+    // and finalise the round immediately.
+    const eliminated = eliminatedSeatsOfState(this.engineState);
+    if (this.playerCount - eliminated.size <= 2) return false;
     return true;
   }
 
@@ -1362,6 +1379,13 @@ export class Room extends DurableObject<Env> {
       const result = step(this.engineState, { type: "TIMEOUT", by: active });
       if (!result.ok) break;
       this.engineState = result.state;
+      this.trackEliminations(result.events);
+      // If a chained TIMEOUT eliminated the last surviving non-durak,
+      // record scores + broadcast RoomState BEFORE fanning out the events
+      // so clients receive updated match.scores before the GAME_OVER event.
+      if (this.engineState.phase !== "in-round") {
+        this.bumpStaleIfFinished();
+      }
       this.broadcast(result.events);
     }
   }
@@ -1599,16 +1623,21 @@ export class Room extends DurableObject<Env> {
 
   // ─── broadcasting ──────────────────────────────────────────────────────
 
-  private broadcast(events: Event[]): void {
-    if (this.engineState === null) return;
-    const inRound = this.engineState.phase === "in-round";
-    // Track finish order for position-based scoring. PLAYER_OUT events
-    // arrive in elimination order, so appending here is sufficient.
+  // Track finish order for position-based scoring. PLAYER_OUT events
+  // arrive in elimination order, so appending here is sufficient. Called
+  // by action paths BEFORE bumpStaleIfFinished so score recording sees the
+  // updated finishOrder when the durak's last move ends the game.
+  private trackEliminations(events: Event[]): void {
     for (const e of events) {
       if (e.type === "PLAYER_OUT" && !this.finishOrder.includes(e.seat as SeatIndex)) {
         this.finishOrder.push(e.seat as SeatIndex);
       }
     }
+  }
+
+  private broadcast(events: Event[]): void {
+    if (this.engineState === null) return;
+    const inRound = this.engineState.phase === "in-round";
     for (const ws of this.ctx.getWebSockets()) {
       const seat = this.seatForWebSocket(ws);
       if (seat === undefined) continue;
