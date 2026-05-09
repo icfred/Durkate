@@ -1,8 +1,8 @@
 import type { Action, Card, Event } from "@durak/engine";
 import type { Snapshot } from "@durak/protocol";
+import * as ui from "@durak/ui";
 import type { Container, Text } from "pixi.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import * as anim from "../anim/index.js";
 import * as audio from "../audio/index.js";
 import { appStore } from "../store.js";
 import { GameScreen } from "./GameScreen.js";
@@ -13,8 +13,8 @@ vi.mock("../audio/index.js", () => ({
   attachFocusNavSfx: vi.fn().mockReturnValue(() => {}),
 }));
 
-vi.mock("../anim/index.js", async () => {
-  const actual = await vi.importActual<typeof import("../anim/index.js")>("../anim/index.js");
+vi.mock("@durak/ui", async () => {
+  const actual = await vi.importActual<typeof import("@durak/ui")>("@durak/ui");
   return {
     ...actual,
     moveTo: vi.fn(actual.moveTo),
@@ -26,9 +26,9 @@ vi.mock("../anim/index.js", async () => {
 });
 
 const playSfxMock = vi.mocked(audio.playSfx);
-const moveToMock = vi.mocked(anim.moveTo);
-const fadeToMock = vi.mocked(anim.fadeTo);
-const parallelMock = vi.mocked(anim.parallel);
+const moveToMock = vi.mocked(ui.moveTo);
+const fadeToMock = vi.mocked(ui.fadeTo);
+const parallelMock = vi.mocked(ui.parallel);
 
 function findByLabel(container: Container, label: string): Container | undefined {
   for (const child of container.children) {

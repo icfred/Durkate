@@ -1,6 +1,6 @@
+import type { TweenHandle } from "@durak/ui";
 import type { Container, Ticker } from "pixi.js";
 import type { StoreApi } from "zustand/vanilla";
-import type { TweenHandle } from "./anim/index.js";
 import type { Screen } from "./screens/types.js";
 import { type AppState, appStore, type Phase } from "./store.js";
 import { runTransition } from "./transitions.js";

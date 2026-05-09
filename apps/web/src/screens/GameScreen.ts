@@ -1,15 +1,18 @@
 import { type Action, beats, type Card, type Event, type TablePair } from "@durak/engine";
 import type { DisconnectState, PendingCloseState, SeatIndex, Snapshot } from "@durak/protocol";
-import { color, FocusManager, spacing, typography } from "@durak/ui";
-import { Container, Graphics, Text, Ticker } from "pixi.js";
 import {
   type Anim,
+  color,
   easeOutBack,
+  FocusManager,
   fadeTo,
   moveTo,
   parallel,
+  spacing,
   type TweenHandle,
-} from "../anim/index.js";
+  typography,
+} from "@durak/ui";
+import { Container, Graphics, Text, Ticker } from "pixi.js";
 import { attachFocusNavSfx, playSfx } from "../audio/index.js";
 import { CARD_H, CARD_W, CardView, cardKey, SUIT_GLYPH } from "../cards/CardView.js";
 import type { ConnectionStatus } from "../net/wsClient.js";

@@ -1,4 +1,3 @@
-import { type Container, Graphics, type Ticker } from "pixi.js";
 import {
   easeInOutCubic,
   easeOutQuad,
@@ -7,7 +6,8 @@ import {
   parallel,
   sequence,
   type TweenHandle,
-} from "./anim/index.js";
+} from "@durak/ui";
+import { type Container, Graphics, type Ticker } from "pixi.js";
 import type { Phase } from "./store.js";
 
 export const SLIDE_MS = 240;
