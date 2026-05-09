@@ -1,3 +1,10 @@
+export {
+  type FlipAxis,
+  type FlipRevealOptions,
+  flipReveal,
+  type PlayCardOptions,
+  playCard,
+} from "./cardAnims.js";
 export { type Anim, parallel, sequence } from "./compose.js";
 export {
   type Easing,

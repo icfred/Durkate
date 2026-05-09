@@ -26,6 +26,7 @@ export class ToggleChip extends Container implements Focusable {
   private active: boolean;
   private hovered = false;
   private focused = false;
+  private disabled = false;
   private readonly w: number;
   private readonly h: number;
   private readonly onChange: (active: boolean) => void;
@@ -72,6 +73,7 @@ export class ToggleChip extends Container implements Focusable {
   }
 
   activate(): void {
+    if (this.disabled) return;
     this.active = !this.active;
     this.redraw();
     this.onChange(this.active);
@@ -85,6 +87,21 @@ export class ToggleChip extends Container implements Focusable {
   setActive(active: boolean): void {
     if (this.active === active) return;
     this.active = active;
+    this.redraw();
+  }
+
+  /**
+   * Mute the chip and skip pointer events. The on/off state is preserved
+   * so re-enabling restores whatever was last set. Useful when a master
+   * toggle gates several sub-toggles (e.g. SKIN gates PATTERN/TINT/FINISH).
+   */
+  setDisabled(disabled: boolean): void {
+    if (this.disabled === disabled) return;
+    this.disabled = disabled;
+    this.eventMode = disabled ? "none" : "static";
+    this.cursor = disabled ? "default" : "pointer";
+    this.alpha = disabled ? 0.4 : 1;
+    if (disabled) this.hovered = false;
     this.redraw();
   }
 

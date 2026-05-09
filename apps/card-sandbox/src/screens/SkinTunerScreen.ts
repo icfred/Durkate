@@ -17,14 +17,17 @@ import {
   Cycle,
   color,
   FocusManager,
+  flipReveal,
   LABEL_ROW_HEIGHT,
   LabelRow,
   NumberStepper,
   Panel,
+  playCard,
   SectionHeader,
   Stack,
   spacing,
   ToggleChip,
+  type TweenHandle,
   typography,
 } from "@durak/ui";
 import {
@@ -41,7 +44,7 @@ import type { Screen } from "./types.js";
 
 // ─── Tuning constants ──────────────────────────────────────────────────────
 
-const TILT_MAX_RAD = 0.1;
+const TILT_MAX_RAD = 0.22;
 const TILT_FORESHORTEN = 0.1;
 const TILT_LERP = 0.18;
 
@@ -64,10 +67,11 @@ const CARD_BG_LABELS: readonly string[] = CARD_BACKGROUNDS.map((b) => b.name.toU
 // (voronoi, fbm, truchet, …) instead of bare "P0".."PN".
 const PATTERN_LABELS: readonly string[] = PATTERN_NAMES.map((n) => n.toUpperCase());
 
-// All-axes flag — every render pass through SkinnedCard now goes with
-// every layer turned on. The per-axis toggles existed for debugging
-// the spike and confused users in the tuner.
-const ALL_AXES = { pattern: true, tint: true, finish: true } as const;
+interface TunerAxes {
+  pattern: boolean;
+  tint: boolean;
+  finish: boolean;
+}
 
 export interface SkinTunerScreenOptions {
   assets: SkinAssets;
@@ -103,6 +107,11 @@ export class SkinTunerScreen extends Container implements Screen {
   private spec: SkinSpec = decode("000000000000");
   private tunables: Tunables = cloneTunables(defaultTunables);
   private skinsActive = true;
+  // Per-axis sub-toggles. Active only when SKIN is enabled — the chips
+  // visually mute and stop accepting clicks when SKIN is off, so the
+  // user doesn't see "skin on + pattern off = blank" surprises.
+  private axes: TunerAxes = { pattern: true, tint: true, finish: true };
+  private readonly axisChips: { key: keyof TunerAxes; chip: ToggleChip }[] = [];
   private code = "000000000000";
   private rngState = Math.floor(Math.random() * 0xffffffff) >>> 0 || 1;
   private contentHeight = 0;
@@ -119,7 +128,11 @@ export class SkinTunerScreen extends Container implements Screen {
   private currentTiltY = 0;
   private targetTiltX = 0;
   private targetTiltY = 0;
+  // Active animation tween, kept so a second click cancels the first
+  // instead of stacking. Cleared by the tween's own onComplete.
+  private activeAnim: TweenHandle | null = null;
   private readonly windowPointerUp: () => void;
+  private readonly windowKeyDown: (event: KeyboardEvent) => void;
 
   constructor(options: SkinTunerScreenOptions) {
     super();
@@ -171,6 +184,19 @@ export class SkinTunerScreen extends Container implements Screen {
     this.on("pointerupoutside", () => this.endDrag());
     this.windowPointerUp = () => this.endDrag();
     window.addEventListener("pointerup", this.windowPointerUp);
+
+    // R rolls a fresh code regardless of which form field has focus.
+    // Skip when the user is typing in a real input or has a modifier
+    // held so it doesn't fight with browser shortcuts.
+    this.windowKeyDown = (event) => {
+      if (event.key.toLowerCase() !== "r") return;
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      const target = event.target;
+      if (target instanceof HTMLElement && /input|textarea/i.test(target.tagName)) return;
+      event.preventDefault();
+      this.rollNewCode();
+    };
+    window.addEventListener("keydown", this.windowKeyDown);
 
     this.codeText = new Text({
       text: this.code,
@@ -243,6 +269,7 @@ export class SkinTunerScreen extends Container implements Screen {
   dispose(): void {
     this.ticker.remove(this.tickCallback);
     window.removeEventListener("pointerup", this.windowPointerUp);
+    window.removeEventListener("keydown", this.windowKeyDown);
     this.focus.detach();
     this.focus.clear();
   }
@@ -336,16 +363,17 @@ export class SkinTunerScreen extends Container implements Screen {
     );
     root.add(actions);
 
-    // SKIN — single master toggle. The original PATTERN / TINT / FINISH
-    // sub-toggles created confusing dependencies (e.g. "skin on, pattern
-    // off" rendered nothing) so they've been removed; SKIN gates the
-    // whole stack and any per-axis isolation can come back as a future
-    // dev-only debug panel.
+    // SKIN — master toggle plus three sub-axis toggles. Sub-toggles
+    // visually mute and stop accepting clicks when SKIN is off so the
+    // user understands the dependency without a hidden "skin on +
+    // pattern off = blank" surprise.
+    root.add(new SectionHeader("SKIN"));
     const skinToggle = new ToggleChip({
       label: "SKIN",
       active: this.skinsActive,
       onChange: (active) => {
         this.skinsActive = active;
+        this.refreshAxisChips();
         this.applyAll();
       },
       width: 100,
@@ -359,6 +387,34 @@ export class SkinTunerScreen extends Container implements Screen {
       }),
     );
     this.focus.register(skinToggle);
+
+    const axisRow = new Stack({ direction: "horizontal", gap: spacing.xs });
+    const axisKeys: ReadonlyArray<keyof TunerAxes> = ["pattern", "tint", "finish"];
+    for (const key of axisKeys) {
+      const chip = new ToggleChip({
+        label: key.toUpperCase(),
+        active: this.axes[key],
+        onChange: (active) => {
+          this.axes[key] = active;
+          this.applyAll();
+        },
+      });
+      this.axisChips.push({ key, chip });
+      axisRow.add(chip);
+      this.focus.register(chip);
+    }
+    root.add(
+      new LabelRow({
+        label: "AXES",
+        // Inline group as the row's control. LabelRow right-aligns the
+        // whole stack so the AXES label still lines up with the field
+        // labels above and below.
+        control: axisRow,
+        width: ROW_WIDTH,
+        height: LABEL_ROW_HEIGHT + spacing.xs,
+      }),
+    );
+    this.refreshAxisChips();
 
     // PATTERN
     root.add(new SectionHeader("PATTERN"));
@@ -623,10 +679,63 @@ export class SkinTunerScreen extends Container implements Screen {
       ),
     );
 
+    // ANIMATIONS — preview-card gesture buttons. These are decoupled
+    // from any game state; they exist to test card-anim primitives
+    // (flipReveal, playCard) on the live skinned preview so we can
+    // iterate on the feel without spinning up the full Durak app.
+    root.add(new SectionHeader("ANIMATIONS"));
+    const animActions = new Stack({ direction: "horizontal", gap: spacing.xs });
+    animActions.add(
+      new Button({
+        label: "FLIP",
+        width: actionWidth,
+        height: 28,
+        onActivate: () => this.runFlip(),
+      }),
+    );
+    animActions.add(
+      new Button({
+        label: "PLAY",
+        width: actionWidth,
+        height: 28,
+        onActivate: () => this.runPlay(),
+      }),
+    );
+    root.add(animActions);
+
     // Stack height grows lazily as children are added; once the build
     // completes its `height` reflects the full content extent. Add a
     // bottom margin so the last row isn't flush with the panel edge.
     this.contentHeight = root.y + root.height + spacing.md;
+  }
+
+  private cancelAnim(): void {
+    if (this.activeAnim) {
+      this.activeAnim.cancel();
+      this.activeAnim = null;
+    }
+  }
+
+  private runFlip(): void {
+    this.cancelAnim();
+    this.activeAnim = flipReveal({
+      target: this.card,
+      ticker: this.ticker,
+      onComplete: () => {
+        this.activeAnim = null;
+      },
+    });
+  }
+
+  private runPlay(): void {
+    this.cancelAnim();
+    this.activeAnim = playCard({
+      target: this.card,
+      ticker: this.ticker,
+      onComplete: () => {
+        this.activeAnim = null;
+      },
+    });
   }
 
   private section(): Stack {
@@ -717,7 +826,11 @@ export class SkinTunerScreen extends Container implements Screen {
 
   private applyAll(): void {
     this.card.setTunables(this.tunables);
-    this.card.applySkin(this.skinsActive ? this.spec : null, ALL_AXES);
+    this.card.applySkin(this.skinsActive ? this.spec : null, this.axes);
+  }
+
+  private refreshAxisChips(): void {
+    for (const { chip } of this.axisChips) chip.setDisabled(!this.skinsActive);
   }
 
   private onTick(_ticker: Ticker): void {
