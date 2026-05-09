@@ -46,7 +46,7 @@ export class NumberStepper extends Container implements Focusable {
   private readonly h: number;
   private readonly min: number;
   private readonly max: number;
-  private readonly step: number;
+  private readonly stepSize: number;
   private readonly format: (value: number) => string;
   private readonly onChange: (value: number) => void;
   private value: number;
@@ -70,7 +70,7 @@ export class NumberStepper extends Container implements Focusable {
     this.value = options.value;
     this.min = options.min ?? Number.NEGATIVE_INFINITY;
     this.max = options.max ?? Number.POSITIVE_INFINITY;
-    this.step = options.step ?? 1;
+    this.stepSize = options.step ?? 1;
     this.format = options.format ?? ((v) => v.toFixed(2));
     this.onChange = options.onChange;
     this.w = options.width ?? DEFAULT_WIDTH;
@@ -139,6 +139,11 @@ export class NumberStepper extends Container implements Focusable {
     this.applyStep(direction);
   }
 
+  /** Focusable.step — left/right arrow handler used by FocusManager form mode. */
+  step(direction: -1 | 1): void {
+    this.applyStep(direction);
+  }
+
   /** Programmatic update. `silent` skips `onChange`. */
   setValue(value: number, silent = false): void {
     const clamped = Math.max(this.min, Math.min(this.max, value));
@@ -190,7 +195,7 @@ export class NumberStepper extends Container implements Focusable {
     }
     if (!this.pressMoved) return;
     const stepsTravelled = Math.trunc(dx / DRAG_PIXELS_PER_STEP);
-    const next = this.pressStartValue + stepsTravelled * this.step;
+    const next = this.pressStartValue + stepsTravelled * this.stepSize;
     this.setValue(next);
   }
 
@@ -220,7 +225,7 @@ export class NumberStepper extends Container implements Focusable {
   }
 
   private applyStep(direction: 1 | -1): void {
-    const next = Math.max(this.min, Math.min(this.max, this.value + direction * this.step));
+    const next = Math.max(this.min, Math.min(this.max, this.value + direction * this.stepSize));
     if (next === this.value) return;
     this.value = next;
     this.redraw();

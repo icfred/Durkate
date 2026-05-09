@@ -490,3 +490,9 @@ const RECIPES: readonly ProceduralRecipe[] = [
 export function generateProceduralPatterns(_renderer: Renderer): PatternBundle[] {
   return RECIPES.map((r) => r.generator(r.seed));
 }
+
+/**
+ * Human-readable pattern names in spec-index order. The tuner / sandbox
+ * surfaces these instead of bare "P0".."PN" labels.
+ */
+export const PATTERN_NAMES: readonly string[] = RECIPES.map((r) => r.name);

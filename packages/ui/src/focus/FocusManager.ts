@@ -1,11 +1,27 @@
 export interface Focusable {
   setFocus(focused: boolean): void;
   activate(): void;
+  /**
+   * Optional left/right arrow handler for form-style navigation. When
+   * the manager is in `form` arrow mode, ArrowLeft / ArrowRight call
+   * `step(-1)` / `step(+1)` on the focused node instead of advancing
+   * focus to the next sibling. Cycle and NumberStepper implement this.
+   */
+  step?(direction: -1 | 1): void;
 }
+
+export type ArrowMode = "linear" | "form";
 
 export interface FocusManagerOptions {
   onEscape?: () => void;
   target?: Window | HTMLElement;
+  /**
+   * Arrow-key behaviour. `linear` (default) — Up/Right go next,
+   * Down/Left go prev (matches button menus). `form` — Up/Down navigate
+   * between fields, Left/Right call `step(direction)` on the focused
+   * field (matches a settings panel of cycles + steppers).
+   */
+  arrowMode?: ArrowMode;
 }
 
 export type FocusEventListener = () => void;
@@ -15,6 +31,7 @@ export class FocusManager {
   private index = -1;
   private readonly target: Window | HTMLElement;
   private readonly onEscape: (() => void) | undefined;
+  private readonly arrowMode: ArrowMode;
   private readonly onKeyDown: (event: KeyboardEvent) => void;
   private readonly moveListeners = new Set<FocusEventListener>();
   private readonly activateListeners = new Set<FocusEventListener>();
@@ -25,6 +42,7 @@ export class FocusManager {
   constructor(options: FocusManagerOptions = {}) {
     this.target = options.target ?? window;
     this.onEscape = options.onEscape;
+    this.arrowMode = options.arrowMode ?? "linear";
     this.onKeyDown = (event) => this.handleKeyDown(event);
   }
 
@@ -138,14 +156,22 @@ export class FocusManager {
     if (this.suspended) return;
     switch (event.key) {
       case "ArrowDown":
-      case "ArrowRight":
         event.preventDefault();
         this.focusNext();
         return;
       case "ArrowUp":
-      case "ArrowLeft":
         event.preventDefault();
         this.focusPrev();
+        return;
+      case "ArrowRight":
+        event.preventDefault();
+        if (this.arrowMode === "form") this.stepFocused(1);
+        else this.focusNext();
+        return;
+      case "ArrowLeft":
+        event.preventDefault();
+        if (this.arrowMode === "form") this.stepFocused(-1);
+        else this.focusPrev();
         return;
       case "Tab":
         event.preventDefault();
@@ -168,5 +194,14 @@ export class FocusManager {
         }
         return;
     }
+  }
+
+  private stepFocused(direction: -1 | 1): void {
+    const node = this.nodes[this.index];
+    // Fall back to linear nav if the focused node has no step handler —
+    // this keeps mixed panels (e.g. a Button next to a Cycle) usable.
+    if (node?.step) node.step(direction);
+    else if (direction === 1) this.focusNext();
+    else this.focusPrev();
   }
 }

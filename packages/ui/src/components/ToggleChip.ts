@@ -77,6 +77,11 @@ export class ToggleChip extends Container implements Focusable {
     this.onChange(this.active);
   }
 
+  /** Focusable.step — left or right arrow flips the toggle either way. */
+  step(_direction: -1 | 1): void {
+    this.activate();
+  }
+
   setActive(active: boolean): void {
     if (this.active === active) return;
     this.active = active;

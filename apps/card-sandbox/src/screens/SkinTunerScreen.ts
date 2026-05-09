@@ -1,12 +1,11 @@
 import type { Card } from "@durak/engine";
 import {
-  type Axes,
   CARD_BACKGROUNDS,
   COLORWAYS,
   decode,
   defaultTunables,
   type Finish,
-  PATTERN_VARIANTS,
+  PATTERN_NAMES,
   rollCode,
   type SkinAssets,
   SkinnedCard,
@@ -17,6 +16,7 @@ import {
   Button,
   Cycle,
   color,
+  FocusManager,
   LABEL_ROW_HEIGHT,
   LabelRow,
   NumberStepper,
@@ -50,16 +50,24 @@ const PANEL_PAD = spacing.lg;
 const ROW_WIDTH = PANEL_WIDTH - PANEL_PAD * 2;
 const CONTROL_WIDTH = 140;
 
-const PREVIEW_SCALE = 4;
+// Preview rendered at 6× the 60×88 base so the card occupies a generous
+// chunk of the available area beside the panel (~360×528 at scale 6).
+// Bigger feels more like a showcase than an editor; smaller and it
+// reads as a thumbnail.
+const PREVIEW_SCALE = 6;
 const PREVIEW_CARD: Card = { suit: "spades", rank: 14 };
 
 const FINISHES: readonly Finish[] = ["matte", "silver", "gold", "bronze", "holographic"];
 const COLORWAY_LABELS: readonly string[] = COLORWAYS.map((c) => c.name.toUpperCase());
 const CARD_BG_LABELS: readonly string[] = CARD_BACKGROUNDS.map((b) => b.name.toUpperCase());
-const PATTERN_LABELS: readonly string[] = Array.from(
-  { length: PATTERN_VARIANTS },
-  (_, i) => `P${i}`,
-);
+// Use the human-readable pattern names from the spike package
+// (voronoi, fbm, truchet, …) instead of bare "P0".."PN".
+const PATTERN_LABELS: readonly string[] = PATTERN_NAMES.map((n) => n.toUpperCase());
+
+// All-axes flag — every render pass through SkinnedCard now goes with
+// every layer turned on. The per-axis toggles existed for debugging
+// the spike and confused users in the tuner.
+const ALL_AXES = { pattern: true, tint: true, finish: true } as const;
 
 export interface SkinTunerScreenOptions {
   assets: SkinAssets;
@@ -93,13 +101,17 @@ export class SkinTunerScreen extends Container implements Screen {
   private readonly scrollMask: Graphics;
   private readonly pulls: Pull[] = [];
   private spec: SkinSpec = decode("000000000000");
-  private axes: Axes = { pattern: true, tint: true, finish: true };
   private tunables: Tunables = cloneTunables(defaultTunables);
   private skinsActive = true;
   private code = "000000000000";
-  private rngState = 0xc0ffee;
+  private rngState = Math.floor(Math.random() * 0xffffffff) >>> 0 || 1;
   private contentHeight = 0;
   private maskHeight = 0;
+  // Form-mode focus controller. Every Cycle / Stepper / ToggleChip
+  // gets registered in document order so ArrowUp/Down navigate between
+  // fields and ArrowLeft/Right step the focused control. The host's
+  // onBack is wired through `onEscape` so Esc returns to the grid.
+  private readonly focus: FocusManager;
 
   // Tilt state.
   private dragging = false;
@@ -145,6 +157,12 @@ export class SkinTunerScreen extends Container implements Screen {
     this.card.eventMode = "static";
     this.card.cursor = "grab";
     this.card.on("pointerdown", () => this.startDrag());
+    // Double-click on the card snaps the tilt back to flat. Replaces the
+    // old "release = spring back" behaviour so the user can park the
+    // card at an angle to compare looks.
+    this.card.on("pointertap", (e: FederatedPointerEvent) => {
+      if (e.detail >= 2) this.resetTilt();
+    });
     this.eventMode = "static";
     this.on("globalpointermove", (e: FederatedPointerEvent) => {
       if (this.dragging) this.updateTiltTarget(e);
@@ -181,7 +199,14 @@ export class SkinTunerScreen extends Container implements Screen {
       this.backBtn = null;
     }
 
+    const focusOptions: ConstructorParameters<typeof FocusManager>[0] = {
+      arrowMode: "form",
+    };
+    if (options.onBack) focusOptions.onEscape = options.onBack;
+    this.focus = new FocusManager(focusOptions);
+
     this.buildPanel();
+    this.focus.attach();
     this.applyAll();
 
     this.tickCallback = (t) => this.onTick(t);
@@ -218,6 +243,8 @@ export class SkinTunerScreen extends Container implements Screen {
   dispose(): void {
     this.ticker.remove(this.tickCallback);
     window.removeEventListener("pointerup", this.windowPointerUp);
+    this.focus.detach();
+    this.focus.clear();
   }
 
   // ─── Scroll ─────────────────────────────────────────────────────────
@@ -242,6 +269,11 @@ export class SkinTunerScreen extends Container implements Screen {
     if (!this.dragging) return;
     this.dragging = false;
     this.card.cursor = "grab";
+    // Tilt target stays where the pointer left it; the user can park
+    // the card at an angle to study the lighting. Double-click resets.
+  }
+
+  private resetTilt(): void {
     this.targetTiltX = 0;
     this.targetTiltY = 0;
   }
@@ -304,35 +336,29 @@ export class SkinTunerScreen extends Container implements Screen {
     );
     root.add(actions);
 
-    // TOGGLES — SKIN gates the whole shader stack; PATTERN / TINT /
-    // FINISH gate individual layers. Bundled together because they're
-    // visual on/off switches rather than form values.
-    root.add(new SectionHeader("TOGGLES"));
-    const togglesRow = new Stack({ direction: "horizontal", gap: spacing.xs });
-    togglesRow.add(
-      new ToggleChip({
-        label: "SKIN",
-        active: this.skinsActive,
-        onChange: (active) => {
-          this.skinsActive = active;
-          this.applyAll();
-        },
+    // SKIN — single master toggle. The original PATTERN / TINT / FINISH
+    // sub-toggles created confusing dependencies (e.g. "skin on, pattern
+    // off" rendered nothing) so they've been removed; SKIN gates the
+    // whole stack and any per-axis isolation can come back as a future
+    // dev-only debug panel.
+    const skinToggle = new ToggleChip({
+      label: "SKIN",
+      active: this.skinsActive,
+      onChange: (active) => {
+        this.skinsActive = active;
+        this.applyAll();
+      },
+      width: 100,
+    });
+    root.add(
+      new LabelRow({
+        label: "ENABLED",
+        control: skinToggle,
+        width: ROW_WIDTH,
+        height: LABEL_ROW_HEIGHT,
       }),
     );
-    const axisKeys: ReadonlyArray<keyof Axes> = ["pattern", "tint", "finish"];
-    for (const key of axisKeys) {
-      togglesRow.add(
-        new ToggleChip({
-          label: String(key).toUpperCase(),
-          active: this.axes[key],
-          onChange: (active) => {
-            this.axes[key] = active;
-            this.applyAll();
-          },
-        }),
-      );
-    }
-    root.add(togglesRow);
+    this.focus.register(skinToggle);
 
     // PATTERN
     root.add(new SectionHeader("PATTERN"));
@@ -623,6 +649,7 @@ export class SkinTunerScreen extends Container implements Screen {
       showIndex: true,
     });
     this.pulls.push(() => cycle.setValue(binding.read(), true));
+    this.focus.register(cycle);
     return new LabelRow({ label, control: cycle, width: ROW_WIDTH, height: LABEL_ROW_HEIGHT });
   }
 
@@ -648,6 +675,7 @@ export class SkinTunerScreen extends Container implements Screen {
     if (binding.format !== undefined) stepperOptions.format = binding.format;
     const stepper = new NumberStepper(stepperOptions);
     this.pulls.push(() => stepper.setValue(binding.read(), true));
+    this.focus.register(stepper);
     return new LabelRow({ label, control: stepper, width: ROW_WIDTH, height: LABEL_ROW_HEIGHT });
   }
 
@@ -674,7 +702,7 @@ export class SkinTunerScreen extends Container implements Screen {
         coverageBias: r(),
         depth: 0.6 + r() * 0.7,
       },
-      wear: r() * 0.4,
+      wear: r(),
     };
 
     this.applyAll();
@@ -689,7 +717,7 @@ export class SkinTunerScreen extends Container implements Screen {
 
   private applyAll(): void {
     this.card.setTunables(this.tunables);
-    this.card.applySkin(this.skinsActive ? this.spec : null, this.axes);
+    this.card.applySkin(this.skinsActive ? this.spec : null, ALL_AXES);
   }
 
   private onTick(_ticker: Ticker): void {
