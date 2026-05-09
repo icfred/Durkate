@@ -141,12 +141,15 @@ export class LobbyScreen extends Container implements Screen {
     );
     this.creation = options.initialCreation ?? { status: "ready" };
 
-    const extraShares = Math.max(0, this.shareUrls.length - 1);
+    // The lobby always shows at most one invite link now — no per-seat
+    // share-url stacking. PANEL_H_PER_EXTRA_SHARE is retained as 0 to
+    // keep the constant near the other layout tokens for future use.
+    void PANEL_H_PER_EXTRA_SHARE;
     // FFA lobby hold: the START NOW button needs an extra ~70px of
-    // panel height beyond the share-url stack so it doesn't overflow
+    // panel height beyond the share-url block so it doesn't overflow
     // into the back button.
     const startBlock = options.onStart ? 70 : 0;
-    this.panelH = PANEL_H_BASE + extraShares * PANEL_H_PER_EXTRA_SHARE + startBlock;
+    this.panelH = PANEL_H_BASE + startBlock;
 
     this.panel = new Panel({ width: PANEL_W, height: this.panelH });
     this.addChild(this.panel);
@@ -234,48 +237,52 @@ export class LobbyScreen extends Container implements Screen {
     let nextY = roomCodeText.y + roomCodeText.height + spacing.md;
 
     if (this.shareUrls.length > 0) {
-      this.shareUrls.forEach((url, idx) => {
-        const isMulti = this.shareUrls.length > 1;
-        const shareLabel = new Text({
-          text: isMulti ? `SHARE ${idx + 1}` : "SHARE",
-          style: {
-            fontFamily: typography.family,
-            fontSize: typography.size.xs,
-            fill: color.textMuted,
-            letterSpacing: typography.letterSpacing.wide,
-          },
-        });
-        shareLabel.x = Math.round((PANEL_W - shareLabel.width) / 2);
-        shareLabel.y = nextY;
-        this.readyContent.addChild(shareLabel);
-
-        const shareUrlText = new Text({
-          text: truncateForDisplay(url, SHARE_URL_MAX_CHARS),
-          style: {
-            fontFamily: typography.family,
-            fontSize: typography.size.sm,
-            fill: color.text,
-            letterSpacing: typography.letterSpacing.tight,
-          },
-        });
-        shareUrlText.x = Math.round((PANEL_W - shareUrlText.width) / 2);
-        shareUrlText.y = shareLabel.y + shareLabel.height + spacing.xs;
-        this.readyContent.addChild(shareUrlText);
-
-        const copyButton = new Button({
-          label: isMulti ? `COPY LINK ${idx + 1}` : "COPY LINK",
-          width: COPY_BUTTON_W + (isMulti ? 24 : 0),
-          height: COPY_BUTTON_H,
-          onActivate: withClickSound(() => this.handleCopy(url)),
-        });
-        attachButtonHover(copyButton);
-        copyButton.x = Math.round((PANEL_W - copyButton.width) / 2);
-        copyButton.y = shareUrlText.y + shareUrlText.height + spacing.sm;
-        this.readyContent.addChild(copyButton);
-        this.focus.register(copyButton);
-
-        nextY = copyButton.y + copyButton.height + spacing.md;
+      // One share label + one share URL + one copy button — no per-token
+      // duplication. The first URL is always a valid invite (room code +
+      // any seat token reserves a seat); using the first one keeps the
+      // UI flat and reads as "the room link". Empty seats default to
+      // bots, and a friend joining via this link takes a bot's seat
+      // (server-side lobby-hold swap).
+      const url = this.shareUrls[0] as string;
+      const shareLabel = new Text({
+        text: "INVITE LINK",
+        style: {
+          fontFamily: typography.family,
+          fontSize: typography.size.xs,
+          fill: color.textMuted,
+          letterSpacing: typography.letterSpacing.wide,
+        },
       });
+      shareLabel.x = Math.round((PANEL_W - shareLabel.width) / 2);
+      shareLabel.y = nextY;
+      this.readyContent.addChild(shareLabel);
+
+      const shareUrlText = new Text({
+        text: truncateForDisplay(url, SHARE_URL_MAX_CHARS),
+        style: {
+          fontFamily: typography.family,
+          fontSize: typography.size.sm,
+          fill: color.text,
+          letterSpacing: typography.letterSpacing.tight,
+        },
+      });
+      shareUrlText.x = Math.round((PANEL_W - shareUrlText.width) / 2);
+      shareUrlText.y = shareLabel.y + shareLabel.height + spacing.xs;
+      this.readyContent.addChild(shareUrlText);
+
+      const copyButton = new Button({
+        label: "COPY LINK",
+        width: COPY_BUTTON_W,
+        height: COPY_BUTTON_H,
+        onActivate: withClickSound(() => this.handleCopy(url)),
+      });
+      attachButtonHover(copyButton);
+      copyButton.x = Math.round((PANEL_W - copyButton.width) / 2);
+      copyButton.y = shareUrlText.y + shareUrlText.height + spacing.sm;
+      this.readyContent.addChild(copyButton);
+      this.focus.register(copyButton);
+
+      nextY = copyButton.y + copyButton.height + spacing.md;
     }
 
     if (this.mode === "friend") {

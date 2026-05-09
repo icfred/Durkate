@@ -195,7 +195,7 @@ describe("LobbyScreen N-aware FFA", () => {
     screen.dispose();
   });
 
-  it("renders one COPY LINK button per join token", () => {
+  it("renders a single COPY LINK button regardless of how many tokens the worker returned", () => {
     const screen = new LobbyScreen({
       mode: "ffa",
       roomCode: "ABCD",
@@ -206,8 +206,10 @@ describe("LobbyScreen N-aware FFA", () => {
       onJoin: vi.fn(),
     });
     const labels = collectText(screen);
-    expect(labels).toContain("COPY LINK 1");
-    expect(labels).toContain("COPY LINK 2");
+    expect(labels).toContain("COPY LINK");
+    expect(labels).not.toContain("COPY LINK 1");
+    expect(labels).not.toContain("COPY LINK 2");
+    expect(labels).toContain("INVITE LINK");
     screen.dispose();
   });
 
