@@ -200,6 +200,7 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
         case "gameover":
           return new GameOverScreen({
             data: state.gameover ?? { youSeat: 0, durak: null },
+            match: state.room?.match ?? null,
             initialRematch: deriveRematchStatus(state),
             subscribeRematch: (listener) =>
               appStore.subscribe((next, prev) => {
@@ -207,6 +208,10 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
                 listener(deriveRematchStatus(next));
               }),
             onRematch: () => appStore.getState().requestRematch(),
+            // Mid-match next-round button: piggyback on the existing
+            // StartGame ws action, which the worker now treats as
+            // "advance the match" when the game has just ended.
+            onNextRound: () => appStore.getState().startGame(),
             onMainMenu: () => appStore.getState().showMenu(),
           });
       }
