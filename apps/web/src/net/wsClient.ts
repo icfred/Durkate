@@ -169,6 +169,19 @@ export function connect(options: WsConnectOptions): WsConnection {
     cancelReconnect?.();
     cancelReconnect = null;
     if (socket) {
+      // Detach the event handlers BEFORE calling socket.close. The browser
+      // fires onclose asynchronously after close() returns, and onmessage
+      // can still fire in the CLOSING window. Without detaching, those
+      // late events leak through `handlers` into the shared store and
+      // race with a freshly-opened replacement connection — symptom: the
+      // store's connection status flips back to `closed` after a new
+      // wsClient sets it to `open`, leaving the user stuck on the
+      // RECONNECTING banner with a dead reference even though the new
+      // socket is healthy.
+      socket.onopen = null;
+      socket.onmessage = null;
+      socket.onerror = null;
+      socket.onclose = null;
       socket.close(CLOSE_CODE_CLIENT_LEAVE, "client leave");
       socket = null;
     }
