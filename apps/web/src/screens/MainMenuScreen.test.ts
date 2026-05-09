@@ -1,10 +1,9 @@
 // @vitest-environment happy-dom
-import type { BotDifficulty } from "@durak/protocol";
 import { Button } from "@durak/ui";
 import { Container, Text } from "pixi.js";
 import { describe, expect, it, vi } from "vitest";
 import "../test-setup/canvas-mock.js";
-import { MainMenuScreen } from "./MainMenuScreen.js";
+import { type GameSetupConfig, MainMenuScreen } from "./MainMenuScreen.js";
 
 function collectText(container: Container, out: string[] = []): string[] {
   for (const child of container.children) {
@@ -30,103 +29,75 @@ function findButton(container: Container, label: string): Button | null {
 }
 
 describe("MainMenuScreen root view", () => {
-  it("shows the play-vs-bot and play-vs-friend entry points", () => {
-    const screen = new MainMenuScreen({
-      onPlayBot: vi.fn(),
-      onPlayFriend: vi.fn(),
-      onPlayFfa: vi.fn(),
-    });
+  it("shows a single PLAY entry point", () => {
+    const screen = new MainMenuScreen({ onStart: vi.fn() });
     const labels = collectText(screen);
-    expect(labels).toContain("PLAY VS BOT");
-    expect(labels).toContain("PLAY VS FRIEND");
+    expect(labels).toContain("PLAY");
+    expect(labels).not.toContain("PLAY VS BOT");
+    expect(labels).not.toContain("PLAY FFA");
     screen.dispose();
   });
 
-  it("calls onPlayFriend when the friend button activates", () => {
-    const onPlayFriend = vi.fn();
-    const screen = new MainMenuScreen({
-      onPlayBot: vi.fn(),
-      onPlayFriend,
-      onPlayFfa: vi.fn(),
-    });
-    const button = findButton(screen, "PLAY VS FRIEND");
-    expect(button).toBeTruthy();
-    if (!button) throw new Error("button not found");
-    button.activate();
-    expect(onPlayFriend).toHaveBeenCalledTimes(1);
-    screen.dispose();
-  });
-
-  it("flips to the difficulty view on PLAY VS BOT activation", () => {
-    const screen = new MainMenuScreen({
-      onPlayBot: vi.fn(),
-      onPlayFriend: vi.fn(),
-      onPlayFfa: vi.fn(),
-    });
+  it("flips to the game-setup view on PLAY activation", () => {
+    const screen = new MainMenuScreen({ onStart: vi.fn() });
     expect(screen.testView()).toBe("root");
-    const button = findButton(screen, "PLAY VS BOT");
-    if (!button) throw new Error("button not found");
-    button.activate();
-    expect(screen.testView()).toBe("bot-difficulty");
+    const play = findButton(screen, "PLAY");
+    if (!play) throw new Error("PLAY button not found");
+    play.activate();
+    expect(screen.testView()).toBe("game-setup");
     const labels = collectText(screen);
-    expect(labels).toContain("EASY");
-    expect(labels).toContain("MEDIUM");
-    expect(labels).toContain("HARD");
+    expect(labels.some((l) => l.startsWith("PLAYERS:"))).toBe(true);
+    expect(labels.some((l) => l.startsWith("BOTS:"))).toBe(true);
+    expect(labels.some((l) => l.startsWith("DIFFICULTY:"))).toBe(true);
+    expect(labels.some((l) => l.startsWith("ROUNDS:"))).toBe(true);
+    expect(labels).toContain("START");
     expect(labels).toContain("BACK");
     screen.dispose();
   });
 });
 
-describe("MainMenuScreen FFA", () => {
-  // The FFA config screen was removed: the user wanted the menu to drop
-  // straight into a 6-player room with bots filling the non-host slots,
-  // and a friend joining via the share link swaps a bot out (handled by
-  // the worker's lobby-hold path). The button now calls onPlayFfa with
-  // the canonical defaults instead of opening a config view.
-  it("invokes onPlayFfa directly with 6 players + 5 medium bots", () => {
-    const seen: { playerCount: number; botCount: number; difficulty: string }[] = [];
-    const screen = new MainMenuScreen({
-      onPlayBot: vi.fn(),
-      onPlayFriend: vi.fn(),
-      onPlayFfa: (config) => seen.push(config),
-    });
-    findButton(screen, "PLAY FFA")?.activate();
-    expect(seen).toEqual([{ playerCount: 6, botCount: 5, difficulty: "medium" }]);
-    screen.dispose();
-  });
-});
-
-describe("MainMenuScreen difficulty view", () => {
-  function openDifficultyView(onPlayBot: (d: BotDifficulty) => void) {
-    const screen = new MainMenuScreen({ onPlayBot, onPlayFriend: vi.fn(), onPlayFfa: vi.fn() });
-    const playBot = findButton(screen, "PLAY VS BOT");
-    if (!playBot) throw new Error("PLAY VS BOT button not found");
-    playBot.activate();
+describe("MainMenuScreen game-setup", () => {
+  function openSetup(onStart: (cfg: GameSetupConfig) => void) {
+    const screen = new MainMenuScreen({ onStart });
+    findButton(screen, "PLAY")?.activate();
     return screen;
   }
 
-  it("invokes onPlayBot with the chosen difficulty", () => {
-    const seen: BotDifficulty[] = [];
-    const screen = openDifficultyView((d) => seen.push(d));
-    const easy = findButton(screen, "EASY");
-    if (!easy) throw new Error("EASY not found");
-    easy.activate();
-    const hard = findButton(screen, "HARD");
-    if (!hard) throw new Error("HARD not found");
-    hard.activate();
-    expect(seen).toEqual(["easy", "hard"]);
+  it("invokes onStart with the current config when START is pressed", () => {
+    const seen: GameSetupConfig[] = [];
+    const screen = openSetup((cfg) => seen.push(cfg));
+    findButton(screen, "START")?.activate();
+    expect(seen).toEqual([{ playerCount: 2, botCount: 1, difficulty: "medium", rounds: 3 }]);
+    screen.dispose();
+  });
+
+  it("cycles player count through 2..6 and clamps bot count", () => {
+    const screen = openSetup(vi.fn());
+    expect(screen.testGameSetupConfig().playerCount).toBe(2);
+    findButton(screen, "PLAYERS: 2")?.activate();
+    expect(screen.testGameSetupConfig().playerCount).toBe(3);
+    findButton(screen, "PLAYERS: 3")?.activate();
+    expect(screen.testGameSetupConfig().playerCount).toBe(4);
+    screen.dispose();
+  });
+
+  it("cycles rounds through 1, 3, 5, 7, 9", () => {
+    const screen = openSetup(vi.fn());
+    const initial = screen.testGameSetupConfig().rounds;
+    expect(initial).toBe(3);
+    findButton(screen, "ROUNDS: BEST OF 3")?.activate();
+    expect(screen.testGameSetupConfig().rounds).toBe(5);
+    findButton(screen, "ROUNDS: BEST OF 5")?.activate();
+    expect(screen.testGameSetupConfig().rounds).toBe(7);
     screen.dispose();
   });
 
   it("BACK returns to the root view", () => {
-    const screen = openDifficultyView(vi.fn());
-    const back = findButton(screen, "BACK");
-    if (!back) throw new Error("BACK not found");
-    back.activate();
+    const screen = openSetup(vi.fn());
+    findButton(screen, "BACK")?.activate();
     expect(screen.testView()).toBe("root");
     const labels = collectText(screen);
-    expect(labels).toContain("PLAY VS BOT");
-    expect(labels).not.toContain("EASY");
+    expect(labels).toContain("PLAY");
     screen.dispose();
   });
 });

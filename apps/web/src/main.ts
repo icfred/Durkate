@@ -18,7 +18,7 @@ import { ScreenRouter } from "./screenRouter.js";
 import { GameOverScreen } from "./screens/GameOverScreen.js";
 import { GameScreen } from "./screens/GameScreen.js";
 import { LobbyScreen } from "./screens/LobbyScreen.js";
-import { type FfaConfig, MainMenuScreen } from "./screens/MainMenuScreen.js";
+import { type GameSetupConfig, MainMenuScreen } from "./screens/MainMenuScreen.js";
 import { type FixtureName, isFixtureName, loadFixture } from "./screens/sandboxFixtures.js";
 import type { Screen } from "./screens/types.js";
 import {
@@ -91,20 +91,26 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
   const wsUrl = resolveWsUrl();
   const httpUrl = resolveHttpServerUrl(wsUrl);
 
-  const startBot = (difficulty: BotDifficulty) => {
-    void runRoomCreation({ mode: "bot", playerCount: 2, botCount: 1, difficulty }, httpUrl);
-  };
-  const startFriend = () => {
-    void runRoomCreation({ mode: "friend", playerCount: 2, botCount: 0 }, httpUrl);
-  };
-  const startFfa = (config: FfaConfig) => {
+  // Single entry from the unified Game Setup screen. Picks the right
+  // `mode` for the worker based on shape:
+  //   - 2 players, 1 bot, no humans-to-invite → "bot" (auto-start, no
+  //     share code needed; the legacy 1v1-vs-bot flow).
+  //   - 2 players, 0 bots → "friend" (auto-start when both humans
+  //     attach; reserved second seat token for the share link).
+  //   - everything else → "ffa" with lobbyHold so the host can review
+  //     and share before play begins.
+  const startGame = (config: GameSetupConfig) => {
+    const isBotOnly = config.playerCount === 2 && config.botCount === 1;
+    const isFriendOnly = config.playerCount === 2 && config.botCount === 0;
+    const mode: "bot" | "friend" | "ffa" = isBotOnly ? "bot" : isFriendOnly ? "friend" : "ffa";
     const payload: RoomCreationStart = {
-      mode: "ffa",
+      mode,
       playerCount: config.playerCount,
       botCount: config.botCount,
-      lobbyHold: true,
     };
     if (config.botCount > 0) payload.difficulty = config.difficulty;
+    if (mode === "ffa") payload.lobbyHold = true;
+    if (config.rounds > 1) payload.rounds = config.rounds;
     void runRoomCreation(payload, httpUrl);
   };
 
@@ -114,9 +120,7 @@ if (sandboxParam === "skins" || sandboxParam === "skins-tuner") {
       switch (state.phase) {
         case "menu":
           return new MainMenuScreen({
-            onPlayBot: startBot,
-            onPlayFriend: startFriend,
-            onPlayFfa: startFfa,
+            onStart: startGame,
           });
         case "lobby": {
           const mode = state.mode ?? "friend";
@@ -268,6 +272,7 @@ interface RoomCreationStart {
   botCount: number;
   difficulty?: BotDifficulty;
   lobbyHold?: boolean;
+  rounds?: number;
 }
 
 async function runRoomCreation(start: RoomCreationStart, httpUrl: string): Promise<void> {
@@ -290,6 +295,7 @@ async function runRoomCreation(start: RoomCreationStart, httpUrl: string): Promi
   };
   if (start.difficulty !== undefined) createOptions.difficulty = start.difficulty;
   if (start.lobbyHold === true) createOptions.lobbyHold = true;
+  if (start.rounds !== undefined) createOptions.rounds = start.rounds;
   try {
     const response = await createRoom(createOptions);
     appStore.getState().roomCreated({

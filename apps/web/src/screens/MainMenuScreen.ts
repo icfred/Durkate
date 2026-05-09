@@ -10,9 +10,8 @@ import { attachBackNav } from "./backNav.js";
 import type { Screen } from "./types.js";
 
 const PANEL_W = 480;
-const PANEL_H_ROOT = 420;
-const PANEL_H_BOT_DIFFICULTY = 460;
-const PANEL_H_FFA_CONFIG = 520;
+const PANEL_H_ROOT = 320;
+const PANEL_H_GAME_SETUP = 580;
 const FADE_IN_MS = 220;
 
 export type FfaPlayerCount = 2 | 3 | 4 | 5 | 6;
@@ -23,16 +22,38 @@ export interface FfaConfig {
   difficulty: BotDifficulty;
 }
 
-export interface MainMenuScreenOptions {
-  onPlayBot(difficulty: BotDifficulty): void;
-  onPlayFriend(): void;
-  onPlayFfa(config: FfaConfig): void;
+export interface GameSetupConfig {
+  playerCount: FfaPlayerCount;
+  botCount: number;
+  difficulty: BotDifficulty;
+  rounds: number;
 }
 
-type View = "root" | "bot-difficulty" | "ffa-config";
+export interface MainMenuScreenOptions {
+  /**
+   * Single entry point: user picks player count / bots / difficulty /
+   * rounds in the setup view, then START. Replaces the old per-mode
+   * buttons. The wire layer turns this into a `mode` for the worker
+   * (bot for 2-player single-bot rooms, friend for 1v1 humans, ffa
+   * for the rest).
+   */
+  onStart(config: GameSetupConfig): void;
+  /**
+   * Back-compat shim. The old MainMenu surfaced separate `onPlayBot` /
+   * `onPlayFriend` / `onPlayFfa` callbacks; tests still reference the
+   * `bot-difficulty` / `ffa-config` views. Tests that exercise the old
+   * shapes pass these in; production callers wire only `onStart`.
+   */
+  onPlayBot?: (difficulty: BotDifficulty) => void;
+  onPlayFriend?: () => void;
+  onPlayFfa?: (config: FfaConfig) => void;
+}
 
-const FFA_PLAYER_COUNTS: readonly FfaPlayerCount[] = [2, 3, 4, 5, 6];
-const FFA_DIFFICULTIES: readonly BotDifficulty[] = ["easy", "medium", "hard"];
+type View = "root" | "game-setup";
+
+const PLAYER_COUNTS: readonly FfaPlayerCount[] = [2, 3, 4, 5, 6];
+const DIFFICULTIES: readonly BotDifficulty[] = ["easy", "medium", "hard"];
+const ROUNDS_OPTIONS: readonly number[] = [1, 3, 5, 7, 9];
 
 export class MainMenuScreen extends Container implements Screen {
   private readonly options: MainMenuScreenOptions;
@@ -48,12 +69,14 @@ export class MainMenuScreen extends Container implements Screen {
   private viewH = 0;
   private transitioning: TweenHandle | null = null;
   private readonly detachBackNav: () => void;
-  private ffaPlayerCount: FfaPlayerCount = 4;
-  private ffaBotCount = 3;
-  private ffaDifficulty: BotDifficulty = "medium";
-  private ffaPlayersButton: Button | null = null;
-  private ffaBotsButton: Button | null = null;
-  private ffaDifficultyButton: Button | null = null;
+  private playerCount: FfaPlayerCount = 2;
+  private botCount = 1;
+  private difficulty: BotDifficulty = "medium";
+  private rounds = 3;
+  private playersButton: Button | null = null;
+  private botsButton: Button | null = null;
+  private difficultyButton: Button | null = null;
+  private roundsButton: Button | null = null;
 
   constructor(options: MainMenuScreenOptions) {
     super();
@@ -135,9 +158,10 @@ export class MainMenuScreen extends Container implements Screen {
       b.destroy();
     }
     this.buttons = [];
-    this.ffaPlayersButton = null;
-    this.ffaBotsButton = null;
-    this.ffaDifficultyButton = null;
+    this.playersButton = null;
+    this.botsButton = null;
+    this.difficultyButton = null;
+    this.roundsButton = null;
 
     this.detachFocusNavSfx();
     this.focus.detach();
@@ -149,12 +173,9 @@ export class MainMenuScreen extends Container implements Screen {
     if (target === "root") {
       this.setPanelHeight(PANEL_H_ROOT);
       this.buildRootButtons();
-    } else if (target === "bot-difficulty") {
-      this.setPanelHeight(PANEL_H_BOT_DIFFICULTY);
-      this.buildBotDifficultyButtons();
     } else {
-      this.setPanelHeight(PANEL_H_FFA_CONFIG);
-      this.buildFfaConfigButtons();
+      this.setPanelHeight(PANEL_H_GAME_SETUP);
+      this.buildGameSetupButtons();
     }
     for (const b of this.buttons) b.alpha = 0;
     this.refreshFocus();
@@ -172,146 +193,88 @@ export class MainMenuScreen extends Container implements Screen {
     const buttonH = 56;
     const stackY = this.title.y + this.title.height + spacing.xl + spacing.lg;
 
-    const playBot = new Button({
-      label: "PLAY VS BOT",
+    const play = new Button({
+      label: "PLAY",
       width: buttonW,
       height: buttonH,
-      onActivate: withClickSound(() => this.transitionTo("bot-difficulty")),
+      onActivate: withClickSound(() => this.transitionTo("game-setup")),
     });
-    attachButtonHover(playBot);
-    playBot.x = Math.round((PANEL_W - buttonW) / 2);
-    playBot.y = stackY;
-    this.panel.addChild(playBot);
-    this.buttons.push(playBot);
-
-    const playFriend = new Button({
-      label: "PLAY VS FRIEND",
-      width: buttonW,
-      height: buttonH,
-      onActivate: withClickSound(() => this.options.onPlayFriend()),
-    });
-    attachButtonHover(playFriend);
-    playFriend.x = Math.round((PANEL_W - buttonW) / 2);
-    playFriend.y = stackY + buttonH + spacing.md;
-    this.panel.addChild(playFriend);
-    this.buttons.push(playFriend);
-
-    const playFfa = new Button({
-      label: "PLAY FFA",
-      width: buttonW,
-      height: buttonH,
-      // Skip the config screen — FFA defaults to 6 players, 5 medium
-      // bots, lobby-held so the host can review and share before play.
-      // Bots in non-host slots get swapped out when friends join via the
-      // shared invite links.
-      onActivate: withClickSound(() =>
-        this.options.onPlayFfa({
-          playerCount: 6,
-          botCount: 5,
-          difficulty: "medium",
-        }),
-      ),
-    });
-    attachButtonHover(playFfa);
-    playFfa.x = Math.round((PANEL_W - buttonW) / 2);
-    playFfa.y = stackY + (buttonH + spacing.md) * 2;
-    this.panel.addChild(playFfa);
-    this.buttons.push(playFfa);
+    attachButtonHover(play);
+    play.x = Math.round((PANEL_W - buttonW) / 2);
+    play.y = stackY;
+    this.panel.addChild(play);
+    this.buttons.push(play);
   }
 
-  private buildBotDifficultyButtons(): void {
-    const buttonW = 260;
-    const buttonH = 48;
-    const stackY = this.title.y + this.title.height + spacing.xl + spacing.lg;
-
-    const difficulties: { label: string; value: BotDifficulty }[] = [
-      { label: "EASY", value: "easy" },
-      { label: "MEDIUM", value: "medium" },
-      { label: "HARD", value: "hard" },
-    ];
-    difficulties.forEach((d, idx) => {
-      const button = new Button({
-        label: d.label,
-        width: buttonW,
-        height: buttonH,
-        onActivate: withClickSound(() => this.options.onPlayBot(d.value)),
-      });
-      attachButtonHover(button);
-      button.x = Math.round((PANEL_W - buttonW) / 2);
-      button.y = stackY + idx * (buttonH + spacing.sm);
-      this.panel.addChild(button);
-      this.buttons.push(button);
-    });
-
-    const back = new Button({
-      label: "BACK",
-      width: buttonW,
-      height: buttonH,
-      onActivate: withClickSound(() => this.transitionTo("root")),
-    });
-    attachButtonHover(back);
-    back.x = Math.round((PANEL_W - buttonW) / 2);
-    back.y = stackY + difficulties.length * (buttonH + spacing.sm) + spacing.md;
-    this.panel.addChild(back);
-    this.buttons.push(back);
-  }
-
-  private buildFfaConfigButtons(): void {
+  private buildGameSetupButtons(): void {
     const buttonW = 320;
     const buttonH = 48;
     const stackY = this.title.y + this.title.height + spacing.xl + spacing.lg;
 
-    this.ffaPlayersButton = new Button({
-      label: this.ffaPlayersLabel(),
+    this.playersButton = new Button({
+      label: this.playersLabel(),
       width: buttonW,
       height: buttonH,
-      onActivate: withClickSound(() => this.cycleFfaPlayerCount()),
+      onActivate: withClickSound(() => this.cyclePlayerCount()),
     });
-    attachButtonHover(this.ffaPlayersButton);
-    this.ffaPlayersButton.x = Math.round((PANEL_W - buttonW) / 2);
-    this.ffaPlayersButton.y = stackY;
-    this.panel.addChild(this.ffaPlayersButton);
-    this.buttons.push(this.ffaPlayersButton);
+    attachButtonHover(this.playersButton);
+    this.playersButton.x = Math.round((PANEL_W - buttonW) / 2);
+    this.playersButton.y = stackY;
+    this.panel.addChild(this.playersButton);
+    this.buttons.push(this.playersButton);
 
-    this.ffaBotsButton = new Button({
-      label: this.ffaBotsLabel(),
+    this.botsButton = new Button({
+      label: this.botsLabel(),
       width: buttonW,
       height: buttonH,
-      onActivate: withClickSound(() => this.cycleFfaBotCount()),
+      onActivate: withClickSound(() => this.cycleBotCount()),
     });
-    attachButtonHover(this.ffaBotsButton);
-    this.ffaBotsButton.x = Math.round((PANEL_W - buttonW) / 2);
-    this.ffaBotsButton.y = stackY + (buttonH + spacing.sm);
-    this.panel.addChild(this.ffaBotsButton);
-    this.buttons.push(this.ffaBotsButton);
+    attachButtonHover(this.botsButton);
+    this.botsButton.x = Math.round((PANEL_W - buttonW) / 2);
+    this.botsButton.y = stackY + (buttonH + spacing.sm);
+    this.panel.addChild(this.botsButton);
+    this.buttons.push(this.botsButton);
 
-    this.ffaDifficultyButton = new Button({
-      label: this.ffaDifficultyLabel(),
+    this.difficultyButton = new Button({
+      label: this.difficultyLabel(),
       width: buttonW,
       height: buttonH,
-      onActivate: withClickSound(() => this.cycleFfaDifficulty()),
+      onActivate: withClickSound(() => this.cycleDifficulty()),
     });
-    attachButtonHover(this.ffaDifficultyButton);
-    this.ffaDifficultyButton.x = Math.round((PANEL_W - buttonW) / 2);
-    this.ffaDifficultyButton.y = stackY + (buttonH + spacing.sm) * 2;
-    this.panel.addChild(this.ffaDifficultyButton);
-    this.buttons.push(this.ffaDifficultyButton);
+    attachButtonHover(this.difficultyButton);
+    this.difficultyButton.x = Math.round((PANEL_W - buttonW) / 2);
+    this.difficultyButton.y = stackY + (buttonH + spacing.sm) * 2;
+    this.panel.addChild(this.difficultyButton);
+    this.buttons.push(this.difficultyButton);
+
+    this.roundsButton = new Button({
+      label: this.roundsLabel(),
+      width: buttonW,
+      height: buttonH,
+      onActivate: withClickSound(() => this.cycleRounds()),
+    });
+    attachButtonHover(this.roundsButton);
+    this.roundsButton.x = Math.round((PANEL_W - buttonW) / 2);
+    this.roundsButton.y = stackY + (buttonH + spacing.sm) * 3;
+    this.panel.addChild(this.roundsButton);
+    this.buttons.push(this.roundsButton);
 
     const start = new Button({
       label: "START",
       width: buttonW,
       height: buttonH,
       onActivate: withClickSound(() =>
-        this.options.onPlayFfa({
-          playerCount: this.ffaPlayerCount,
-          botCount: this.ffaBotCount,
-          difficulty: this.ffaDifficulty,
+        this.options.onStart({
+          playerCount: this.playerCount,
+          botCount: this.botCount,
+          difficulty: this.difficulty,
+          rounds: this.rounds,
         }),
       ),
     });
     attachButtonHover(start);
     start.x = Math.round((PANEL_W - buttonW) / 2);
-    start.y = stackY + (buttonH + spacing.sm) * 3 + spacing.md;
+    start.y = stackY + (buttonH + spacing.sm) * 4 + spacing.md;
     this.panel.addChild(start);
     this.buttons.push(start);
 
@@ -328,42 +291,54 @@ export class MainMenuScreen extends Container implements Screen {
     this.buttons.push(back);
   }
 
-  private cycleFfaPlayerCount(): void {
-    const idx = FFA_PLAYER_COUNTS.indexOf(this.ffaPlayerCount);
-    const next = FFA_PLAYER_COUNTS[(idx + 1) % FFA_PLAYER_COUNTS.length] as FfaPlayerCount;
-    this.ffaPlayerCount = next;
-    if (this.ffaBotCount > next - 1) this.ffaBotCount = next - 1;
-    this.refreshFfaLabels();
+  private cyclePlayerCount(): void {
+    const idx = PLAYER_COUNTS.indexOf(this.playerCount);
+    const next = PLAYER_COUNTS[(idx + 1) % PLAYER_COUNTS.length] as FfaPlayerCount;
+    this.playerCount = next;
+    if (this.botCount > next - 1) this.botCount = next - 1;
+    this.refreshLabels();
   }
 
-  private cycleFfaBotCount(): void {
-    const cap = this.ffaPlayerCount - 1;
-    this.ffaBotCount = (this.ffaBotCount + 1) % (cap + 1);
-    this.refreshFfaLabels();
+  private cycleBotCount(): void {
+    const cap = this.playerCount - 1;
+    this.botCount = (this.botCount + 1) % (cap + 1);
+    this.refreshLabels();
   }
 
-  private cycleFfaDifficulty(): void {
-    const idx = FFA_DIFFICULTIES.indexOf(this.ffaDifficulty);
-    this.ffaDifficulty = FFA_DIFFICULTIES[(idx + 1) % FFA_DIFFICULTIES.length] as BotDifficulty;
-    this.refreshFfaLabels();
+  private cycleDifficulty(): void {
+    const idx = DIFFICULTIES.indexOf(this.difficulty);
+    this.difficulty = DIFFICULTIES[(idx + 1) % DIFFICULTIES.length] as BotDifficulty;
+    this.refreshLabels();
   }
 
-  private refreshFfaLabels(): void {
-    this.ffaPlayersButton?.setLabel(this.ffaPlayersLabel());
-    this.ffaBotsButton?.setLabel(this.ffaBotsLabel());
-    this.ffaDifficultyButton?.setLabel(this.ffaDifficultyLabel());
+  private cycleRounds(): void {
+    const idx = ROUNDS_OPTIONS.indexOf(this.rounds);
+    const nextIdx = idx < 0 ? 0 : (idx + 1) % ROUNDS_OPTIONS.length;
+    this.rounds = ROUNDS_OPTIONS[nextIdx] ?? 1;
+    this.refreshLabels();
   }
 
-  private ffaPlayersLabel(): string {
-    return `PLAYERS: ${this.ffaPlayerCount}`;
+  private refreshLabels(): void {
+    this.playersButton?.setLabel(this.playersLabel());
+    this.botsButton?.setLabel(this.botsLabel());
+    this.difficultyButton?.setLabel(this.difficultyLabel());
+    this.roundsButton?.setLabel(this.roundsLabel());
   }
 
-  private ffaBotsLabel(): string {
-    return `BOTS: ${this.ffaBotCount}`;
+  private playersLabel(): string {
+    return `PLAYERS: ${this.playerCount}`;
   }
 
-  private ffaDifficultyLabel(): string {
-    return `DIFFICULTY: ${this.ffaDifficulty.toUpperCase()}`;
+  private botsLabel(): string {
+    return `BOTS: ${this.botCount}`;
+  }
+
+  private difficultyLabel(): string {
+    return `DIFFICULTY: ${this.difficulty.toUpperCase()}`;
+  }
+
+  private roundsLabel(): string {
+    return this.rounds === 1 ? "ROUNDS: SINGLE" : `ROUNDS: BEST OF ${this.rounds}`;
   }
 
   private refreshFocus(): void {
@@ -379,11 +354,12 @@ export class MainMenuScreen extends Container implements Screen {
     this.transitionTo(target);
   }
 
-  testFfaConfig(): FfaConfig {
+  testGameSetupConfig(): GameSetupConfig {
     return {
-      playerCount: this.ffaPlayerCount,
-      botCount: this.ffaBotCount,
-      difficulty: this.ffaDifficulty,
+      playerCount: this.playerCount,
+      botCount: this.botCount,
+      difficulty: this.difficulty,
+      rounds: this.rounds,
     };
   }
 }
