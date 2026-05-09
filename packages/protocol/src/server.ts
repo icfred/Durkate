@@ -49,9 +49,9 @@ export interface PendingCloseState {
 /**
  * Best-of-N match state. `currentRound` is 1-indexed and refers to the
  * round currently in play (or just completed if the match itself is
- * done). `scores[seat]` is that seat's "durak count" — the number of
- * rounds in which they ended up the durak. The match winner is the seat
- * with the lowest score (fewest losses). `totalRounds` is the cap.
+ * done). `scores[seat]` is cumulative position-based points: winner
+ * earns 0 pts, each subsequent finisher +1, durak earns playerCount pts.
+ * Lower total score = better standing. `totalRounds` is the cap.
  */
 export interface MatchState {
   currentRound: number;

@@ -446,8 +446,8 @@ describe("Best-of-N match", () => {
       room.testForceGameOver(0);
     });
 
-    // Score should record seat-0 loss; round counter still 1 (advance
-    // is on StartGame, not on round end).
+    // Score should record seat-0 as durak (playerCount=2 pts); round
+    // counter still 1 (advance is on StartGame, not on round end).
     let postRoundMatch: {
       currentRound: number;
       totalRounds: number;
@@ -460,7 +460,7 @@ describe("Best-of-N match", () => {
     expect(postRoundMatch).toMatchObject({
       currentRound: 1,
       totalRounds: 3,
-      scores: [1, 0],
+      scores: [2, 0],
       matchOver: false,
     });
 
@@ -511,7 +511,9 @@ describe("Best-of-N match", () => {
     await runInDurableObject(stub, async (room: Room) => {
       final = room.testMatchState();
     });
-    expect(final).toMatchObject({ matchOver: true, scores: [1, 1] });
+    // Round 1: seat 0 durak (2 pts, seat 1 = 0 pts).
+    // Round 2: seat 1 durak (2 pts, seat 0 += 0 = 2 pts).
+    expect(final).toMatchObject({ matchOver: true, scores: [2, 2] });
 
     ws.close();
   });

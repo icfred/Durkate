@@ -56,6 +56,7 @@ interface PersistedRoom {
   currentRound?: number;
   scores?: number[];
   matchOver?: boolean;
+  finishOrder?: number[];
   // Per-seat bot difficulty. `null` for human seats. Array length
   // tracks `playerCount`. Older persisted snapshots (pre-DUR-62) only
   // carried `botDifficulty` as a single value — `loadPersisted` fills
@@ -161,7 +162,7 @@ export class Room extends DurableObject<Env> {
   // behaviour: rematch resets via the existing flow, no inter-round
   // screen. For `totalRounds > 1` the host advances rounds via the
   // `StartGame` ws message after each game-over, with `scores[seat]`
-  // tracking the durak count per seat across the match.
+  // accumulating position-based points across the match.
   private totalRounds = 1;
   private currentRound = 1;
   private scores: number[] = [];
@@ -170,6 +171,11 @@ export class Room extends DurableObject<Env> {
   // Resets when the next round starts. Prevents double-counting if
   // `bumpStaleIfFinished` is called multiple times while in game-over.
   private currentRoundScored = false;
+  // Order in which seats are eliminated via PLAYER_OUT events during the
+  // current round. Seat at index 0 = first out (winner), etc. The durak
+  // is not appended here — handled separately in recordRoundResult.
+  // Persisted so DO hibernation mid-round doesn't lose the ordering.
+  private finishOrder: SeatIndex[] = [];
   // FFA throw-in window (ADR-0011). When non-null, the engine has not yet
   // applied the stored kind — it sits behind a `close-window` alarm that
   // fires after `closesAt`. THROW_IN extends, PASS appends, every active
@@ -281,6 +287,7 @@ export class Room extends DurableObject<Env> {
       this.scores = new Array<number>(this.playerCount).fill(0);
     }
     this.matchOver = persisted.matchOver ?? false;
+    this.finishOrder = (persisted.finishOrder ?? []) as SeatIndex[];
     this.alarms.load(persisted.deadlines);
   }
 
@@ -757,7 +764,13 @@ export class Room extends DurableObject<Env> {
       this.pendingCloseBy = null;
       this.botFanOut.clear();
       this.botChainCount = 0;
+      const wasScored = this.currentRoundScored;
       this.recordRoundResult();
+      if (!wasScored && this.currentRoundScored) {
+        // Scores just updated — push fresh RoomState so the game-over
+        // screen receives the correct match standings immediately.
+        this.broadcastRoomState();
+      }
       if (!this.alarms.has("stale")) {
         this.alarms.schedule("stale", Date.now() + STALE_MS);
       }
@@ -766,19 +779,31 @@ export class Room extends DurableObject<Env> {
     }
   }
 
-  // Record the just-finished round's durak into `scores` and check if
-  // the match is over. Idempotent — guarded by `currentRoundScored` so
-  // repeated calls (every action while in game-over re-runs
-  // `bumpStaleIfFinished`) don't double-count. No-op for single-round
-  // rooms (`totalRounds === 1`) which keep legacy semantics.
+  // Record round scores and check if the match is over. Idempotent —
+  // guarded by `currentRoundScored` so repeated calls (every action
+  // while in game-over re-runs `bumpStaleIfFinished`) don't double-count.
+  // No-op for single-round rooms (`totalRounds === 1`).
+  //
+  // Scoring: position-based. Winner (first PLAYER_OUT) = 0 pts. Each
+  // subsequent elimination = 1 more pt. Durak (last remaining) always
+  // gets `playerCount` pts — an extra point vs the second-to-last
+  // finisher to penalise being the durak vs just surviving longest.
+  // Example, 4 players: winner=0, 2nd=1, 3rd=2, durak=4.
   private recordRoundResult(): void {
     if (this.totalRounds <= 1) return;
     if (this.currentRoundScored) return;
     if (this.engineState === null || this.engineState.phase !== "game-over") return;
     const durak = this.engineState.durak;
-    if (durak !== null && durak >= 0 && durak < this.scores.length) {
-      const prev = this.scores[durak] ?? 0;
-      this.scores[durak] = prev + 1;
+    for (let seat = 0; seat < this.playerCount; seat++) {
+      if (seat === durak) {
+        this.scores[seat] = (this.scores[seat] ?? 0) + this.playerCount;
+      } else {
+        const pos = this.finishOrder.indexOf(seat as SeatIndex);
+        // pos === -1 means the seat was still in play when the game ended
+        // abnormally (forfeit). Treat them as finishing just before the durak.
+        const pts = pos >= 0 ? pos : this.finishOrder.length;
+        this.scores[seat] = (this.scores[seat] ?? 0) + pts;
+      }
     }
     this.currentRoundScored = true;
     if (this.currentRound >= this.totalRounds) {
@@ -944,6 +969,7 @@ export class Room extends DurableObject<Env> {
     if (!result.ok) throw new Error(`START_GAME failed: ${result.reason}`);
     this.engineState = result.state;
     this.rematchSeats = new Array<boolean>(this.playerCount).fill(false);
+    this.finishOrder = [];
     this.broadcast(result.events);
     this.scheduleTurnTimer();
     this.armBotTurnIfNeeded();
@@ -1576,6 +1602,13 @@ export class Room extends DurableObject<Env> {
   private broadcast(events: Event[]): void {
     if (this.engineState === null) return;
     const inRound = this.engineState.phase === "in-round";
+    // Track finish order for position-based scoring. PLAYER_OUT events
+    // arrive in elimination order, so appending here is sufficient.
+    for (const e of events) {
+      if (e.type === "PLAYER_OUT" && !this.finishOrder.includes(e.seat as SeatIndex)) {
+        this.finishOrder.push(e.seat as SeatIndex);
+      }
+    }
     for (const ws of this.ctx.getWebSockets()) {
       const seat = this.seatForWebSocket(ws);
       if (seat === undefined) continue;
@@ -1727,6 +1760,7 @@ export class Room extends DurableObject<Env> {
       currentRound: this.currentRound,
       scores: this.scores.slice(),
       matchOver: this.matchOver,
+      finishOrder: this.finishOrder.slice(),
       botDifficulties: this.botDifficulties.slice(),
     };
     await this.ctx.storage.put(STORAGE_KEY, snapshot);

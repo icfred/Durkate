@@ -99,25 +99,18 @@ interface ScoreRow {
 }
 
 // Build a per-seat scoreboard for the match. Sorted ascending by score
-// (fewest losses first) so the leader reads at the top. The local seat
+// (lowest pts = best) so the leader reads at the top. The local seat
 // is marked "(you)" so the player can find themselves at a glance.
 function rankSeats(match: MatchState, seatNames: ReadonlyArray<string | null>): ScoreRow[] {
   const rows = match.scores.map((score, seat) => {
     const rawName = seatNames[seat]?.trim?.();
     const name = rawName && rawName.length > 0 ? rawName : `Player ${seat + 1}`;
-    return {
-      seat,
-      score,
-      name,
-    };
+    return { seat, score, name };
   });
   rows.sort((a, b) => a.score - b.score || a.seat - b.seat);
-  // We don't know which seat is the local player here without
-  // threading it through; the call site marks "you" via a separate
-  // override below.
   return rows.map((r) => ({
     seat: r.seat,
-    label: `${r.name.toUpperCase()}   ${r.score} ${r.score === 1 ? "LOSS" : "LOSSES"}`,
+    label: `${r.name.toUpperCase()}   ${r.score} ${r.score === 1 ? "PT" : "PTS"}`,
     you: false,
   }));
 }
