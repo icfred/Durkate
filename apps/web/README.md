@@ -415,7 +415,7 @@ in favour of Pages — see the ADR addendum).
 ### One command
 
 ```
-pnpm --filter @durak/web deploy
+pnpm --filter @durak/web run deploy
 ```
 
 That script bakes `VITE_WS_URL=wss://durak-server.icfred.workers.dev/ws`
@@ -440,7 +440,7 @@ into the build and runs `wrangler pages deploy dist
 ```
 wrangler login
 wrangler pages project create durak-web --production-branch=main
-pnpm --filter @durak/web deploy
+pnpm --filter @durak/web run deploy
 ```
 
 Then attach `durak.icfred.co.uk` as a custom domain in the Cloudflare
@@ -455,7 +455,7 @@ git ref:
 
 ```
 git checkout <good-sha>
-pnpm --filter @durak/web deploy
+pnpm --filter @durak/web run deploy
 ```
 
 Or use the Cloudflare dashboard (Pages project → Deployments → ⋯ →

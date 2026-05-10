@@ -232,8 +232,10 @@ Worker name: `durak-server`. Public URL:
   `-<name>` to the worker name unless overridden — both bit the
   first prod deploy. Single config sidesteps both. Defaults are
   the production values; local dev overrides via `.dev.vars`.
-- Deploy: `pnpm --filter @durak/worker deploy` (runs `wrangler deploy`).
-  No CI; the user runs this manually after pushing to `main`.
+- Deploy: `pnpm --filter @durak/worker run deploy` (runs `wrangler deploy`).
+  Note the explicit `run` — `pnpm deploy` is a built-in command and clashes
+  with the script name. No CI; the user runs this manually after pushing
+  to `main`.
 
 ### Env / variables
 
@@ -262,7 +264,7 @@ Worker name: `durak-server`. Public URL:
 wrangler login
 wrangler whoami
 # Confirm Workers Paid plan is active on the account; DOs require it.
-pnpm --filter @durak/worker deploy
+pnpm --filter @durak/worker run deploy
 ```
 
 ### Rollback
@@ -274,7 +276,7 @@ pnpm --filter @durak/worker exec wrangler rollback --message "revert"
 ```
 
 Or revert the offending commit on `main` and re-run
-`pnpm --filter @durak/worker deploy`.
+`pnpm --filter @durak/worker run deploy`.
 
 ## Gotchas
 

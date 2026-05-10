@@ -11,7 +11,9 @@ card sandbox (`card-sandbox`) now live on Cloudflare Pages, served from
 `durak.icfred.co.uk` and `sandbox.icfred.co.uk` respectively. The worker
 half of the decision is unchanged: still Cloudflare Workers + Durable
 Objects on `durak-server.icfred.workers.dev`. CI was also dropped — every
-deploy is `pnpm --filter @durak/<app> deploy` from a developer machine.
+deploy is `pnpm --filter @durak/<app> run deploy` from a developer
+machine. (`run` is required — `pnpm deploy` is a built-in CLI command
+that clashes with the script name.)
 
 The original "open the door for Firebase Auth/Firestore" rationale for
 the Firebase Hosting choice no longer applies — the project is parked
