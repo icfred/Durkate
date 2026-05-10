@@ -5,6 +5,12 @@ main = "src/index.ts"
 compatibility_date = "2025-10-01"
 compatibility_flags = ["nodejs_compat"]
 
+# The icfred.co.uk zone is not on this Cloudflare account, so no
+# `routes` / custom_domain entry. The client connects via the workers.dev
+# URL (`wss://durak-server.icfred.workers.dev`), which requires
+# `workers_dev = true` because newer wrangler defaults it off.
+workers_dev = true
+
 # One Durable Object class, one DO instance per match.
 [[durable_objects.bindings]]
 name = "ROOMS"
@@ -26,6 +32,6 @@ new_sqlite_classes = ["Room"]
 # from the top level, and `--env <name>` appends `-<name>` to the worker name
 # unless explicitly overridden, both of which broke the first prod deploy.
 [vars]
-ALLOWED_ORIGINS = "https://durak-web.pages.dev,https://durak-icfred.web.app"
+ALLOWED_ORIGINS = "https://durak.icfred.co.uk"
 TURN_TIMEOUT_MS = "30000"
 DISCONNECT_FORFEIT_MS = "30000"
