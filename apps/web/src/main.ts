@@ -206,7 +206,13 @@ applyBootRouting();
           // worker rate limiter.
           lobbyOpts.onCyclePlayers = (dir) => {
             const s = appStore.getState();
-            const cur = pendingPlayers ?? s.playerCount ?? 2;
+            // Read the LIVE seat count from the latest RoomState rather
+            // than `s.playerCount` (which is set once at room-creation
+            // time and never refreshed). Without this the cycle stays
+            // anchored to the initial value and slow clicks always
+            // produce the same first-step transition.
+            const liveCount = s.room?.seats.length ?? s.playerCount ?? 2;
+            const cur = pendingPlayers ?? liveCount;
             const order = [2, 3, 4, 5, 6];
             const idx = order.indexOf(cur);
             const nextIdx = ((idx === -1 ? 0 : idx) + dir + order.length) % order.length;

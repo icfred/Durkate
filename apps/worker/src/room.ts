@@ -623,10 +623,14 @@ export class Room extends DurableObject<Env> {
     const nextDifficulty = change.difficulty ?? this.botDifficulty;
 
     // Apply: rebuild the seats array around the surviving humans. Humans
-    // stay where they sit (seat index preserved); empty front/middle slots
-    // become null; bots refill from the back to nextBotCount.
+    // stay where they sit (seat index preserved); existing bots keep
+    // their identity (name + token + per-seat difficulty) where possible
+    // — re-minting on every settings change made the lobby roster
+    // visibly shuffle on each click. Only NEW bot seats get fresh
+    // identities; only DROPPED bot seats get cleared.
     const oldSeats = this.seats.slice();
     const oldBotDifficulties = this.botDifficulties.slice();
+    const oldBotSeats = new Set(this.botSeats);
     const newSeats: (Seat | null)[] = new Array<Seat | null>(nextPlayerCount).fill(null);
     const newBotDifficulties: (BotDifficulty | null)[] = new Array<BotDifficulty | null>(
       nextPlayerCount,
@@ -645,18 +649,30 @@ export class Room extends DurableObject<Env> {
     }
 
     // Bots fill from the back, skipping seats already occupied by humans.
+    // Reuse the existing bot at a given index where one is already
+    // present — keeps names + tokens stable across settings changes the
+    // host makes mid-lobby.
     const newBotSeats: SeatIndex[] = [];
-    const names = pickBotNames(nextBotCount);
+    const freshNames = pickBotNames(nextBotCount);
+    let freshNameIdx = 0;
     let placed = 0;
     for (let i = nextPlayerCount - 1; i >= 0 && placed < nextBotCount; i--) {
       if (newSeats[i] !== null) continue;
       const seatIndex = i as SeatIndex;
       newBotSeats.push(seatIndex);
-      newSeats[seatIndex] = {
-        name: names[placed] ?? `Bot ${nextBotCount - placed}`,
-        token: randomBase64Url(TOKEN_BYTES),
-      };
-      newBotDifficulties[seatIndex] = nextDifficulty;
+      const existing = oldBotSeats.has(seatIndex) ? (oldSeats[seatIndex] ?? null) : null;
+      if (existing) {
+        newSeats[seatIndex] = existing;
+        newBotDifficulties[seatIndex] = oldBotDifficulties[seatIndex] ?? nextDifficulty;
+      } else {
+        const name = freshNames[freshNameIdx] ?? `Bot ${nextBotCount - placed}`;
+        freshNameIdx += 1;
+        newSeats[seatIndex] = {
+          name,
+          token: randomBase64Url(TOKEN_BYTES),
+        };
+        newBotDifficulties[seatIndex] = nextDifficulty;
+      }
       placed += 1;
     }
     newBotSeats.sort((a, b) => a - b);
@@ -673,7 +689,6 @@ export class Room extends DurableObject<Env> {
     this.totalRounds = nextRounds;
     this.scores = new Array<number>(nextPlayerCount).fill(0);
     this.rematchSeats = new Array<boolean>(nextPlayerCount).fill(false);
-    void oldBotDifficulties; // kept for future migration if shapes change
 
     this.broadcastRoomState();
     return { ok: true };
