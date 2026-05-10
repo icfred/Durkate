@@ -15,9 +15,14 @@
         color: #eee;
         font-family: monospace;
       }
+      body {
+        display: flex;
+        flex-direction: column;
+      }
       #app {
-        position: fixed;
-        inset: 0;
+        flex: 1;
+        min-height: 0;
+        position: relative;
       }
     </style>
   </head>

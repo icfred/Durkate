@@ -2,7 +2,7 @@ import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/700.css";
 
 import type { BotDifficulty } from "@durak/protocol";
-import { color, typography } from "@durak/ui";
+import { color, mountSiteBanner, typography } from "@durak/ui";
 import { Application } from "pixi.js";
 import { bindMuteShortcut, installAudioGestureUnlock } from "./audio/index.js";
 import { bindDevtoolsShortcut, DevPanel, subscribeAutoplay } from "./devtools/index.js";
@@ -24,6 +24,8 @@ import {
   type Mode,
   parseHashJoin,
 } from "./store.js";
+
+mountSiteBanner({ crumb: "DURAK" });
 
 const mountId = "app";
 const mount = document.getElementById(mountId);

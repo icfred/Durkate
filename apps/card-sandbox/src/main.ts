@@ -2,7 +2,7 @@ import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/700.css";
 
 import { loadSkinAssets } from "@durak/skins-spike";
-import { color, typography } from "@durak/ui";
+import { color, mountSiteBanner, typography } from "@durak/ui";
 import { Application, Container } from "pixi.js";
 import { AnimSandboxScreen } from "./screens/AnimSandboxScreen.js";
 import { HelpModal } from "./screens/HelpModal.js";
@@ -30,6 +30,8 @@ function navigateTo(screen: ScreenName, code?: string): void {
   else params.delete("code");
   window.location.search = `?${params.toString()}`;
 }
+
+mountSiteBanner({ crumb: "SANDBOX" });
 
 const mountId = "app";
 const mount = document.getElementById(mountId);

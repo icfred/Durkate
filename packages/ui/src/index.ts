@@ -38,6 +38,11 @@ export { SectionHeader } from "./components/SectionHeader.js";
 export { Stack, type StackDirection, type StackOptions } from "./components/Stack.js";
 export { ToggleChip, type ToggleChipOptions } from "./components/ToggleChip.js";
 export {
+  mountSiteBanner,
+  type SiteBannerHandle,
+  type SiteBannerOptions,
+} from "./dom/SiteBanner.js";
+export {
   type Focusable,
   type FocusEventListener,
   FocusManager,
