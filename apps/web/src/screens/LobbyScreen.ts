@@ -138,6 +138,16 @@ export class LobbyScreen extends Container implements Screen {
   private playerCount: number;
   private botCount: number;
   private humansExpected: number;
+  // Captured at constructor time so `syncPostRosterLayout` can shift
+  // every element below the roster by the delta when the seat count
+  // grows (or shrinks) after a LobbySettingsChange. Without this the
+  // COPY INVITE LINK button and the BACK / START row overlap roster
+  // rows in 5-6 player rooms.
+  private postRosterElements: { node: Container | Graphics; originalY: number }[] = [];
+  private initialRosterHeight = 0;
+  private rosterHeightDelta = 0;
+  private viewW = 0;
+  private viewH = 0;
   private readonly shareUrls: string[];
   private readonly status: Text;
   private readonly joinedLabel: Text | null;
@@ -324,9 +334,11 @@ export class LobbyScreen extends Container implements Screen {
     this.readyContent.addChild(this.roster);
     this.onCycleBotDifficulty = options.onCycleBotDifficulty;
     const initialRosterH = this.renderRoster(options.initialRoom);
+    this.initialRosterHeight = initialRosterH;
 
     nextY = this.roster.y + initialRosterH + spacing.lg;
-    this.addDivider(nextY);
+    const postRosterDivider = this.addDivider(nextY);
+    this.postRosterElements.push({ node: postRosterDivider, originalY: nextY });
     nextY += DIVIDER_PAD;
 
     // COPY LINK — single centered button. The URL itself isn't shown:
@@ -346,6 +358,7 @@ export class LobbyScreen extends Container implements Screen {
       copyButton.y = nextY;
       this.readyContent.addChild(copyButton);
       this.focus.register(copyButton);
+      this.postRosterElements.push({ node: copyButton, originalY: nextY });
       nextY = copyButton.y + copyButton.height + spacing.lg;
     }
 
@@ -358,7 +371,8 @@ export class LobbyScreen extends Container implements Screen {
     this.fieldLocalX = 0;
     this.fieldLocalY = 0;
 
-    this.addDivider(nextY);
+    const actionDivider = this.addDivider(nextY);
+    this.postRosterElements.push({ node: actionDivider, originalY: nextY });
     nextY += DIVIDER_PAD;
 
     // Action row: BACK and START NOW side by side. START NOW is the
@@ -381,6 +395,7 @@ export class LobbyScreen extends Container implements Screen {
       backButton.y = nextY;
       this.readyContent.addChild(backButton);
       this.focus.register(backButton);
+      this.postRosterElements.push({ node: backButton, originalY: nextY });
       actionX += backW + actionGap;
     }
     if (options.onStart) {
@@ -396,6 +411,7 @@ export class LobbyScreen extends Container implements Screen {
       startButton.y = nextY;
       this.readyContent.addChild(startButton);
       this.focus.register(startButton);
+      this.postRosterElements.push({ node: startButton, originalY: nextY });
     }
 
     void nextY;
@@ -477,9 +493,30 @@ export class LobbyScreen extends Container implements Screen {
   }
 
   layout(viewWidth: number, viewHeight: number): void {
+    this.viewW = viewWidth;
+    this.viewH = viewHeight;
     this.panel.x = Math.round((viewWidth - PANEL_W) / 2);
-    this.panel.y = Math.round((viewHeight - this.panelH) / 2);
+    this.panel.y = Math.round((viewHeight - (this.panelH + this.rosterHeightDelta)) / 2);
     this.remountOverlay();
+  }
+
+  // Roster row count varies with playerCount, but the constructor only
+  // positions the post-roster elements (COPY INVITE LINK, the divider
+  // before the action row, BACK, START) once. When the host grows /
+  // shrinks the room mid-lobby, shift each captured element by the
+  // delta so they keep the same gap to the bottom of the roster, and
+  // resize / re-centre the panel to match.
+  private syncPostRosterLayout(currentRosterHeight: number): void {
+    const nextDelta = currentRosterHeight - this.initialRosterHeight;
+    if (nextDelta === this.rosterHeightDelta) return;
+    this.rosterHeightDelta = nextDelta;
+    for (const entry of this.postRosterElements) {
+      entry.node.y = entry.originalY + nextDelta;
+    }
+    this.panel.resize(PANEL_W, this.panelH + nextDelta);
+    if (this.viewW > 0 && this.viewH > 0) {
+      this.panel.y = Math.round((this.viewH - (this.panelH + nextDelta)) / 2);
+    }
   }
 
   dispose(): void {
@@ -539,7 +576,8 @@ export class LobbyScreen extends Container implements Screen {
       this.layoutStatus();
       this.layoutJoinedLabel();
     }
-    this.renderRoster(room);
+    const rosterH = this.renderRoster(room);
+    this.syncPostRosterLayout(rosterH);
     const totalRounds = room?.match?.totalRounds ?? 1;
     this.lastRoundsValue = totalRounds;
     if (this.roundsButton) this.roundsButton.setLabel(roundsLabel(totalRounds));
@@ -698,7 +736,7 @@ export class LobbyScreen extends Container implements Screen {
   // Thin horizontal hairline drawn into readyContent to delimit the
   // panel's sections (config, roster, invite, actions). Color matches
   // the inactive border token so it reads as a separator, not a stroke.
-  private addDivider(y: number): void {
+  private addDivider(y: number): Graphics {
     const g = new Graphics();
     g.moveTo(spacing.lg, 0)
       .lineTo(PANEL_W - spacing.lg, 0)
@@ -709,6 +747,7 @@ export class LobbyScreen extends Container implements Screen {
       });
     g.y = y;
     this.readyContent.addChild(g);
+    return g;
   }
 
   // A clickable config cell: bordered rect with centred label, used for
