@@ -43,6 +43,7 @@ import {
   type TickerCallback,
 } from "pixi.js";
 import { CARD_H, CARD_W, CardView } from "../cards/CardView.js";
+import { buildCardName, type CardName, GRADE_COLOR } from "./cardName.js";
 import type { Screen } from "./types.js";
 
 // ─── Tuning constants ──────────────────────────────────────────────────────
@@ -114,6 +115,15 @@ export class SkinTunerScreen extends Container implements Screen {
   private readonly panel: Panel;
   private readonly panelInner: Container;
   private readonly codeText: Text;
+  // Generated CS:GO-style verbose name + colour-coded grade pill. Both
+  // are recomputed on every applyAll (whenever spec / tunables change)
+  // and are rendered inside the scroll panel under the title.
+  private nameText!: Text;
+  private gradeText!: Text;
+  // Hover tooltip for the name. Lives on the screen container (outside
+  // the scroll mask) so it can paint above the panel without being
+  // clipped.
+  private tooltip: Container | null = null;
   private readonly backBtn: Button | null;
   private readonly tickCallback: TickerCallback<unknown>;
   private readonly scrollMask: Graphics;
@@ -372,7 +382,7 @@ export class SkinTunerScreen extends Container implements Screen {
     root.y = spacing.md;
     this.panelInner.addChild(root);
 
-    // Header — title + 12-char code.
+    // Header — title, generated name, grade pill, 12-char code.
     const title = new Text({
       text: "SKIN TUNER",
       style: {
@@ -384,6 +394,39 @@ export class SkinTunerScreen extends Container implements Screen {
       },
     });
     root.add(title);
+    // Name + grade build the verbose CS:GO-style descriptor and
+    // colour-coded grade pill. Name wraps to the panel inner width so
+    // long descriptors don't overflow.
+    this.nameText = new Text({
+      text: "",
+      style: {
+        fontFamily: typography.family,
+        fontSize: typography.size.sm,
+        fontWeight: typography.weight.bold,
+        fill: color.text,
+        letterSpacing: typography.letterSpacing.tight,
+        wordWrap: true,
+        wordWrapWidth: ROW_WIDTH,
+      },
+    });
+    this.nameText.eventMode = "static";
+    this.nameText.cursor = "help";
+    this.nameText.on("pointerover", () => this.showNameTooltip());
+    this.nameText.on("pointerout", () => this.hideNameTooltip());
+    root.add(this.nameText);
+
+    this.gradeText = new Text({
+      text: "",
+      style: {
+        fontFamily: typography.family,
+        fontSize: typography.size.sm,
+        fontWeight: typography.weight.bold,
+        fill: color.textMuted,
+        letterSpacing: typography.letterSpacing.stamp,
+      },
+    });
+    root.add(this.gradeText);
+
     root.add(this.codeText);
 
     // Two paired action buttons (ROLL / RESET). Half the row each so
@@ -610,33 +653,17 @@ export class SkinTunerScreen extends Container implements Screen {
           }),
         )
         .add(
-          this.numberRow("METAL STR", {
+          // Single STRENGTH stepper that targets whichever finish layer
+          // applies — metal for silver/gold/bronze, holographic for the
+          // holo finish, no-op for matte. Consolidates the previous
+          // METAL STR + HOLO STR pair, which were mutually exclusive
+          // anyway (a card can't be both metal and holo at once).
+          this.numberRow("STRENGTH", {
             min: 0,
             max: 1,
             step: 0.01,
-            read: () => this.tunables.foil.metalStrength,
-            write: (v) => {
-              this.tunables = {
-                ...this.tunables,
-                foil: { ...this.tunables.foil, metalStrength: v },
-              };
-              this.card.setTunables(this.tunables);
-            },
-          }),
-        )
-        .add(
-          this.numberRow("HOLO STR", {
-            min: 0,
-            max: 1,
-            step: 0.01,
-            read: () => this.tunables.foil.holographicStrength,
-            write: (v) => {
-              this.tunables = {
-                ...this.tunables,
-                foil: { ...this.tunables.foil, holographicStrength: v },
-              };
-              this.card.setTunables(this.tunables);
-            },
+            read: () => this.readFinishStrength(),
+            write: (v) => this.writeFinishStrength(v),
           }),
         )
         .add(
@@ -946,6 +973,115 @@ export class SkinTunerScreen extends Container implements Screen {
     const bodyColor =
       CARD_BACKGROUNDS[this.spec.cardBackground]?.color ?? CARD_BACKGROUNDS[0]?.color ?? 0xefebd9;
     this.cardFront.setSurface(bodyColor);
+    // Pull every control's displayed value back from the current spec /
+    // tunables. Most pulls are no-ops (value unchanged → no redraw),
+    // but cross-field dependencies (e.g. STRENGTH reads from a
+    // different tunable depending on FINISH) need this to stay in sync.
+    for (const pull of this.pulls) pull();
+    this.refreshName();
+  }
+
+  private readFinishStrength(): number {
+    const finish = this.spec.finish;
+    if (finish === "holographic") return this.tunables.foil.holographicStrength;
+    if (finish === "matte") return 0;
+    return this.tunables.foil.metalStrength;
+  }
+
+  private writeFinishStrength(v: number): void {
+    const finish = this.spec.finish;
+    if (finish === "matte") return;
+    if (finish === "holographic") {
+      this.tunables = {
+        ...this.tunables,
+        foil: { ...this.tunables.foil, holographicStrength: v },
+      };
+    } else {
+      this.tunables = {
+        ...this.tunables,
+        foil: { ...this.tunables.foil, metalStrength: v },
+      };
+    }
+    this.card.setTunables(this.tunables);
+    this.refreshName();
+  }
+
+  private currentName: CardName | null = null;
+
+  private refreshName(): void {
+    // nameText/gradeText are created in buildPanel; refreshName is
+    // called from applyAll which fires before buildPanel during the
+    // first construction. Bail until the texts exist.
+    if (!this.nameText || !this.gradeText) return;
+    const name = buildCardName(this.spec, this.tunables);
+    this.currentName = name;
+    this.nameText.text = name.full;
+    this.gradeText.text = `GRADE  ${name.grade}  (${name.totalRarity})`;
+    this.gradeText.style.fill = GRADE_COLOR[name.grade];
+    if (this.tooltip) this.refreshTooltipBody();
+  }
+
+  private showNameTooltip(): void {
+    if (this.tooltip) return;
+    const name = this.currentName ?? buildCardName(this.spec, this.tunables);
+    const tooltip = new Container();
+    tooltip.eventMode = "none";
+    const bg = new Graphics();
+    tooltip.addChild(bg);
+    const body = new Text({
+      text: this.tooltipBodyFor(name),
+      style: {
+        fontFamily: typography.family,
+        fontSize: typography.size.xs,
+        fill: color.text,
+        letterSpacing: typography.letterSpacing.tight,
+        lineHeight: 16,
+      },
+    });
+    body.x = spacing.sm;
+    body.y = spacing.sm;
+    body.label = "tooltip-body";
+    tooltip.addChild(body);
+    const w = Math.ceil(body.width) + spacing.sm * 2;
+    const h = Math.ceil(body.height) + spacing.sm * 2;
+    bg.roundRect(0, 0, w, h, 4)
+      .fill({ color: color.bgDeep, alpha: 0.95 })
+      .stroke({ color: color.border, width: 1, alignment: 0 });
+    // Position tooltip just to the right of the panel so it doesn't
+    // get clipped by the scroll mask. Centred vertically on the name.
+    const namePos = this.nameText.getGlobalPosition();
+    tooltip.x = Math.round(this.panel.x + PANEL_WIDTH + spacing.sm);
+    tooltip.y = Math.round(namePos.y);
+    this.addChild(tooltip);
+    this.tooltip = tooltip;
+  }
+
+  private hideNameTooltip(): void {
+    if (!this.tooltip) return;
+    this.removeChild(this.tooltip);
+    this.tooltip.destroy({ children: true });
+    this.tooltip = null;
+  }
+
+  private refreshTooltipBody(): void {
+    if (!this.tooltip || !this.currentName) return;
+    const body = this.tooltip.getChildByLabel?.("tooltip-body") as Text | null;
+    if (!body) return;
+    body.text = this.tooltipBodyFor(this.currentName);
+  }
+
+  private tooltipBodyFor(name: CardName): string {
+    const lines: string[] = [];
+    for (const c of name.components) {
+      // Pad to keep columns roughly aligned in monospace. Label width
+      // 9, value width 22, then word.
+      const label = c.label.padEnd(9);
+      const value = c.value.padEnd(22);
+      lines.push(`${label} ${value} ${c.word}`);
+    }
+    lines.push("");
+    lines.push(`RARITY    ${name.totalRarity}                      ${name.grade}`);
+    return lines.join("\n");
   }
 
   private onTick(_ticker: Ticker): void {
