@@ -281,27 +281,42 @@ export function dealCard(options: DealCardOptions): TweenHandle {
   const tickerOpt: { ticker?: Ticker } = {};
   if (options.ticker) tickerOpt.ticker = options.ticker;
 
+  // The flip happens in the LAST quarter of the animation — the card
+  // travels into hand position face-down first, then flips at the
+  // tail-end. Gives the eye time to read the back's pattern before
+  // the reveal.
+  const flipStart = 0.7;
+
   return tween({
     from: 0,
     to: 1,
     durationMs: total,
     easing,
     onUpdate: (t) => {
-      // Linear interp on every channel except scale.x. The flip lives
-      // in scale.x as a triangle wave: collapses to 0 at t=0.5, then
-      // unfolds back to the resting scale by t=1.
-      target.x = startX + (restX - startX) * t;
-      target.y = startY + (restY - startY) * t;
-      target.rotation = startRotation + (restRotation - startRotation) * t;
-      target.skew.x = startSkewX + (restSkewX - startSkewX) * t;
-      target.scale.y = startScaleY + (restScaleY - startScaleY) * t;
-      target.scale.x =
-        t < 0.5
-          ? startScaleX + (0 - startScaleX) * (t * 2)
-          : 0 + (restScaleX - 0) * ((t - 0.5) * 2);
-      if (t >= 0.5 && !midpointFired) {
-        midpointFired = true;
-        options.onMidpoint?.();
+      // Movement phase runs for the whole duration up to flipStart,
+      // then holds at the rest pose. flipPhase 0..1 covers the flip.
+      const moveT = Math.min(t / flipStart, 1);
+      target.x = startX + (restX - startX) * moveT;
+      target.y = startY + (restY - startY) * moveT;
+      target.rotation = startRotation + (restRotation - startRotation) * moveT;
+      target.skew.x = startSkewX + (restSkewX - startSkewX) * moveT;
+      target.scale.y = startScaleY + (restScaleY - startScaleY) * moveT;
+      // scale.x ALSO interps to rest during the move phase so the
+      // card looks visually whole as it descends. The flip then
+      // collapses + expands scale.x within the last 30% of the
+      // duration.
+      if (t < flipStart) {
+        target.scale.x = startScaleX + (restScaleX - startScaleX) * moveT;
+      } else {
+        const flipT = (t - flipStart) / (1 - flipStart);
+        target.scale.x =
+          flipT < 0.5
+            ? restScaleX + (0 - restScaleX) * (flipT * 2)
+            : 0 + (restScaleX - 0) * ((flipT - 0.5) * 2);
+        if (flipT >= 0.5 && !midpointFired) {
+          midpointFired = true;
+          options.onMidpoint?.();
+        }
       }
     },
     onComplete: () => {
@@ -394,8 +409,12 @@ export interface ShakeCardOptions {
   target: Container;
   /** Peak horizontal displacement in pixels. Default 14. */
   intensityX?: number;
+  /** Peak vertical displacement in pixels. Default 8. */
+  intensityY?: number;
   /** Peak rotation displacement in radians. Default 0.05. */
   intensityRotation?: number;
+  /** Peak skew wobble in radians (both axes). Default 0.12. */
+  intensitySkew?: number;
   /** Number of full back-and-forth oscillations over the duration. Default 4. */
   cycles?: number;
   durationMs?: number;
@@ -404,18 +423,26 @@ export interface ShakeCardOptions {
 }
 
 /**
- * "Shake" — rapid in-place wobble (X position + rotation), amplitude
- * decays linearly so the card settles back to rest at completion.
- * Useful for "no" / contested-action feedback.
+ * "Shake" — rapid in-place wobble. Position wiggles on X (sin) and Y
+ * (cos at a different frequency so it reads chaotic, not circular),
+ * rotation tracks the X sin, and BOTH skew axes wobble too. The skew
+ * is the important bit for the skin tuner: rotating the surface
+ * normal mid-shake makes the foil / Fresnel highlights dance, which
+ * is the whole point of having a shake in a lighting-heavy preview.
  */
 export function shakeCard(options: ShakeCardOptions): TweenHandle {
   const target = options.target;
   const total = options.durationMs ?? DEFAULT_SHAKE_MS;
   const ix = options.intensityX ?? 14;
+  const iy = options.intensityY ?? 8;
   const ir = options.intensityRotation ?? 0.05;
+  const iSkew = options.intensitySkew ?? 0.12;
   const cycles = options.cycles ?? 4;
   const restX = target.x;
+  const restY = target.y;
   const restRotation = target.rotation;
+  const restSkewX = target.skew.x;
+  const restSkewY = target.skew.y;
 
   const tickerOpt: { ticker?: Ticker } = {};
   if (options.ticker) tickerOpt.ticker = options.ticker;
@@ -428,13 +455,23 @@ export function shakeCard(options: ShakeCardOptions): TweenHandle {
     onUpdate: (t) => {
       const decay = 1 - t;
       const phase = t * Math.PI * 2 * cycles;
-      const sin = Math.sin(phase);
-      target.x = restX + sin * ix * decay;
-      target.rotation = restRotation + sin * ir * decay;
+      const sinX = Math.sin(phase);
+      // Y uses a slightly higher frequency (1.3×) so the X / Y axes
+      // don't trace a tidy circle — the motion looks like real shake
+      // and the skin's tilt-driven shaders see varied normals.
+      const cosY = Math.cos(phase * 1.3);
+      target.x = restX + sinX * ix * decay;
+      target.y = restY + cosY * iy * decay;
+      target.rotation = restRotation + sinX * ir * decay;
+      target.skew.x = restSkewX + sinX * iSkew * decay;
+      target.skew.y = restSkewY + cosY * iSkew * decay;
     },
     onComplete: () => {
       target.x = restX;
+      target.y = restY;
       target.rotation = restRotation;
+      target.skew.x = restSkewX;
+      target.skew.y = restSkewY;
       options.onComplete?.();
     },
     ...tickerOpt,

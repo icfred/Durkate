@@ -43,7 +43,14 @@ import {
   type TickerCallback,
 } from "pixi.js";
 import { CARD_H, CARD_W, CardView } from "../cards/CardView.js";
-import { buildCardName, type CardName, GRADE_COLOR } from "./cardName.js";
+import {
+  buildCardName,
+  type CardName,
+  FINISH_ORDER,
+  FINISH_ROLL_WEIGHTS,
+  GRADE_COLOR,
+  PATTERN_ROLL_WEIGHTS,
+} from "./cardName.js";
 import type { Screen } from "./types.js";
 
 // ─── Tuning constants ──────────────────────────────────────────────────────
@@ -57,6 +64,10 @@ const DRAG_TAP_THRESHOLD_PX = 5;
 // the skin (which is the thing being tuned) regardless of which anim
 // the user just played.
 const REVERT_DELAY_MS = 1600;
+const BANNER_HEIGHT = 80;
+// Snappy roll-reveal animation duration. Short on purpose — rolling
+// many cards in succession should feel rapid, not cinematic.
+const ROLL_REVEAL_MS = 360;
 
 const PANEL_WIDTH = 380;
 const PANEL_PAD = spacing.lg;
@@ -115,11 +126,13 @@ export class SkinTunerScreen extends Container implements Screen {
   private readonly panel: Panel;
   private readonly panelInner: Container;
   private readonly codeText: Text;
-  // Generated CS:GO-style verbose name + colour-coded grade pill. Both
-  // are recomputed on every applyAll (whenever spec / tunables change)
-  // and are rendered inside the scroll panel under the title.
-  private nameText!: Text;
-  private gradeText!: Text;
+  // Top banner — sits above the scroll panel + preview, owns the
+  // verbose generated name and the colour-coded grade pill. Lives at
+  // the screen-container level so it paints above the panel mask and
+  // stretches the full viewport width.
+  private readonly banner: Panel;
+  private readonly bannerName: Text;
+  private readonly bannerGrade: Text;
   // Hover tooltip for the name. Lives on the screen container (outside
   // the scroll mask) so it can paint above the panel without being
   // clipped.
@@ -159,6 +172,13 @@ export class SkinTunerScreen extends Container implements Screen {
   // Speed multiplier for animation playback. 1 = real-time, 2 = double
   // speed, 0.25 = quarter speed. Driven by the SPEED stepper below.
   private animSpeed = 1;
+  // When true, R / ROLL plays a quick reveal animation; otherwise the
+  // new spec snaps in instantly. Driven by the ROLL ANIM toggle.
+  private rollAnimEnabled = true;
+  // While true, refreshName updates internal state but skips writing
+  // to the banner — used during the roll-reveal animation so the name
+  // pops in only after the card finishes settling.
+  private suppressNameText = false;
   // Auto-revert timer — flips the front back to the skinned face after
   // a short delay so the user always lands on the skin tuner's primary
   // surface regardless of which animation just ran.
@@ -230,9 +250,45 @@ export class SkinTunerScreen extends Container implements Screen {
       const target = event.target;
       if (target instanceof HTMLElement && /input|textarea/i.test(target.tagName)) return;
       event.preventDefault();
-      this.rollNewCode();
+      this.runRoll();
     };
     window.addEventListener("keydown", this.windowKeyDown);
+
+    // Top banner — verbose name + grade pill. Sits above the scroll
+    // panel and the preview, full viewport width minus margins. The
+    // name's pointerover surfaces the breakdown tooltip.
+    this.banner = new Panel({ width: 200, height: BANNER_HEIGHT });
+    this.banner.eventMode = "static";
+    this.addChild(this.banner);
+    this.bannerName = new Text({
+      text: "",
+      style: {
+        fontFamily: typography.family,
+        fontSize: typography.size.md,
+        fontWeight: typography.weight.bold,
+        fill: color.text,
+        letterSpacing: typography.letterSpacing.wide,
+        align: "center",
+        wordWrap: true,
+        wordWrapWidth: 600,
+      },
+    });
+    this.bannerName.eventMode = "static";
+    this.bannerName.cursor = "help";
+    this.bannerName.on("pointerover", () => this.showNameTooltip());
+    this.bannerName.on("pointerout", () => this.hideNameTooltip());
+    this.banner.addChild(this.bannerName);
+    this.bannerGrade = new Text({
+      text: "",
+      style: {
+        fontFamily: typography.family,
+        fontSize: typography.size.sm,
+        fontWeight: typography.weight.bold,
+        fill: color.textMuted,
+        letterSpacing: typography.letterSpacing.stamp,
+      },
+    });
+    this.banner.addChild(this.bannerGrade);
 
     this.codeText = new Text({
       text: this.code,
@@ -276,13 +332,26 @@ export class SkinTunerScreen extends Container implements Screen {
   }
 
   layout(viewWidth: number, viewHeight: number): void {
-    // BACK pinned to the top-left when present; the panel slides down to
-    // make room so the title still reads cleanly.
-    const topInset = this.backBtn ? this.backBtn.height + spacing.sm : 0;
+    // Banner spans the viewport top, BACK button on the far left.
+    const backWidth = this.backBtn?.width ?? 0;
+    const backOffset = this.backBtn ? backWidth + spacing.md : 0;
+    const bannerX = spacing.md + backOffset;
+    const bannerW = Math.max(240, viewWidth - bannerX - spacing.md);
     if (this.backBtn) {
       this.backBtn.x = spacing.md;
-      this.backBtn.y = spacing.md;
+      this.backBtn.y = spacing.md + Math.round((BANNER_HEIGHT - this.backBtn.height) / 2);
     }
+    this.banner.x = bannerX;
+    this.banner.y = spacing.md;
+    this.banner.resize(bannerW, BANNER_HEIGHT);
+    // Re-wrap and re-centre the name based on the live banner width.
+    this.bannerName.style.wordWrapWidth = bannerW - spacing.lg * 2;
+    this.bannerName.x = Math.round((bannerW - this.bannerName.width) / 2);
+    this.bannerName.y = spacing.sm;
+    this.bannerGrade.x = Math.round((bannerW - this.bannerGrade.width) / 2);
+    this.bannerGrade.y = BANNER_HEIGHT - this.bannerGrade.height - spacing.sm;
+
+    const topInset = BANNER_HEIGHT + spacing.sm;
     this.panel.x = spacing.md;
     this.panel.y = spacing.md + topInset;
     const panelH = Math.max(200, viewHeight - spacing.md * 2 - topInset);
@@ -296,10 +365,11 @@ export class SkinTunerScreen extends Container implements Screen {
     const previewW = CARD_W * PREVIEW_SCALE;
     const previewH = CARD_H * PREVIEW_SCALE;
     const availableX = viewWidth - PANEL_WIDTH - spacing.md * 2;
+    const availableY = viewHeight - topInset - spacing.md;
     this.preview.x = Math.round(
       spacing.md + PANEL_WIDTH + (availableX - previewW) / 2 + previewW / 2,
     );
-    this.preview.y = Math.round((viewHeight - previewH) / 2 + previewH / 2);
+    this.preview.y = Math.round(spacing.md + topInset + (availableY - previewH) / 2 + previewH / 2);
   }
 
   dispose(): void {
@@ -394,39 +464,6 @@ export class SkinTunerScreen extends Container implements Screen {
       },
     });
     root.add(title);
-    // Name + grade build the verbose CS:GO-style descriptor and
-    // colour-coded grade pill. Name wraps to the panel inner width so
-    // long descriptors don't overflow.
-    this.nameText = new Text({
-      text: "",
-      style: {
-        fontFamily: typography.family,
-        fontSize: typography.size.sm,
-        fontWeight: typography.weight.bold,
-        fill: color.text,
-        letterSpacing: typography.letterSpacing.tight,
-        wordWrap: true,
-        wordWrapWidth: ROW_WIDTH,
-      },
-    });
-    this.nameText.eventMode = "static";
-    this.nameText.cursor = "help";
-    this.nameText.on("pointerover", () => this.showNameTooltip());
-    this.nameText.on("pointerout", () => this.hideNameTooltip());
-    root.add(this.nameText);
-
-    this.gradeText = new Text({
-      text: "",
-      style: {
-        fontFamily: typography.family,
-        fontSize: typography.size.sm,
-        fontWeight: typography.weight.bold,
-        fill: color.textMuted,
-        letterSpacing: typography.letterSpacing.stamp,
-      },
-    });
-    root.add(this.gradeText);
-
     root.add(this.codeText);
 
     // Two paired action buttons (ROLL / RESET). Half the row each so
@@ -441,7 +478,7 @@ export class SkinTunerScreen extends Container implements Screen {
         label: "ROLL CODE",
         width: actionWidth,
         height: 28,
-        onActivate: () => this.rollNewCode(),
+        onActivate: () => this.runRoll(),
       }),
     );
     actions.add(
@@ -767,6 +804,24 @@ export class SkinTunerScreen extends Container implements Screen {
       }),
     );
 
+    const rollAnimToggle = new ToggleChip({
+      label: "ROLL ANIM",
+      active: this.rollAnimEnabled,
+      onChange: (active) => {
+        this.rollAnimEnabled = active;
+      },
+      width: CONTROL_WIDTH,
+    });
+    this.focus.register(rollAnimToggle);
+    root.add(
+      new LabelRow({
+        label: "REVEAL",
+        control: rollAnimToggle,
+        width: ROW_WIDTH,
+        height: LABEL_ROW_HEIGHT,
+      }),
+    );
+
     // Stack height grows lazily as children are added; once the build
     // completes its `height` reflects the full content extent. Add a
     // bottom margin so the last row isn't flush with the panel edge.
@@ -853,6 +908,35 @@ export class SkinTunerScreen extends Container implements Screen {
     });
   }
 
+  private runRoll(): void {
+    this.cancelAnim();
+    if (!this.rollAnimEnabled) {
+      this.rollNewCode();
+      return;
+    }
+    // Hide the name + grade for the duration of the reveal. The
+    // pop-in on completion makes the new descriptor read as a
+    // discrete event rather than a continuous text update.
+    this.suppressNameText = true;
+    this.bannerName.text = "";
+    this.bannerGrade.text = "ROLLING…";
+    this.bannerGrade.style.fill = color.textMuted;
+    this.bannerGrade.x = Math.round((this.banner.width - this.bannerGrade.width) / 2);
+    this.activeAnim = flipReveal({
+      target: this.card,
+      ticker: this.ticker,
+      durationMs: this.animDuration(ROLL_REVEAL_MS),
+      // Mid-flip we swap to the new spec — the user only sees the
+      // reveal once the second half of the flip plays.
+      onMidpoint: () => this.rollNewCode(),
+      onComplete: () => {
+        this.suppressNameText = false;
+        this.refreshName();
+        this.finishAnim();
+      },
+    });
+  }
+
   private finishAnim(): void {
     this.activeAnim = null;
     this.scheduleRevertToBack();
@@ -930,28 +1014,83 @@ export class SkinTunerScreen extends Container implements Screen {
 
   // ─── State ──────────────────────────────────────────────────────────
 
+  /**
+   * Triangular distribution centred on 0.5. Average of two uniform
+   * draws — most rolls land in the middle, edges are rare. Produces
+   * the "mid-card most of the time, occasional gems and trash" feel.
+   */
+  private bellRoll(): number {
+    return (this.nextRand() + this.nextRand()) / 2;
+  }
+
+  /**
+   * Pick an index from `weights` proportional to weight. Used for
+   * pattern + finish where some entries should be visibly rarer than
+   * others without changing the underlying spec encoding.
+   */
+  private weightedIndex(weights: readonly number[]): number {
+    const total = weights.reduce((s, w) => s + w, 0);
+    let target = this.nextRand() * total;
+    for (let i = 0; i < weights.length; i++) {
+      target -= weights[i] ?? 0;
+      if (target <= 0) return i;
+    }
+    return weights.length - 1;
+  }
+
   private rollNewCode(): void {
+    // Code is still rolled via the spike's RNG so the displayed string
+    // stays meaningful, but we override every interesting field with a
+    // weighted sample so the rolling actually feels different to the
+    // user. The tuner deviates from "code → spec" purity in service of
+    // a better roll experience.
     this.code = rollCode(this.nextRand);
-    this.spec = decode(this.code);
+    const baseSpec = decode(this.code);
+    const patternIdx = this.weightedIndex(PATTERN_ROLL_WEIGHTS);
+    const finishIdx = this.weightedIndex(FINISH_ROLL_WEIGHTS);
+    const finish = FINISH_ORDER[finishIdx] ?? "matte";
+
+    this.spec = {
+      ...baseSpec,
+      pattern: {
+        ...baseSpec.pattern,
+        index: patternIdx,
+        // Triangular bias on scale so MEDIUM is most common.
+        scale: 0.5 + this.bellRoll() * 2.5,
+      },
+      tint: {
+        // Hue is uniform — no "rare" colour direction.
+        hue: this.nextRand() * 2 - 1,
+        // Saturation triangular over 0..2 → DECENT/STRONG bands centre.
+        saturation: this.bellRoll() * 2,
+        // Brightness centres on 1.0 with mild spread.
+        brightness: 0.7 + this.bellRoll() * 0.6,
+      },
+      finish,
+    };
     this.codeText.text = this.code;
 
-    const r = this.nextRand;
     this.tunables = {
       ...this.tunables,
       pattern: {
         ...this.tunables.pattern,
-        overlayAlpha: 0.7 + r() * 0.3,
-        tileSize: 16 + Math.round(r() * 32),
+        overlayAlpha: 0.6 + this.bellRoll() * 0.4,
+        tileSize: 16 + Math.round(this.bellRoll() * 32),
       },
       foil: {
         ...this.tunables.foil,
-        metalStrength: 0.7 + r() * 0.3,
-        holographicStrength: 0.7 + r() * 0.3,
-        cellSize: 1 + Math.round(r() * 7),
-        coverageBias: r(),
-        depth: 0.6 + r() * 0.7,
+        // Strength triangular over full 0..1 — extremes (WELL,
+        // MASTERLY) are rare; SUPERIORALLY/EXCEPTIONALLY common.
+        metalStrength: this.bellRoll(),
+        holographicStrength: this.bellRoll(),
+        cellSize: 1 + Math.round(this.bellRoll() * 7),
+        coverageBias: this.bellRoll(),
+        depth: 0.4 + this.bellRoll() * 0.8,
       },
-      wear: r(),
+      // Float — triangular peak at 0.5 means most rolls land in the
+      // BS bucket by raw value, but combined with the explicit
+      // bucket bias the perceived split skews toward FT (mid).
+      wear: this.bellRoll(),
     };
 
     this.applyAll();
@@ -1009,15 +1148,17 @@ export class SkinTunerScreen extends Container implements Screen {
   private currentName: CardName | null = null;
 
   private refreshName(): void {
-    // nameText/gradeText are created in buildPanel; refreshName is
-    // called from applyAll which fires before buildPanel during the
-    // first construction. Bail until the texts exist.
-    if (!this.nameText || !this.gradeText) return;
+    if (!this.bannerName || !this.bannerGrade) return;
     const name = buildCardName(this.spec, this.tunables);
     this.currentName = name;
-    this.nameText.text = name.full;
-    this.gradeText.text = `GRADE  ${name.grade}  (${name.totalRarity})`;
-    this.gradeText.style.fill = GRADE_COLOR[name.grade];
+    if (this.suppressNameText) return;
+    this.bannerName.text = name.full;
+    this.bannerGrade.text = `GRADE  ${name.grade}  ·  RARITY ${name.totalRarity}`;
+    this.bannerGrade.style.fill = GRADE_COLOR[name.grade];
+    // Re-centre — text width changes whenever the spec does.
+    const bannerW = this.banner.width;
+    this.bannerName.x = Math.round((bannerW - this.bannerName.width) / 2);
+    this.bannerGrade.x = Math.round((bannerW - this.bannerGrade.width) / 2);
     if (this.tooltip) this.refreshTooltipBody();
   }
 
@@ -1047,11 +1188,10 @@ export class SkinTunerScreen extends Container implements Screen {
     bg.roundRect(0, 0, w, h, 4)
       .fill({ color: color.bgDeep, alpha: 0.95 })
       .stroke({ color: color.border, width: 1, alignment: 0 });
-    // Position tooltip just to the right of the panel so it doesn't
-    // get clipped by the scroll mask. Centred vertically on the name.
-    const namePos = this.nameText.getGlobalPosition();
-    tooltip.x = Math.round(this.panel.x + PANEL_WIDTH + spacing.sm);
-    tooltip.y = Math.round(namePos.y);
+    // Anchor the tooltip below the banner — keeps it visible regardless
+    // of which side of the screen the cursor is on.
+    tooltip.x = Math.round(this.banner.x);
+    tooltip.y = Math.round(this.banner.y + BANNER_HEIGHT + spacing.sm);
     this.addChild(tooltip);
     this.tooltip = tooltip;
   }
@@ -1072,15 +1212,21 @@ export class SkinTunerScreen extends Container implements Screen {
 
   private tooltipBodyFor(name: CardName): string {
     const lines: string[] = [];
+    lines.push("LABEL     VALUE                  WORD                          +RARITY");
+    lines.push("─────────────────────────────────────────────────────────────────");
     for (const c of name.components) {
-      // Pad to keep columns roughly aligned in monospace. Label width
-      // 9, value width 22, then word.
       const label = c.label.padEnd(9);
       const value = c.value.padEnd(22);
-      lines.push(`${label} ${value} ${c.word}`);
+      const word = c.word.padEnd(29);
+      const contribution = c.rarity > 0 ? `+${c.rarity}` : "—";
+      lines.push(`${label} ${value} ${word} ${contribution}`);
     }
+    lines.push("─────────────────────────────────────────────────────────────────");
+    lines.push(`SUM = ${name.totalRarity}    →    GRADE  ${name.grade}`);
     lines.push("");
-    lines.push(`RARITY    ${name.totalRarity}                      ${name.grade}`);
+    lines.push("Grade thresholds:");
+    lines.push("  COMMON 0-3   UNCOMMON 4-7   RARE 8-11");
+    lines.push("  EPIC 12-15   LEGENDARY 16-19   RELIC 20+");
     return lines.join("\n");
   }
 

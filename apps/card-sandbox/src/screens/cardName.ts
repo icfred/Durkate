@@ -91,11 +91,12 @@ export function buildCardName(spec: SkinSpec, tunables: Tunables): CardName {
   });
 
   const patternName = (PATTERN_NAMES[spec.pattern.index] ?? `P${spec.pattern.index}`).toUpperCase();
+  const patternRarity = PATTERN_RARITY[spec.pattern.index] ?? 0;
   components.push({
     label: "PATTERN",
     value: `#${spec.pattern.index}`,
     word: patternName,
-    rarity: 0,
+    rarity: patternRarity,
   });
   phrases.push(`${scaleBucket.word} ${patternName}`);
 
@@ -136,15 +137,70 @@ export function buildCardName(spec: SkinSpec, tunables: Tunables): CardName {
     finishStrengthRarity +
     finishRarity +
     scaleBucket.rarity +
+    patternRarity +
     tintBucket.rarity;
 
   return {
-    full: phrases.join(" • "),
+    // Single line of caps separated by spaces — Dwarf Fortress flavour
+    // (no bullets, no commas). Reads as one long descriptor.
+    full: phrases.join(" "),
     components,
     totalRarity,
     grade: rarityToGrade(totalRarity),
   };
 }
+
+// Per-pattern rarity weights. Index matches PATTERN_NAMES order:
+// voronoi(0), fbm(1), truchet(2), maze(3), crackle(4), dots(5),
+// stripes(6), brick(7). The rolling distribution further reduces
+// frequency of the rare ones; this just feeds the grade calc.
+const PATTERN_RARITY: Record<number, number> = {
+  0: 1, // voronoi   — uncommon
+  1: 4, // fbm       — rare
+  2: 1, // truchet   — uncommon
+  3: 3, // maze      — uncommon-rare
+  4: 4, // crackle   — rare
+  5: 0, // dots      — common
+  6: 0, // stripes   — common
+  7: 0, // brick     — common
+};
+
+/**
+ * Per-pattern roll weights. Higher value = more likely to be rolled.
+ * Sum is the denominator. Rare patterns (FBM, MAZE, CRACKLE) get
+ * smaller slices so most rolls land on the everyday DOTS / STRIPES /
+ * BRICK and the rare ones feel earned.
+ */
+export const PATTERN_ROLL_WEIGHTS: readonly number[] = [
+  12, // voronoi
+  5, // fbm
+  12, // truchet
+  8, // maze
+  5, // crackle
+  18, // dots
+  18, // stripes
+  22, // brick
+];
+
+/**
+ * Per-finish roll weights. MATTE dominates so most cards are dull;
+ * HOLOGRAPHIC is a once-in-a-while jackpot.
+ */
+export const FINISH_ROLL_WEIGHTS: readonly number[] = [
+  50, // matte
+  20, // silver
+  10, // gold
+  15, // bronze
+  5, // holographic
+];
+
+export const FINISH_ORDER: readonly SkinSpec["finish"][] = [
+  "matte",
+  "silver",
+  "gold",
+  "bronze",
+  "holographic",
+];
 
 // ── Bucket helpers ────────────────────────────────────────────────────
 //
