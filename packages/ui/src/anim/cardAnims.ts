@@ -1,6 +1,6 @@
 import type { Container, Ticker } from "pixi.js";
-import { type Anim, parallel, sequence } from "./compose.js";
-import { easeInOutCubic, easeOutBack, easeOutQuad } from "./easings.js";
+import { type Anim, sequence } from "./compose.js";
+import { type Easing, easeInOutCubic, easeOutBack } from "./easings.js";
 import { type TweenHandle, tween } from "./tween.js";
 
 // Card animation primitives. Designed for a 2D Pixi card sitting at its
@@ -122,146 +122,133 @@ export function flipReveal(options: FlipRevealOptions): TweenHandle {
   return sequence([phase1, phase2], options.onComplete);
 }
 
-export interface PlayCardOptions {
+export interface EntranceAnimOptions {
   /** The card container. */
   target: Container;
-  /** Pixels the card lifts upward at peak. Default 80. */
-  riseY?: number;
-  /** Scale at peak. Default 1.12. */
-  peakScale?: number;
-  /** Tilt (skew, radians) at peak — adds rotation flavour. Default 0.12. */
-  peakSkew?: number;
+  /** Starting X offset from the resting (current) position. */
+  fromX?: number;
+  /** Starting Y offset from the resting (current) position. */
+  fromY?: number;
+  /** Starting rotation offset (radians). */
+  fromRotation?: number;
+  /** Starting scale, multiplied with the resting scale. Default 1. */
+  fromScale?: number;
+  /** Starting skew on the X axis (radians). Adds perspective drama. */
+  fromSkewX?: number;
+  /** Easing for the journey. Default `easeOutBack` (overshoot landing). */
+  easing?: Easing;
   durationMs?: number;
   ticker?: Ticker;
   onComplete?(): void;
 }
 
 /**
- * "Play card" gesture. Card lifts up + scales up + tilts forward, then
- * lands back at its origin with a slight overshoot. Reads as the player
- * lifting the card, presenting it, and slamming it on the table.
+ * Generic card entrance. Captures the target's current transform as the
+ * "rest" pose, snaps the target to a configurable starting offset (with
+ * rotation, scale, skew), then tweens every channel back to rest in
+ * lockstep. `easeOutBack` by default so the landing overshoots and reads
+ * as a slam.
+ *
+ * Builds the dramatic "play card" feel — start far away + tilted +
+ * small + rotated; arrive square + full size + flat with a punch. Use
+ * different `from*` values for different vibes (deal from top-left,
+ * play from below, etc.).
  */
-export function playCard(options: PlayCardOptions): TweenHandle {
+function entranceFromOffset(options: EntranceAnimOptions): TweenHandle {
   const target = options.target;
   const total = options.durationMs ?? DEFAULT_PLAY_MS;
-  const rise = options.riseY ?? 80;
-  const peakScale = options.peakScale ?? 1.12;
-  const peakSkew = options.peakSkew ?? 0.12;
-  const startY = target.y;
-  const startScaleX = target.scale.x;
-  const startScaleY = target.scale.y;
-  const startSkewX = target.skew.x;
+  const easing = options.easing ?? easeOutBack;
+  const restX = target.x;
+  const restY = target.y;
+  const restRotation = target.rotation;
+  const restScaleX = target.scale.x;
+  const restScaleY = target.scale.y;
+  const restSkewX = target.skew.x;
+  const fromScale = options.fromScale ?? 1;
+
+  // Snapshot of where the target needs to fly in from. Computed up
+  // front so the tween's interpolation can lerp directly between two
+  // fixed endpoints (avoids drift across long sequences).
+  const startX = restX + (options.fromX ?? 0);
+  const startY = restY + (options.fromY ?? 0);
+  const startRotation = restRotation + (options.fromRotation ?? 0);
+  const startScaleX = restScaleX * fromScale;
+  const startScaleY = restScaleY * fromScale;
+  const startSkewX = restSkewX + (options.fromSkewX ?? 0);
+
+  // Snap to the start pose immediately so the first rendered frame
+  // already shows the off-screen origin instead of one frame at rest.
+  target.x = startX;
+  target.y = startY;
+  target.rotation = startRotation;
+  target.scale.set(startScaleX, startScaleY);
+  target.skew.x = startSkewX;
 
   const tickerOpt: { ticker?: Ticker } = {};
   if (options.ticker) tickerOpt.ticker = options.ticker;
 
-  // Three movements share the same time budget: lift (35%), hold (10%),
-  // drop (55%). The drop uses an overshoot easing so the card "slaps"
-  // the table rather than gliding to rest.
-  const liftMs = total * 0.35;
-  const holdMs = total * 0.1;
-  const dropMs = total * 0.55;
+  return tween({
+    from: 0,
+    to: 1,
+    durationMs: total,
+    easing,
+    onUpdate: (t) => {
+      target.x = startX + (restX - startX) * t;
+      target.y = startY + (restY - startY) * t;
+      target.rotation = startRotation + (restRotation - startRotation) * t;
+      target.scale.set(
+        startScaleX + (restScaleX - startScaleX) * t,
+        startScaleY + (restScaleY - startScaleY) * t,
+      );
+      target.skew.x = startSkewX + (restSkewX - startSkewX) * t;
+    },
+    onComplete: () => {
+      target.x = restX;
+      target.y = restY;
+      target.rotation = restRotation;
+      target.scale.set(restScaleX, restScaleY);
+      target.skew.x = restSkewX;
+      options.onComplete?.();
+    },
+    ...tickerOpt,
+  });
+}
 
-  const lift: Anim = (done) =>
-    parallel(
-      [
-        (cb) =>
-          tween({
-            from: startY,
-            to: startY - rise,
-            durationMs: liftMs,
-            easing: easeOutQuad,
-            onUpdate: (v) => {
-              target.y = v;
-            },
-            onComplete: cb,
-            ...tickerOpt,
-          }),
-        (cb) =>
-          tween({
-            from: 1,
-            to: peakScale,
-            durationMs: liftMs,
-            easing: easeOutQuad,
-            onUpdate: (s) => {
-              target.scale.set(startScaleX * s, startScaleY * s);
-            },
-            onComplete: cb,
-            ...tickerOpt,
-          }),
-        (cb) =>
-          tween({
-            from: 0,
-            to: peakSkew,
-            durationMs: liftMs,
-            easing: easeOutQuad,
-            onUpdate: (s) => {
-              target.skew.x = startSkewX + s;
-            },
-            onComplete: cb,
-            ...tickerOpt,
-          }),
-      ],
-      done,
-    );
+export type PlayCardOptions = EntranceAnimOptions;
 
-  const hold: Anim = (done) =>
-    tween({
-      from: 0,
-      to: 1,
-      durationMs: holdMs,
-      onUpdate: () => {},
-      onComplete: done,
-      ...tickerOpt,
-    });
+/**
+ * "Play card" gesture. Card flies in from off-screen below, rotates +
+ * scales up as it travels, and lands on the table with an overshoot.
+ * The default offsets are intentionally dramatic — override `fromX`,
+ * `fromY`, `fromRotation`, `fromScale` for a calmer entrance.
+ */
+export function playCard(options: PlayCardOptions): TweenHandle {
+  return entranceFromOffset({
+    fromX: 0,
+    fromY: 720,
+    fromRotation: -0.45,
+    fromScale: 0.35,
+    fromSkewX: 0.35,
+    durationMs: options.durationMs ?? 900,
+    ...options,
+  });
+}
 
-  const drop: Anim = (done) =>
-    parallel(
-      [
-        (cb) =>
-          tween({
-            from: startY - rise,
-            to: startY,
-            durationMs: dropMs,
-            easing: easeOutBack,
-            onUpdate: (v) => {
-              target.y = v;
-            },
-            onComplete: cb,
-            ...tickerOpt,
-          }),
-        (cb) =>
-          tween({
-            from: peakScale,
-            to: 1,
-            durationMs: dropMs,
-            easing: easeOutBack,
-            onUpdate: (s) => {
-              target.scale.set(startScaleX * s, startScaleY * s);
-            },
-            onComplete: cb,
-            ...tickerOpt,
-          }),
-        (cb) =>
-          tween({
-            from: peakSkew,
-            to: 0,
-            durationMs: dropMs,
-            easing: easeOutBack,
-            onUpdate: (s) => {
-              target.skew.x = startSkewX + s;
-            },
-            onComplete: cb,
-            ...tickerOpt,
-          }),
-      ],
-      done,
-    );
+export type DealCardOptions = EntranceAnimOptions;
 
-  return sequence([lift, hold, drop], () => {
-    target.y = startY;
-    target.scale.set(startScaleX, startScaleY);
-    target.skew.x = startSkewX;
-    options.onComplete?.();
+/**
+ * "Deal" gesture. Slides in from off-screen top-left with a quarter-turn
+ * rotation, gentler than `playCard`. Reads as a card being passed across
+ * the table rather than slammed down.
+ */
+export function dealCard(options: DealCardOptions): TweenHandle {
+  return entranceFromOffset({
+    fromX: -640,
+    fromY: -360,
+    fromRotation: -0.6,
+    fromScale: 0.55,
+    fromSkewX: -0.18,
+    durationMs: options.durationMs ?? 750,
+    ...options,
   });
 }

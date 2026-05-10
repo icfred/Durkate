@@ -1,4 +1,7 @@
 export {
+  type DealCardOptions,
+  dealCard,
+  type EntranceAnimOptions,
   type FlipAxis,
   type FlipRevealOptions,
   flipReveal,

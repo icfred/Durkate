@@ -1,6 +1,9 @@
 export {
   type Anim,
+  type DealCardOptions,
+  dealCard,
   type Easing,
+  type EntranceAnimOptions,
   easeInOutCubic,
   easeInQuad,
   easeOutBack,

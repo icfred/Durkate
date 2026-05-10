@@ -16,6 +16,7 @@ import {
   Button,
   Cycle,
   color,
+  dealCard,
   FocusManager,
   flipReveal,
   LABEL_ROW_HEIGHT,
@@ -96,6 +97,11 @@ export class SkinTunerScreen extends Container implements Screen {
   private readonly ticker: Ticker;
   private readonly assets: SkinAssets;
   private readonly card: SkinnedCard;
+  // Front face — clean cream surface with the rank/suit corner glyph,
+  // no skin overlay. Stacked behind the back so toggling visibility
+  // mid-flip reveals it. Mirrors the back's transform every frame so
+  // tilt + animation move both views identically.
+  private readonly cardFront: CardView;
   private readonly preview: Container;
   private readonly panel: Panel;
   private readonly panelInner: Container;
@@ -157,8 +163,12 @@ export class SkinTunerScreen extends Container implements Screen {
 
     this.preview = new Container();
     this.addChild(this.preview);
+    // Two stacked card views: the back (skinned, no glyph — this is what
+    // the tuner is for) and the front (face-up, no skin). Each frame the
+    // front mirrors the back's transform so the visible-flip illusion is
+    // seamless when visibility toggles at the flip midpoint.
     this.card = new SkinnedCard({
-      base: new CardView(PREVIEW_CARD),
+      base: new CardView(PREVIEW_CARD, true),
       baseWidth: CARD_W,
       baseHeight: CARD_H,
       assets: this.assets,
@@ -167,15 +177,20 @@ export class SkinTunerScreen extends Container implements Screen {
     this.card.pivot.set(CARD_W / 2, CARD_H / 2);
     this.preview.addChild(this.card);
 
+    this.cardFront = new CardView(PREVIEW_CARD, false);
+    this.cardFront.scale.set(PREVIEW_SCALE);
+    this.cardFront.pivot.set(CARD_W / 2, CARD_H / 2);
+    this.cardFront.visible = false;
+    this.preview.addChild(this.cardFront);
+
     this.card.eventMode = "static";
     this.card.cursor = "grab";
     this.card.on("pointerdown", () => this.startDrag());
-    // Double-click on the card snaps the tilt back to flat. Replaces the
-    // old "release = spring back" behaviour so the user can park the
-    // card at an angle to compare looks.
-    this.card.on("pointertap", (e: FederatedPointerEvent) => {
-      if (e.detail >= 2) this.resetTilt();
-    });
+    // Single click (no drag) snaps the tilt back to flat — quicker
+    // than double-click for the common "I'm done leaning, reset" flow.
+    // Drag releases don't fire pointertap, so this only triggers on
+    // taps without movement.
+    this.card.on("pointertap", () => this.resetTilt());
     this.eventMode = "static";
     this.on("globalpointermove", (e: FederatedPointerEvent) => {
       if (this.dragging) this.updateTiltTarget(e);
@@ -679,16 +694,17 @@ export class SkinTunerScreen extends Container implements Screen {
       ),
     );
 
-    // ANIMATIONS — preview-card gesture buttons. These are decoupled
-    // from any game state; they exist to test card-anim primitives
-    // (flipReveal, playCard) on the live skinned preview so we can
-    // iterate on the feel without spinning up the full Durak app.
+    // ANIMATIONS — preview-card gesture buttons. Three primitives in
+    // a horizontal stack: FLIP (3D-feel reveal), PLAY (off-screen
+    // entrance with slam landing), DEAL (gentler arc from top-left).
     root.add(new SectionHeader("ANIMATIONS"));
-    const animActions = new Stack({ direction: "horizontal", gap: spacing.xs });
+    const animGap = spacing.xs;
+    const animBtnWidth = Math.floor((ROW_WIDTH - animGap * 2) / 3);
+    const animActions = new Stack({ direction: "horizontal", gap: animGap });
     animActions.add(
       new Button({
         label: "FLIP",
-        width: actionWidth,
+        width: animBtnWidth,
         height: 28,
         onActivate: () => this.runFlip(),
       }),
@@ -696,9 +712,17 @@ export class SkinTunerScreen extends Container implements Screen {
     animActions.add(
       new Button({
         label: "PLAY",
-        width: actionWidth,
+        width: animBtnWidth,
         height: 28,
         onActivate: () => this.runPlay(),
+      }),
+    );
+    animActions.add(
+      new Button({
+        label: "DEAL",
+        width: animBtnWidth,
+        height: 28,
+        onActivate: () => this.runDeal(),
       }),
     );
     root.add(animActions);
@@ -721,6 +745,7 @@ export class SkinTunerScreen extends Container implements Screen {
     this.activeAnim = flipReveal({
       target: this.card,
       ticker: this.ticker,
+      onMidpoint: () => this.swapFace(),
       onComplete: () => {
         this.activeAnim = null;
       },
@@ -736,6 +761,26 @@ export class SkinTunerScreen extends Container implements Screen {
         this.activeAnim = null;
       },
     });
+  }
+
+  private runDeal(): void {
+    this.cancelAnim();
+    this.activeAnim = dealCard({
+      target: this.card,
+      ticker: this.ticker,
+      onComplete: () => {
+        this.activeAnim = null;
+      },
+    });
+  }
+
+  private swapFace(): void {
+    // Toggle which side of the card is visible. Called from the flip
+    // midpoint so the swap happens while the card is edge-on and the
+    // user can't see it.
+    const showingFront = this.cardFront.visible;
+    this.cardFront.visible = !showingFront;
+    this.card.visible = showingFront;
   }
 
   private section(): Stack {
@@ -834,16 +879,33 @@ export class SkinTunerScreen extends Container implements Screen {
   }
 
   private onTick(_ticker: Ticker): void {
-    const dx = this.targetTiltX - this.currentTiltX;
-    const dy = this.targetTiltY - this.currentTiltY;
-    if (Math.abs(dx) > 1e-4 || Math.abs(dy) > 1e-4) {
-      this.currentTiltX += dx * TILT_LERP;
-      this.currentTiltY += dy * TILT_LERP;
-      this.card.skew.set(this.currentTiltY, this.currentTiltX);
-      this.card.scale.x = PREVIEW_SCALE * (1 - Math.abs(this.currentTiltY) * TILT_FORESHORTEN);
-      this.card.scale.y = PREVIEW_SCALE * (1 - Math.abs(this.currentTiltX) * TILT_FORESHORTEN);
-      if (this.skinsActive) this.card.refreshTilt();
+    // Tilt lerp only runs when the user isn't being driven by an
+    // animation tween — animations write skew/scale directly each
+    // frame and we don't want the lerp to fight them.
+    if (this.activeAnim === null) {
+      const dx = this.targetTiltX - this.currentTiltX;
+      const dy = this.targetTiltY - this.currentTiltY;
+      if (Math.abs(dx) > 1e-4 || Math.abs(dy) > 1e-4) {
+        this.currentTiltX += dx * TILT_LERP;
+        this.currentTiltY += dy * TILT_LERP;
+        this.card.skew.set(this.currentTiltY, this.currentTiltX);
+        this.card.scale.x = PREVIEW_SCALE * (1 - Math.abs(this.currentTiltY) * TILT_FORESHORTEN);
+        this.card.scale.y = PREVIEW_SCALE * (1 - Math.abs(this.currentTiltX) * TILT_FORESHORTEN);
+      }
     }
+    // Mirror the back's transform onto the front so toggling visibility
+    // mid-flip lands on a perfectly aligned face. Tilt drag, animations,
+    // and resting state all flow through this single mirror step.
+    this.cardFront.x = this.card.x;
+    this.cardFront.y = this.card.y;
+    this.cardFront.rotation = this.card.rotation;
+    this.cardFront.scale.copyFrom(this.card.scale);
+    this.cardFront.skew.copyFrom(this.card.skew);
+    // Refresh skin shader uniforms every frame while skin is on so the
+    // pattern / foil lighting tracks ANY transform change — drag tilt,
+    // flipReveal, playCard, dealCard, the lot. The cost is per-frame
+    // uniform writes; cheap relative to the mesh draws.
+    if (this.skinsActive) this.card.refreshTilt();
   }
 
   private nextRand = (): number => {
