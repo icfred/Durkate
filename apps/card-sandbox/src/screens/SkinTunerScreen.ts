@@ -64,7 +64,9 @@ const DRAG_TAP_THRESHOLD_PX = 5;
 // the skin (which is the thing being tuned) regardless of which anim
 // the user just played.
 const REVERT_DELAY_MS = 1600;
-const BANNER_HEIGHT = 80;
+// Banner is a single-line panel matching the BACK button height so the
+// two read as one row above the tuner.
+const BANNER_HEIGHT = 48;
 // Snappy roll-reveal animation duration. Short on purpose — rolling
 // many cards in succession should feel rapid, not cinematic.
 const ROLL_REVEAL_MS = 360;
@@ -126,13 +128,13 @@ export class SkinTunerScreen extends Container implements Screen {
   private readonly panel: Panel;
   private readonly panelInner: Container;
   private readonly codeText: Text;
-  // Top banner — sits above the scroll panel + preview, owns the
-  // verbose generated name and the colour-coded grade pill. Lives at
-  // the screen-container level so it paints above the panel mask and
-  // stretches the full viewport width.
+  // Top banner — sits inline with the BACK button on the row above
+  // the scroll panel + preview. Renders the grade prefix in its own
+  // colour, then the rest of the descriptor in default ink, on a
+  // single line.
   private readonly banner: Panel;
-  private readonly bannerName: Text;
-  private readonly bannerGrade: Text;
+  private readonly bannerGradeWord: Text;
+  private readonly bannerNameRest: Text;
   // Hover tooltip for the name. Lives on the screen container (outside
   // the scroll mask) so it can paint above the panel without being
   // clipped.
@@ -254,13 +256,27 @@ export class SkinTunerScreen extends Container implements Screen {
     };
     window.addEventListener("keydown", this.windowKeyDown);
 
-    // Top banner — verbose name + grade pill. Sits above the scroll
-    // panel and the preview, full viewport width minus margins. The
-    // name's pointerover surfaces the breakdown tooltip.
+    // Top banner — inline with the BACK button. Grade prefix +
+    // descriptor render as one centred line; pointerover surfaces the
+    // breakdown tooltip.
     this.banner = new Panel({ width: 200, height: BANNER_HEIGHT });
     this.banner.eventMode = "static";
+    this.banner.cursor = "help";
+    this.banner.on("pointerover", () => this.showNameTooltip());
+    this.banner.on("pointerout", () => this.hideNameTooltip());
     this.addChild(this.banner);
-    this.bannerName = new Text({
+    this.bannerGradeWord = new Text({
+      text: "",
+      style: {
+        fontFamily: typography.family,
+        fontSize: typography.size.md,
+        fontWeight: typography.weight.bold,
+        fill: color.text,
+        letterSpacing: typography.letterSpacing.stamp,
+      },
+    });
+    this.banner.addChild(this.bannerGradeWord);
+    this.bannerNameRest = new Text({
       text: "",
       style: {
         fontFamily: typography.family,
@@ -268,27 +284,9 @@ export class SkinTunerScreen extends Container implements Screen {
         fontWeight: typography.weight.bold,
         fill: color.text,
         letterSpacing: typography.letterSpacing.wide,
-        align: "center",
-        wordWrap: true,
-        wordWrapWidth: 600,
       },
     });
-    this.bannerName.eventMode = "static";
-    this.bannerName.cursor = "help";
-    this.bannerName.on("pointerover", () => this.showNameTooltip());
-    this.bannerName.on("pointerout", () => this.hideNameTooltip());
-    this.banner.addChild(this.bannerName);
-    this.bannerGrade = new Text({
-      text: "",
-      style: {
-        fontFamily: typography.family,
-        fontSize: typography.size.sm,
-        fontWeight: typography.weight.bold,
-        fill: color.textMuted,
-        letterSpacing: typography.letterSpacing.stamp,
-      },
-    });
-    this.banner.addChild(this.bannerGrade);
+    this.banner.addChild(this.bannerNameRest);
 
     this.codeText = new Text({
       text: this.code,
@@ -332,10 +330,11 @@ export class SkinTunerScreen extends Container implements Screen {
   }
 
   layout(viewWidth: number, viewHeight: number): void {
-    // Banner spans the viewport top, BACK button on the far left.
+    // BACK button + banner share one row at the top, both at the
+    // same height. Banner extends from the right edge of BACK to the
+    // viewport's right margin.
     const backWidth = this.backBtn?.width ?? 0;
-    const backOffset = this.backBtn ? backWidth + spacing.md : 0;
-    const bannerX = spacing.md + backOffset;
+    const bannerX = spacing.md + (this.backBtn ? backWidth + spacing.xs : 0);
     const bannerW = Math.max(240, viewWidth - bannerX - spacing.md);
     if (this.backBtn) {
       this.backBtn.x = spacing.md;
@@ -344,12 +343,7 @@ export class SkinTunerScreen extends Container implements Screen {
     this.banner.x = bannerX;
     this.banner.y = spacing.md;
     this.banner.resize(bannerW, BANNER_HEIGHT);
-    // Re-wrap and re-centre the name based on the live banner width.
-    this.bannerName.style.wordWrapWidth = bannerW - spacing.lg * 2;
-    this.bannerName.x = Math.round((bannerW - this.bannerName.width) / 2);
-    this.bannerName.y = spacing.sm;
-    this.bannerGrade.x = Math.round((bannerW - this.bannerGrade.width) / 2);
-    this.bannerGrade.y = BANNER_HEIGHT - this.bannerGrade.height - spacing.sm;
+    this.relayoutBannerName();
 
     const topInset = BANNER_HEIGHT + spacing.sm;
     this.panel.x = spacing.md;
@@ -914,14 +908,14 @@ export class SkinTunerScreen extends Container implements Screen {
       this.rollNewCode();
       return;
     }
-    // Hide the name + grade for the duration of the reveal. The
-    // pop-in on completion makes the new descriptor read as a
-    // discrete event rather than a continuous text update.
+    // Hide the name for the duration of the reveal. The pop-in on
+    // completion makes the new descriptor read as a discrete event
+    // rather than a continuous text update.
     this.suppressNameText = true;
-    this.bannerName.text = "";
-    this.bannerGrade.text = "ROLLING…";
-    this.bannerGrade.style.fill = color.textMuted;
-    this.bannerGrade.x = Math.round((this.banner.width - this.bannerGrade.width) / 2);
+    this.bannerGradeWord.text = "";
+    this.bannerNameRest.text = "ROLLING…";
+    this.bannerNameRest.style.fill = color.textMuted;
+    this.relayoutBannerName();
     this.activeAnim = flipReveal({
       target: this.card,
       ticker: this.ticker,
@@ -1148,18 +1142,33 @@ export class SkinTunerScreen extends Container implements Screen {
   private currentName: CardName | null = null;
 
   private refreshName(): void {
-    if (!this.bannerName || !this.bannerGrade) return;
+    if (!this.bannerGradeWord || !this.bannerNameRest) return;
     const name = buildCardName(this.spec, this.tunables);
     this.currentName = name;
     if (this.suppressNameText) return;
-    this.bannerName.text = name.full;
-    this.bannerGrade.text = `GRADE  ${name.grade}  ·  RARITY ${name.totalRarity}`;
-    this.bannerGrade.style.fill = GRADE_COLOR[name.grade];
-    // Re-centre — text width changes whenever the spec does.
-    const bannerW = this.banner.width;
-    this.bannerName.x = Math.round((bannerW - this.bannerName.width) / 2);
-    this.bannerGrade.x = Math.round((bannerW - this.bannerGrade.width) / 2);
+    this.bannerGradeWord.text = name.grade;
+    this.bannerGradeWord.style.fill = GRADE_COLOR[name.grade];
+    // Strip the leading grade word from the descriptor so the rest can
+    // render in the default ink. Single space separator between the
+    // two text objects keeps the line readable.
+    const restStart = name.grade.length;
+    this.bannerNameRest.text = name.full.slice(restStart);
+    // Reset fill in case ROLLING… left it muted.
+    this.bannerNameRest.style.fill = color.text;
+    this.relayoutBannerName();
     if (this.tooltip) this.refreshTooltipBody();
+  }
+
+  private relayoutBannerName(): void {
+    if (!this.bannerGradeWord || !this.bannerNameRest) return;
+    const bannerW = this.banner.width;
+    const totalW = this.bannerGradeWord.width + this.bannerNameRest.width;
+    const startX = Math.round((bannerW - totalW) / 2);
+    const centreY = Math.round((BANNER_HEIGHT - this.bannerGradeWord.height) / 2);
+    this.bannerGradeWord.x = startX;
+    this.bannerGradeWord.y = centreY;
+    this.bannerNameRest.x = startX + this.bannerGradeWord.width;
+    this.bannerNameRest.y = centreY;
   }
 
   private showNameTooltip(): void {

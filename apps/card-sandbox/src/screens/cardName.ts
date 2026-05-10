@@ -80,7 +80,7 @@ export function buildCardName(spec: SkinSpec, tunables: Tunables): CardName {
     phrases.push(`${strengthBucket.word} CRAFTED ${finishBucket.word}`);
   }
 
-  // ── Scale + Pattern ────────────────────────────────────────────────
+  // ── Scale ──────────────────────────────────────────────────────────
   const patternScale = spec.pattern.scale;
   const scaleBucket = scaleToWord(patternScale);
   components.push({
@@ -90,6 +90,18 @@ export function buildCardName(spec: SkinSpec, tunables: Tunables): CardName {
     rarity: scaleBucket.rarity,
   });
 
+  // ── Colorway → Pattern → Body ─────────────────────────────────────
+  // Reads as: "<scale> <colorway> <pattern> ON <body>". Colorway sits
+  // in front of the pattern as the dominant visual descriptor — the
+  // pattern wears the colour, not the other way round.
+  const colorway = (COLORWAYS[spec.colorway]?.name ?? `C${spec.colorway}`).toUpperCase();
+  components.push({
+    label: "COLORWAY",
+    value: `#${spec.colorway}`,
+    word: colorway,
+    rarity: 0,
+  });
+
   const patternName = (PATTERN_NAMES[spec.pattern.index] ?? `P${spec.pattern.index}`).toUpperCase();
   const patternRarity = PATTERN_RARITY[spec.pattern.index] ?? 0;
   components.push({
@@ -97,16 +109,6 @@ export function buildCardName(spec: SkinSpec, tunables: Tunables): CardName {
     value: `#${spec.pattern.index}`,
     word: patternName,
     rarity: patternRarity,
-  });
-  phrases.push(`${scaleBucket.word} ${patternName}`);
-
-  // ── Colorway on Body ───────────────────────────────────────────────
-  const colorway = (COLORWAYS[spec.colorway]?.name ?? `C${spec.colorway}`).toUpperCase();
-  components.push({
-    label: "COLORWAY",
-    value: `#${spec.colorway}`,
-    word: colorway,
-    rarity: 0,
   });
 
   const body = (
@@ -118,7 +120,7 @@ export function buildCardName(spec: SkinSpec, tunables: Tunables): CardName {
     word: body,
     rarity: 0,
   });
-  phrases.push(`${colorway} ON ${body}`);
+  phrases.push(`${scaleBucket.word} ${colorway} ${patternName} ON ${body}`);
 
   // ── Tint ───────────────────────────────────────────────────────────
   const saturation = spec.tint.saturation;
@@ -140,13 +142,15 @@ export function buildCardName(spec: SkinSpec, tunables: Tunables): CardName {
     patternRarity +
     tintBucket.rarity;
 
+  // Grade leads the full descriptor as the headline word. The tuner
+  // colours just this prefix with the grade colour and leaves the rest
+  // in the default ink.
+  const grade = rarityToGrade(totalRarity);
   return {
-    // Single line of caps separated by spaces — Dwarf Fortress flavour
-    // (no bullets, no commas). Reads as one long descriptor.
-    full: phrases.join(" "),
+    full: `${grade} ${phrases.join(" ")}`,
     components,
     totalRarity,
-    grade: rarityToGrade(totalRarity),
+    grade,
   };
 }
 
