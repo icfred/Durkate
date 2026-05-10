@@ -232,15 +232,14 @@ Worker name: `durak-server`. Public URL:
   `-<name>` to the worker name unless overridden — both bit the
   first prod deploy. Single config sidesteps both. Defaults are
   the production values; local dev overrides via `.dev.vars`.
-- `.github/workflows/ci.yml` - the `deploy-worker` job runs on push
-  to `main` after `check` passes:
-  `pnpm --filter @durak/worker exec wrangler deploy` (no `--env`).
+- Deploy: `pnpm --filter @durak/worker deploy` (runs `wrangler deploy`).
+  No CI; the user runs this manually after pushing to `main`.
 
 ### Env / variables
 
 - `ALLOWED_ORIGINS` (runtime, `[vars]` in `wrangler.toml`) -
   comma-separated origin allowlist for `POST /rooms` and ws
-  upgrades. Default: `https://durak-icfred.web.app`. For `wrangler
+  upgrades. Production: `https://durak.icfred.co.uk`. For `wrangler
   dev` on localhost, override to empty in `apps/worker/.dev.vars`
   (gitignored) so any origin is accepted.
 - `TURN_TIMEOUT_MS` (runtime, default 30000) - per-turn deadline; the
@@ -257,36 +256,25 @@ Worker name: `durak-server`. Public URL:
   (ADR-0011). `0` disables the window entirely (round-resolving actions
   apply instantly). The vitest pool sets this to `0` for the same reason
   as bot pacing.
-- `CLOUDFLARE_API_TOKEN` (CI secret) - Workers + DO scopes.
-- `CLOUDFLARE_ACCOUNT_ID` (CI secret) - account id for the deploy.
-
 ### First-time provisioning
 
 ```
 wrangler login
 wrangler whoami
 # Confirm Workers Paid plan is active on the account; DOs require it.
-pnpm --filter @durak/worker exec wrangler deploy
+pnpm --filter @durak/worker deploy
 ```
-
-Generate a CI API token in the Cloudflare dashboard
-(My Profile → API Tokens → "Edit Cloudflare Workers" template) and
-set both `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` as GitHub
-repo secrets.
-
-After that, every push to `main` redeploys via the `deploy-worker`
-job.
 
 ### Rollback
 
 Cloudflare keeps every deployment. To roll back:
 
 ```
-wrangler rollback --message "DUR-NN: revert"
+pnpm --filter @durak/worker exec wrangler rollback --message "revert"
 ```
 
-Or revert the offending commit on `main`; the next CI run redeploys
-the prior code.
+Or revert the offending commit on `main` and re-run
+`pnpm --filter @durak/worker deploy`.
 
 ## Gotchas
 

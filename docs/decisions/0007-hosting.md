@@ -1,8 +1,23 @@
 # ADR-0007: Hosting on Cloudflare Workers + Durable Objects, Firebase Hosting for the static client
 
-**Status:** Accepted
+**Status:** Accepted, partially superseded — see Update 2026-05-10 below.
 **Date:** 2026-04-29
 **Supersedes:** the Fly.io + Cloudflare Pages choice that landed alongside DUR-31.
+
+## Update 2026-05-10
+
+Firebase Hosting was retired. Both the web client (`durak-web`) and the
+card sandbox (`card-sandbox`) now live on Cloudflare Pages, served from
+`durak.icfred.co.uk` and `sandbox.icfred.co.uk` respectively. The worker
+half of the decision is unchanged: still Cloudflare Workers + Durable
+Objects on `durak-server.icfred.workers.dev`. CI was also dropped — every
+deploy is `pnpm --filter @durak/<app> deploy` from a developer machine.
+
+The original "open the door for Firebase Auth/Firestore" rationale for
+the Firebase Hosting choice no longer applies — the project is parked
+in maintenance mode and accounts/persistence are out of scope
+indefinitely. Single-vendor (Cloudflare) keeps the deploy story simple
+and the cost lower than the original Workers Paid + Firebase free tier.
 
 ## Context
 

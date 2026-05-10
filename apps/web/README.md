@@ -407,66 +407,64 @@ focus.
 
 ## Deployment
 
-Hosted on [Firebase Hosting](https://firebase.google.com/docs/hosting)
-in the `durak-icfred` Firebase project. See
-`docs/decisions/0007-hosting.md` for why.
+Hosted on Cloudflare Pages (`durak-web` project), custom domain
+`durak.icfred.co.uk`. See `docs/decisions/0007-hosting.md` for the
+historical context (Firebase Hosting was used initially and retired
+in favour of Pages — see the ADR addendum).
 
-### Pieces
+### One command
 
-- `firebase.json` (repo root) - Hosting config: `public` points at
-  `apps/web/dist`, SPA rewrite `** → /index.html`, basic security
-  headers everywhere, long cache for `/assets/*`.
-- `.firebaserc` (repo root) - default project alias `durak-icfred`.
-- `.github/workflows/ci.yml` - the `deploy-web` job runs on push to
-  `main` after `check` passes. It builds with `VITE_WS_URL` baked in,
-  then `firebase deploy --only hosting` via the
-  `FirebaseExtended/action-hosting-deploy@v0` action.
+```
+pnpm --filter @durak/web deploy
+```
+
+That script bakes `VITE_WS_URL=wss://durak-server.icfred.workers.dev/ws`
+into the build and runs `wrangler pages deploy dist
+--project-name=durak-web --branch=main`.
 
 ### Env / variables
 
-- `VITE_WS_URL` (build-time) - the wss URL of the deployed worker.
-  Stored as a **GitHub repo variable** (`vars.VITE_WS_URL`), not a
-  secret, because it ends up in the public JS bundle. Example:
-  `wss://durak-server.icfred.workers.dev/ws` — the trailing `/ws` is
-  required; `wsClient.buildSocketUrl` appends `/<roomId>` to it.
-  `httpFromWsUrl` drops the path for `POST /rooms`, so the same env
-  serves both routes. If unset, `main.ts` falls back to
+- `VITE_WS_URL` (build-time) - the wss URL of the deployed worker,
+  including the `/ws` path. `wsClient.buildSocketUrl` appends
+  `/<roomId>`; `httpFromWsUrl` drops the path for `POST /rooms`, so the
+  same env serves both routes. If unset, `main.ts` falls back to
   `${ws|wss}://${location.host}/ws` (matches dev when the worker is
-  reverse-proxied).
-- GitHub repo secret: `FIREBASE_SERVICE_ACCOUNT` - JSON contents of a
-  Google Cloud service-account key with the Firebase Hosting Admin
-  role on the `durak-icfred` project. The action consumes it directly.
+  reverse-proxied). The trailing `/ws` is non-negotiable — without it
+  the websocket lands at `/<roomId>` and the worker rejects it.
+- The `pnpm deploy` script hard-codes the prod value; override only for
+  one-offs by exporting `VITE_WS_URL` and running `pnpm build && wrangler
+  pages deploy dist --project-name=durak-web` manually.
 
 ### First-time provisioning
 
 ```
-firebase login
-firebase use durak-icfred
-firebase deploy --only hosting   # confirms the site is reachable
+wrangler login
+wrangler pages project create durak-web --production-branch=main
+pnpm --filter @durak/web deploy
 ```
 
-Generate a CI service account in the Firebase console
-(Project settings → Service accounts → Generate new private key) and
-paste the entire JSON into the `FIREBASE_SERVICE_ACCOUNT` GitHub
-secret. Set `VITE_WS_URL` as a repo variable
-(Settings → Secrets and variables → Actions → Variables).
-
-After that, every push to `main` redeploys via the `deploy-web` job.
+Then attach `durak.icfred.co.uk` as a custom domain in the Cloudflare
+dashboard (Pages project → Custom domains). The `icfred.co.uk` zone is
+not on this Cloudflare account, so the dashboard issues a CNAME target
+to point at from external DNS.
 
 ### Rollback
 
-Firebase Hosting keeps every release. To roll back:
+Pages keeps every deployment. To roll back, either redeploy a prior
+git ref:
 
-1. Open the Firebase console for `durak-icfred` → Hosting.
-2. Find a known-good release in the version history.
-3. Click "Rollback".
+```
+git checkout <good-sha>
+pnpm --filter @durak/web deploy
+```
 
-Equivalent CLI: `firebase hosting:clone <site>:<version> <site>:live`
-to clone a prior version onto the live channel.
+Or use the Cloudflare dashboard (Pages project → Deployments → ⋯ →
+Rollback to this deployment).
 
 ## Related ADRs
 
 - ADR-0004: pure PixiJS client, no React
 - ADR-0005: authoritative server with redacted snapshots and events
-- ADR-0007: hosting on Cloudflare Workers + Durable Objects and Firebase
-  Hosting
+- ADR-0007: hosting on Cloudflare Workers + Durable Objects (static
+  client originally on Firebase Hosting, retired for Cloudflare Pages
+  per the addendum)

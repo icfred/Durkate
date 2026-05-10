@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run --passWithNoTests",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "deploy": "pnpm build && wrangler pages deploy dist --project-name=card-sandbox --branch=main --commit-dirty=true"
   },
   "dependencies": {
     "@durak/engine": "workspace:^",
