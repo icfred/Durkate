@@ -51,6 +51,10 @@ const MAX_RECONNECT_ATTEMPTS = 5;
 const RECONNECT_BACKOFF_CAP_MS = 5000;
 const CLOSE_CODE_BAD_FRAME = 4400;
 const CLOSE_CODE_CLIENT_LEAVE = 4000;
+// Server emits this when the room DO is evicted (idle/stale/abandoned).
+// Treated like BAD_FRAME — terminal, no reconnect; surface as an error
+// so the controller can route the user back to the menu.
+export const CLOSE_CODE_ROOM_EXPIRED = 4404;
 
 export function buildSocketUrl(serverUrl: string, roomId: string, token: string): string {
   // The server route is `/ws/:roomId` — roomId is a path segment, not a query param.
@@ -102,6 +106,10 @@ export function connect(options: WsConnectOptions): WsConnection {
       }
       if (code === CLOSE_CODE_BAD_FRAME) {
         setStatus("error", reason || "bad frame");
+        return;
+      }
+      if (code === CLOSE_CODE_ROOM_EXPIRED) {
+        setStatus("error", "room expired");
         return;
       }
       if (attempts >= MAX_RECONNECT_ATTEMPTS) {

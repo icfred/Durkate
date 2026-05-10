@@ -195,7 +195,7 @@ describe("Room GC", () => {
     expect(await readScheduledAlarm(stub)).toBeNull();
   }, 30_000);
 
-  it("evicts a mid-game room after both seats close (idle 5 min)", async () => {
+  it("evicts a mid-game room after both seats close (idle 15 min)", async () => {
     const created = await postRooms({ mode: "human" });
     const body = (await created.json()) as CreateRoomResponse;
     if (!body.joinToken) throw new Error("expected joinToken");
@@ -220,7 +220,7 @@ describe("Room GC", () => {
 
     let fired: string[] = [];
     await runInDurableObject(stub, async (room: Room) => {
-      fired = await room.testFireAlarm(Date.now() + 10 * 60 * 1000);
+      fired = await room.testFireAlarm(Date.now() + 20 * 60 * 1000);
     });
     expect(fired).toContain("idle");
     expect(await readStorageSize(stub)).toBe(0);

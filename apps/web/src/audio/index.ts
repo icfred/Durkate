@@ -37,7 +37,9 @@ function ensureContext(): AudioContext | undefined {
   try {
     context = new Ctor();
     master = context.createGain();
-    master.gain.value = 0.6;
+    // Lowered from 0.6 to 0.35 — the original was harsh on the ears
+    // during long sessions, especially the high-pitched UI clips.
+    master.gain.value = 0.35;
     master.connect(context.destination);
     crusher = createCrusher(context, master);
   } catch {

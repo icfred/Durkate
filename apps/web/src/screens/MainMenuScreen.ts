@@ -3,10 +3,11 @@ import { Button, color, FocusManager, Panel, spacing, typography } from "@durak/
 import { Container, Text } from "pixi.js";
 import { attachButtonHover, attachFocusNavSfx, withClickSound } from "../audio/index.js";
 import type { Mode } from "../store.js";
+import { RulesModal } from "./RulesModal.js";
 import type { Screen } from "./types.js";
 
 const PANEL_W = 480;
-const PANEL_H = 320;
+const PANEL_H = 380;
 
 export type FfaPlayerCount = 2 | 3 | 4 | 5 | 6;
 
@@ -46,6 +47,10 @@ export class MainMenuScreen extends Container implements Screen {
   private readonly title: Text;
   private readonly hint: Text;
   private readonly playButton: Button;
+  private readonly rulesButton: Button;
+  private rulesModal: RulesModal | null = null;
+  private viewW = 0;
+  private viewH = 0;
 
   constructor(options: MainMenuScreenOptions) {
     super();
@@ -97,18 +102,56 @@ export class MainMenuScreen extends Container implements Screen {
     this.playButton.y = stackY;
     this.panel.addChild(this.playButton);
     this.focus.register(this.playButton);
+
+    const rulesH = 44;
+    this.rulesButton = new Button({
+      label: "RULES",
+      width: buttonW,
+      height: rulesH,
+      onActivate: withClickSound(() => this.openRules()),
+    });
+    attachButtonHover(this.rulesButton);
+    this.rulesButton.x = Math.round((PANEL_W - buttonW) / 2);
+    this.rulesButton.y = this.playButton.y + buttonH + spacing.md;
+    this.panel.addChild(this.rulesButton);
+    this.focus.register(this.rulesButton);
+
     this.focus.attach();
   }
 
   layout(viewWidth: number, viewHeight: number): void {
+    this.viewW = viewWidth;
+    this.viewH = viewHeight;
     this.panel.x = Math.round((viewWidth - PANEL_W) / 2);
     this.panel.y = Math.round((viewHeight - PANEL_H) / 2);
+    if (this.rulesModal) this.rulesModal.layout(viewWidth, viewHeight);
   }
 
   dispose(): void {
+    this.closeRules();
     this.detachFocusNavSfx();
     this.focus.detach();
     this.focus.clear();
+  }
+
+  private openRules(): void {
+    if (this.rulesModal) return;
+    // Detach the menu's focus while the modal is up so arrow keys / Enter
+    // don't bleed back to PLAY/RULES underneath.
+    this.focus.detach();
+    const modal = new RulesModal({ onClose: () => this.closeRules() });
+    this.addChild(modal);
+    modal.layout(this.viewW, this.viewH);
+    this.rulesModal = modal;
+  }
+
+  private closeRules(): void {
+    if (!this.rulesModal) return;
+    this.rulesModal.dispose();
+    this.removeChild(this.rulesModal);
+    this.rulesModal.destroy({ children: true });
+    this.rulesModal = null;
+    this.focus.attach();
   }
 }
 

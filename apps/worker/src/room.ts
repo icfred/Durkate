@@ -103,8 +103,16 @@ const DEFAULT_DISCONNECT_FORFEIT_MS = 30_000;
 const DEFAULT_CLOSE_WINDOW_MS = 2_500;
 // Room GC eviction timeouts. See apps/worker/README.md.
 const ABANDONED_MS = 5 * 60 * 1000;
-const IDLE_MS = 5 * 60 * 1000;
+// Bumped from 5 → 15 minutes. With a bot opponent the human's WS is the
+// only one in the room, so any tab disconnect (sleep, throttle, blip)
+// disarms `idle` only on the immediate reconnect — a 5-minute window was
+// too tight and routinely evicted live games people stepped away from.
+const IDLE_MS = 15 * 60 * 1000;
 const STALE_MS = 10 * 60 * 1000;
+// Close code emitted to attached WSes when the DO is evicted. Clients
+// detect it and route the user back to the main menu instead of getting
+// stuck on the game screen with `GAME_NOT_STARTED` rejections.
+const CLOSE_CODE_ROOM_EXPIRED = 4404;
 // All-bots autoplay: when no humans remain in the active set, the bot-think
 // delay is halved so the round wraps up quickly for any spectators still
 // attached.
@@ -728,6 +736,17 @@ export class Room extends DurableObject<Env> {
     console.info(
       `[room] evicted (${reason}) roomId=${this.ctx.id.toString()} playerCount=${this.playerCount} botSeats=${this.botSeats.join(",")}`,
     );
+    // Kick any still-attached WSes with a recognisable close code so the
+    // client can route the user back to the menu. Without this the WS
+    // stays open against an empty DO and every action returns
+    // GAME_NOT_STARTED — the silent-zombie symptom.
+    for (const ws of this.ctx.getWebSockets()) {
+      try {
+        ws.close(CLOSE_CODE_ROOM_EXPIRED, `room expired (${reason})`);
+      } catch {
+        // already closing — ignore
+      }
+    }
     this.engineState = null;
     this.seats = new Array<Seat | null>(this.playerCount).fill(null);
     this.botSeats = [];
@@ -1170,7 +1189,26 @@ export class Room extends DurableObject<Env> {
     // that produced the new active seat.
     this.armBotTurnIfNeeded();
     this.scheduleTurnTimer();
+    // After a successful defend that drains the defender to 0 cards with
+    // every attack on the table beaten, no further legal action remains
+    // (DEFENDER_OVERWHELMED blocks ATTACK and THROW_IN, defender can't
+    // ATTACK). Bots auto-fire END_ROUND in that state; humans don't, so
+    // the round sits stuck until the turn timer expires. Auto-fire on
+    // the attacker's behalf so play continues without a 30s wait.
+    if (enforced.type !== "END_ROUND") this.maybeAutoEndRound();
     return { ok: true, state: this.engineState, events: result.events };
+  }
+
+  private maybeAutoEndRound(): void {
+    if (this.engineState === null || this.engineState.phase !== "in-round") return;
+    if (this.pendingClose !== null) return;
+    if (this.engineState.table.length === 0) return;
+    if (this.engineState.table.some((p) => !p.defense)) return;
+    const defenderHand = this.engineState.hands[this.engineState.defender];
+    if (!defenderHand || defenderHand.length > 0) return;
+    // Skip the close-window: throw-ins are blocked anyway (defender at 0),
+    // so opening the window would just add latency for no decision.
+    this.applyToEngine({ type: "END_ROUND", by: this.engineState.attacker });
   }
 
   private handlePassDuringWindow(action: Extract<Action, { type: "PASS" }>): ApplyResult {

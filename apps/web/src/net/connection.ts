@@ -60,7 +60,17 @@ export function createConnectionController(
     },
     onError: (msg) => {
       console.error("[ws] server error", msg.code, msg.message);
-      store.getState().setError(msg.code, msg.message);
+      const state = store.getState();
+      // GAME_NOT_STARTED on the game screen means the room was evicted
+      // out from under us but the close-code path didn't fire (e.g. the
+      // WS reconnected against an empty DO). Same recovery as the
+      // explicit room-expired close: bounce to menu with a toast.
+      if (msg.code === "GAME_NOT_STARTED" && state.phase === "game") {
+        state.setError("ROOM_EXPIRED", "This room has expired. Start a new game.");
+        state.showMenu();
+        return;
+      }
+      state.setError(msg.code, msg.message);
     },
     onRoomState: (msg) => {
       const disconnects = msg.disconnects ?? (msg.disconnect ? [msg.disconnect] : []);
@@ -80,6 +90,14 @@ export function createConnectionController(
     onStatus: (status, info) => {
       const state = store.getState();
       state.setConnectionStatus(status, info);
+      // Room-expired (server evict): the room is gone, not coming back.
+      // Bounce all the way to the menu and surface a banner — the lobby
+      // would just try to reconnect to the same dead room.
+      if (status === "error" && info.error === "room expired") {
+        state.setError("ROOM_EXPIRED", "This room has expired. Start a new game.");
+        state.showMenu();
+        return;
+      }
       // Only bounce to the lobby on a terminal `error` status. The
       // wsClient auto-retries through `closed` events with backoff —
       // bouncing on every transient `closed` would surface a one-frame
