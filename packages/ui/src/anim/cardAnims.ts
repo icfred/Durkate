@@ -281,42 +281,27 @@ export function dealCard(options: DealCardOptions): TweenHandle {
   const tickerOpt: { ticker?: Ticker } = {};
   if (options.ticker) tickerOpt.ticker = options.ticker;
 
-  // The flip happens in the LAST quarter of the animation — the card
-  // travels into hand position face-down first, then flips at the
-  // tail-end. Gives the eye time to read the back's pattern before
-  // the reveal.
-  const flipStart = 0.7;
-
   return tween({
     from: 0,
     to: 1,
     durationMs: total,
     easing,
     onUpdate: (t) => {
-      // Movement phase runs for the whole duration up to flipStart,
-      // then holds at the rest pose. flipPhase 0..1 covers the flip.
-      const moveT = Math.min(t / flipStart, 1);
-      target.x = startX + (restX - startX) * moveT;
-      target.y = startY + (restY - startY) * moveT;
-      target.rotation = startRotation + (restRotation - startRotation) * moveT;
-      target.skew.x = startSkewX + (restSkewX - startSkewX) * moveT;
-      target.scale.y = startScaleY + (restScaleY - startScaleY) * moveT;
-      // scale.x ALSO interps to rest during the move phase so the
-      // card looks visually whole as it descends. The flip then
-      // collapses + expands scale.x within the last 30% of the
-      // duration.
-      if (t < flipStart) {
-        target.scale.x = startScaleX + (restScaleX - startScaleX) * moveT;
-      } else {
-        const flipT = (t - flipStart) / (1 - flipStart);
-        target.scale.x =
-          flipT < 0.5
-            ? restScaleX + (0 - restScaleX) * (flipT * 2)
-            : 0 + (restScaleX - 0) * ((flipT - 0.5) * 2);
-        if (flipT >= 0.5 && !midpointFired) {
-          midpointFired = true;
-          options.onMidpoint?.();
-        }
+      // Linear interp on every channel except scale.x. The flip lives
+      // in scale.x as a triangle wave: collapses to 0 at t=0.5, then
+      // unfolds back to the resting scale by t=1.
+      target.x = startX + (restX - startX) * t;
+      target.y = startY + (restY - startY) * t;
+      target.rotation = startRotation + (restRotation - startRotation) * t;
+      target.skew.x = startSkewX + (restSkewX - startSkewX) * t;
+      target.scale.y = startScaleY + (restScaleY - startScaleY) * t;
+      target.scale.x =
+        t < 0.5
+          ? startScaleX + (0 - startScaleX) * (t * 2)
+          : 0 + (restScaleX - 0) * ((t - 0.5) * 2);
+      if (t >= 0.5 && !midpointFired) {
+        midpointFired = true;
+        options.onMidpoint?.();
       }
     },
     onComplete: () => {
