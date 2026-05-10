@@ -17,6 +17,7 @@ import {
   Cycle,
   color,
   dealCard,
+  discardCard,
   FocusManager,
   flipReveal,
   LABEL_ROW_HEIGHT,
@@ -26,6 +27,7 @@ import {
   playCard,
   SectionHeader,
   Stack,
+  shakeCard,
   spacing,
   ToggleChip,
   type TweenHandle,
@@ -48,6 +50,12 @@ import type { Screen } from "./types.js";
 const TILT_MAX_RAD = 0.22;
 const TILT_FORESHORTEN = 0.1;
 const TILT_LERP = 0.18;
+const DRAG_TAP_THRESHOLD_PX = 5;
+// Auto-revert: after this many ms post-animation, if the front face is
+// showing, flip back to the skinned back. Keeps the tuner anchored on
+// the skin (which is the thing being tuned) regardless of which anim
+// the user just played.
+const REVERT_DELAY_MS = 1600;
 
 const PANEL_WIDTH = 380;
 const PANEL_PAD = spacing.lg;
@@ -112,10 +120,8 @@ export class SkinTunerScreen extends Container implements Screen {
   private readonly pulls: Pull[] = [];
   private spec: SkinSpec = decode("000000000000");
   private tunables: Tunables = cloneTunables(defaultTunables);
-  private skinsActive = true;
-  // Per-axis sub-toggles. Active only when SKIN is enabled — the chips
-  // visually mute and stop accepting clicks when SKIN is off, so the
-  // user doesn't see "skin on + pattern off = blank" surprises.
+  // Skin is always applied — the master toggle was dropped because the
+  // per-axis sub-toggles below give the same per-layer isolation.
   private axes: TunerAxes = { pattern: true, tint: true, finish: true };
   private readonly axisChips: { key: keyof TunerAxes; chip: ToggleChip }[] = [];
   private code = "000000000000";
@@ -130,6 +136,9 @@ export class SkinTunerScreen extends Container implements Screen {
 
   // Tilt state.
   private dragging = false;
+  private dragMoved = false;
+  private dragStartX = 0;
+  private dragStartY = 0;
   private currentTiltX = 0;
   private currentTiltY = 0;
   private targetTiltX = 0;
@@ -137,6 +146,13 @@ export class SkinTunerScreen extends Container implements Screen {
   // Active animation tween, kept so a second click cancels the first
   // instead of stacking. Cleared by the tween's own onComplete.
   private activeAnim: TweenHandle | null = null;
+  // Speed multiplier for animation playback. 1 = real-time, 2 = double
+  // speed, 0.25 = quarter speed. Driven by the SPEED stepper below.
+  private animSpeed = 1;
+  // Auto-revert timer — flips the front back to the skinned face after
+  // a short delay so the user always lands on the skin tuner's primary
+  // surface regardless of which animation just ran.
+  private revertTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly windowPointerUp: () => void;
   private readonly windowKeyDown: (event: KeyboardEvent) => void;
 
@@ -185,15 +201,10 @@ export class SkinTunerScreen extends Container implements Screen {
 
     this.card.eventMode = "static";
     this.card.cursor = "grab";
-    this.card.on("pointerdown", () => this.startDrag());
-    // Single click (no drag) snaps the tilt back to flat — quicker
-    // than double-click for the common "I'm done leaning, reset" flow.
-    // Drag releases don't fire pointertap, so this only triggers on
-    // taps without movement.
-    this.card.on("pointertap", () => this.resetTilt());
+    this.card.on("pointerdown", (e: FederatedPointerEvent) => this.startDrag(e));
     this.eventMode = "static";
     this.on("globalpointermove", (e: FederatedPointerEvent) => {
-      if (this.dragging) this.updateTiltTarget(e);
+      if (this.dragging) this.handleDragMove(e);
     });
     this.on("pointerup", () => this.endDrag());
     this.on("pointerupoutside", () => this.endDrag());
@@ -285,6 +296,10 @@ export class SkinTunerScreen extends Container implements Screen {
     this.ticker.remove(this.tickCallback);
     window.removeEventListener("pointerup", this.windowPointerUp);
     window.removeEventListener("keydown", this.windowKeyDown);
+    if (this.revertTimer) {
+      clearTimeout(this.revertTimer);
+      this.revertTimer = null;
+    }
     this.focus.detach();
     this.focus.clear();
   }
@@ -302,17 +317,35 @@ export class SkinTunerScreen extends Container implements Screen {
 
   // ─── Tilt drag ──────────────────────────────────────────────────────
 
-  private startDrag(): void {
+  private startDrag(e: FederatedPointerEvent): void {
     this.dragging = true;
+    this.dragMoved = false;
+    this.dragStartX = e.global.x;
+    this.dragStartY = e.global.y;
     this.card.cursor = "grabbing";
+  }
+
+  private handleDragMove(e: FederatedPointerEvent): void {
+    if (!this.dragMoved) {
+      const dx = e.global.x - this.dragStartX;
+      const dy = e.global.y - this.dragStartY;
+      // Above this threshold the press is treated as a drag (tilt the
+      // card); below it endDrag treats the gesture as a click and
+      // resets to flat. `pointertap` fires inconsistently when the
+      // card is also a globalpointermove target, so we manage the
+      // drag-vs-tap split ourselves.
+      if (dx * dx + dy * dy > DRAG_TAP_THRESHOLD_PX * DRAG_TAP_THRESHOLD_PX) {
+        this.dragMoved = true;
+      }
+    }
+    if (this.dragMoved) this.updateTiltTarget(e);
   }
 
   private endDrag(): void {
     if (!this.dragging) return;
     this.dragging = false;
     this.card.cursor = "grab";
-    // Tilt target stays where the pointer left it; the user can park
-    // the card at an angle to study the lighting. Double-click resets.
+    if (!this.dragMoved) this.resetTilt();
   }
 
   private resetTilt(): void {
@@ -378,31 +411,11 @@ export class SkinTunerScreen extends Container implements Screen {
     );
     root.add(actions);
 
-    // SKIN — master toggle plus three sub-axis toggles. Sub-toggles
-    // visually mute and stop accepting clicks when SKIN is off so the
-    // user understands the dependency without a hidden "skin on +
-    // pattern off = blank" surprise.
-    root.add(new SectionHeader("SKIN"));
-    const skinToggle = new ToggleChip({
-      label: "SKIN",
-      active: this.skinsActive,
-      onChange: (active) => {
-        this.skinsActive = active;
-        this.refreshAxisChips();
-        this.applyAll();
-      },
-      width: 100,
-    });
-    root.add(
-      new LabelRow({
-        label: "ENABLED",
-        control: skinToggle,
-        width: ROW_WIDTH,
-        height: LABEL_ROW_HEIGHT,
-      }),
-    );
-    this.focus.register(skinToggle);
-
+    // AXES — three sub-toggles for the individual layers. Always
+    // active; the master "ENABLE SKIN" toggle was dropped since the
+    // axes alone give the same per-layer control without the confusing
+    // "all on, but it gates everything else" surprise.
+    root.add(new SectionHeader("AXES"));
     const axisRow = new Stack({ direction: "horizontal", gap: spacing.xs });
     const axisKeys: ReadonlyArray<keyof TunerAxes> = ["pattern", "tint", "finish"];
     for (const key of axisKeys) {
@@ -420,16 +433,12 @@ export class SkinTunerScreen extends Container implements Screen {
     }
     root.add(
       new LabelRow({
-        label: "AXES",
-        // Inline group as the row's control. LabelRow right-aligns the
-        // whole stack so the AXES label still lines up with the field
-        // labels above and below.
+        label: "LAYERS",
         control: axisRow,
         width: ROW_WIDTH,
         height: LABEL_ROW_HEIGHT + spacing.xs,
       }),
     );
-    this.refreshAxisChips();
 
     // PATTERN
     root.add(new SectionHeader("PATTERN"));
@@ -694,38 +703,42 @@ export class SkinTunerScreen extends Container implements Screen {
       ),
     );
 
-    // ANIMATIONS — preview-card gesture buttons. Three primitives in
-    // a horizontal stack: FLIP (3D-feel reveal), PLAY (off-screen
-    // entrance with slam landing), DEAL (gentler arc from top-left).
+    // ANIMATIONS — preview-card gestures. Two rows of buttons plus a
+    // speed multiplier so the user can slow-mo for inspection or
+    // accelerate for rapid iteration.
     root.add(new SectionHeader("ANIMATIONS"));
     const animGap = spacing.xs;
     const animBtnWidth = Math.floor((ROW_WIDTH - animGap * 2) / 3);
-    const animActions = new Stack({ direction: "horizontal", gap: animGap });
-    animActions.add(
-      new Button({
-        label: "FLIP",
-        width: animBtnWidth,
-        height: 28,
-        onActivate: () => this.runFlip(),
+    const animRow1 = new Stack({ direction: "horizontal", gap: animGap });
+    animRow1.add(this.buildAnimButton("FLIP", animBtnWidth, () => this.runFlip()));
+    animRow1.add(this.buildAnimButton("PLAY", animBtnWidth, () => this.runPlay()));
+    animRow1.add(this.buildAnimButton("DEAL", animBtnWidth, () => this.runDeal()));
+    root.add(animRow1);
+    const animRow2 = new Stack({ direction: "horizontal", gap: animGap });
+    animRow2.add(this.buildAnimButton("DISCARD", animBtnWidth, () => this.runDiscard()));
+    animRow2.add(this.buildAnimButton("SHAKE", animBtnWidth, () => this.runShake()));
+    root.add(animRow2);
+
+    const speedStepper = new NumberStepper({
+      value: this.animSpeed,
+      min: 0.25,
+      max: 4,
+      step: 0.25,
+      format: (v) => `${v.toFixed(2)}×`,
+      onChange: (v) => {
+        this.animSpeed = v;
+      },
+      width: CONTROL_WIDTH,
+    });
+    this.focus.register(speedStepper);
+    root.add(
+      new LabelRow({
+        label: "SPEED",
+        control: speedStepper,
+        width: ROW_WIDTH,
+        height: LABEL_ROW_HEIGHT,
       }),
     );
-    animActions.add(
-      new Button({
-        label: "PLAY",
-        width: animBtnWidth,
-        height: 28,
-        onActivate: () => this.runPlay(),
-      }),
-    );
-    animActions.add(
-      new Button({
-        label: "DEAL",
-        width: animBtnWidth,
-        height: 28,
-        onActivate: () => this.runDeal(),
-      }),
-    );
-    root.add(animActions);
 
     // Stack height grows lazily as children are added; once the build
     // completes its `height` reflects the full content extent. Add a
@@ -738,6 +751,22 @@ export class SkinTunerScreen extends Container implements Screen {
       this.activeAnim.cancel();
       this.activeAnim = null;
     }
+    // Also drop any pending revert-to-back timer; the new animation
+    // will reschedule one when it finishes if needed.
+    if (this.revertTimer) {
+      clearTimeout(this.revertTimer);
+      this.revertTimer = null;
+    }
+  }
+
+  private buildAnimButton(label: string, width: number, onActivate: () => void): Button {
+    return new Button({ label, width, height: 28, onActivate });
+  }
+
+  private animDuration(baseMs: number): number {
+    // Larger animSpeed shortens the duration. Min clamp guards against
+    // accidentally producing zero-duration tweens.
+    return Math.max(60, Math.round(baseMs / this.animSpeed));
   }
 
   private runFlip(): void {
@@ -745,10 +774,9 @@ export class SkinTunerScreen extends Container implements Screen {
     this.activeAnim = flipReveal({
       target: this.card,
       ticker: this.ticker,
+      durationMs: this.animDuration(600),
       onMidpoint: () => this.swapFace(),
-      onComplete: () => {
-        this.activeAnim = null;
-      },
+      onComplete: () => this.finishAnim(),
     });
   }
 
@@ -757,21 +785,61 @@ export class SkinTunerScreen extends Container implements Screen {
     this.activeAnim = playCard({
       target: this.card,
       ticker: this.ticker,
-      onComplete: () => {
-        this.activeAnim = null;
-      },
+      durationMs: this.animDuration(900),
+      onComplete: () => this.finishAnim(),
     });
   }
 
   private runDeal(): void {
     this.cancelAnim();
+    // DEAL starts face-down (the back) so the flip mid-flight reveals
+    // the face on landing. Force visibility before the tween runs in
+    // case a previous flip left the front showing.
+    this.card.visible = true;
+    this.cardFront.visible = false;
     this.activeAnim = dealCard({
       target: this.card,
       ticker: this.ticker,
-      onComplete: () => {
-        this.activeAnim = null;
-      },
+      durationMs: this.animDuration(900),
+      onMidpoint: () => this.swapFace(),
+      onComplete: () => this.finishAnim(),
     });
+  }
+
+  private runDiscard(): void {
+    this.cancelAnim();
+    this.activeAnim = discardCard({
+      target: this.card,
+      ticker: this.ticker,
+      durationMs: this.animDuration(600),
+      onComplete: () => this.finishAnim(),
+    });
+  }
+
+  private runShake(): void {
+    this.cancelAnim();
+    this.activeAnim = shakeCard({
+      target: this.card,
+      ticker: this.ticker,
+      durationMs: this.animDuration(420),
+      onComplete: () => this.finishAnim(),
+    });
+  }
+
+  private finishAnim(): void {
+    this.activeAnim = null;
+    this.scheduleRevertToBack();
+  }
+
+  private scheduleRevertToBack(): void {
+    if (this.revertTimer) clearTimeout(this.revertTimer);
+    this.revertTimer = setTimeout(() => {
+      this.revertTimer = null;
+      // Only revert if we're parked on the front face. If the user
+      // clicked PLAY / DISCARD / SHAKE while on the back, no flip is
+      // needed.
+      if (this.cardFront.visible) this.runFlip();
+    }, REVERT_DELAY_MS);
   }
 
   private swapFace(): void {
@@ -871,11 +939,13 @@ export class SkinTunerScreen extends Container implements Screen {
 
   private applyAll(): void {
     this.card.setTunables(this.tunables);
-    this.card.applySkin(this.skinsActive ? this.spec : null, this.axes);
-  }
-
-  private refreshAxisChips(): void {
-    for (const { chip } of this.axisChips) chip.setDisabled(!this.skinsActive);
+    this.card.applySkin(this.spec, this.axes);
+    // Front face (revealed by FLIP / DEAL) tracks the current BODY
+    // colourway so the front looks like the same card stock as the
+    // back, not a generic cream rectangle.
+    const bodyColor =
+      CARD_BACKGROUNDS[this.spec.cardBackground]?.color ?? CARD_BACKGROUNDS[0]?.color ?? 0xefebd9;
+    this.cardFront.setSurface(bodyColor);
   }
 
   private onTick(_ticker: Ticker): void {
@@ -901,11 +971,11 @@ export class SkinTunerScreen extends Container implements Screen {
     this.cardFront.rotation = this.card.rotation;
     this.cardFront.scale.copyFrom(this.card.scale);
     this.cardFront.skew.copyFrom(this.card.skew);
-    // Refresh skin shader uniforms every frame while skin is on so the
-    // pattern / foil lighting tracks ANY transform change — drag tilt,
-    // flipReveal, playCard, dealCard, the lot. The cost is per-frame
-    // uniform writes; cheap relative to the mesh draws.
-    if (this.skinsActive) this.card.refreshTilt();
+    // Refresh skin shader uniforms every frame so the pattern / foil
+    // lighting tracks ANY transform change — drag tilt, flipReveal,
+    // playCard, dealCard, the lot. The cost is per-frame uniform
+    // writes; cheap relative to the mesh draws.
+    this.card.refreshTilt();
   }
 
   private nextRand = (): number => {

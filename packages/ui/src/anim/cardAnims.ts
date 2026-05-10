@@ -1,6 +1,6 @@
 import type { Container, Ticker } from "pixi.js";
 import { type Anim, sequence } from "./compose.js";
-import { type Easing, easeInOutCubic, easeOutBack } from "./easings.js";
+import { type Easing, easeInOutCubic, easeInQuad, easeOutBack, linear } from "./easings.js";
 import { type TweenHandle, tween } from "./tween.js";
 
 // Card animation primitives. Designed for a 2D Pixi card sitting at its
@@ -15,6 +15,9 @@ import { type TweenHandle, tween } from "./tween.js";
 
 const DEFAULT_FLIP_MS = 600;
 const DEFAULT_PLAY_MS = 700;
+const DEFAULT_DEAL_MS = 900;
+const DEFAULT_DISCARD_MS = 600;
+const DEFAULT_SHAKE_MS = 420;
 const DEFAULT_PEAK_DEPTH = 0.08;
 const DEFAULT_PEAK_SKEW = 0.18;
 
@@ -217,38 +220,223 @@ function entranceFromOffset(options: EntranceAnimOptions): TweenHandle {
 export type PlayCardOptions = EntranceAnimOptions;
 
 /**
- * "Play card" gesture. Card flies in from off-screen below, rotates +
- * scales up as it travels, and lands on the table with an overshoot.
- * The default offsets are intentionally dramatic — override `fromX`,
- * `fromY`, `fromRotation`, `fromScale` for a calmer entrance.
+ * "Play card" gesture. Card flies in from above (the player's hand)
+ * with rotation + skew, slams down at the table position with a
+ * back-easing overshoot. Defaults are intentionally dramatic.
  */
 export function playCard(options: PlayCardOptions): TweenHandle {
   return entranceFromOffset({
     fromX: 0,
-    fromY: 720,
+    fromY: -720,
     fromRotation: -0.45,
-    fromScale: 0.35,
-    fromSkewX: 0.35,
+    fromScale: 0.4,
+    fromSkewX: 0.3,
     durationMs: options.durationMs ?? 900,
     ...options,
   });
 }
 
-export type DealCardOptions = EntranceAnimOptions;
+export interface DealCardOptions extends EntranceAnimOptions {
+  /**
+   * Fired once at the deal's flip midpoint. The card is edge-on at this
+   * moment; callers swap visible faces here so the deal lands face-up.
+   */
+  onMidpoint?(): void;
+}
 
 /**
- * "Deal" gesture. Slides in from off-screen top-left with a quarter-turn
- * rotation, gentler than `playCard`. Reads as a card being passed across
- * the table rather than slammed down.
+ * "Deal" gesture. A `playCard`-style entrance from off-screen above,
+ * with a Y-axis flip baked in: the card collapses to edge-on at the
+ * midpoint of the journey and unfolds again, so it lands face-up
+ * having travelled face-down. `onMidpoint` swaps the visible face when
+ * the card is invisibly thin.
  */
 export function dealCard(options: DealCardOptions): TweenHandle {
-  return entranceFromOffset({
-    fromX: -640,
-    fromY: -360,
-    fromRotation: -0.6,
-    fromScale: 0.55,
-    fromSkewX: -0.18,
-    durationMs: options.durationMs ?? 750,
-    ...options,
+  const target = options.target;
+  const total = options.durationMs ?? DEFAULT_DEAL_MS;
+  const easing = options.easing ?? easeOutBack;
+  const restX = target.x;
+  const restY = target.y;
+  const restRotation = target.rotation;
+  const restScaleX = target.scale.x;
+  const restScaleY = target.scale.y;
+  const restSkewX = target.skew.x;
+  const fromScale = options.fromScale ?? 0.45;
+
+  const startX = restX + (options.fromX ?? 0);
+  const startY = restY + (options.fromY ?? -640);
+  const startRotation = restRotation + (options.fromRotation ?? -0.5);
+  const startScaleX = restScaleX * fromScale;
+  const startScaleY = restScaleY * fromScale;
+  const startSkewX = restSkewX + (options.fromSkewX ?? 0.25);
+
+  // Snap to start so the first rendered frame is the deal origin.
+  target.x = startX;
+  target.y = startY;
+  target.rotation = startRotation;
+  target.scale.set(startScaleX, startScaleY);
+  target.skew.x = startSkewX;
+
+  let midpointFired = false;
+  const tickerOpt: { ticker?: Ticker } = {};
+  if (options.ticker) tickerOpt.ticker = options.ticker;
+
+  return tween({
+    from: 0,
+    to: 1,
+    durationMs: total,
+    easing,
+    onUpdate: (t) => {
+      // Linear interp on every channel except scale.x. The flip lives
+      // in scale.x as a triangle wave: collapses to 0 at t=0.5, then
+      // unfolds back to the resting scale by t=1.
+      target.x = startX + (restX - startX) * t;
+      target.y = startY + (restY - startY) * t;
+      target.rotation = startRotation + (restRotation - startRotation) * t;
+      target.skew.x = startSkewX + (restSkewX - startSkewX) * t;
+      target.scale.y = startScaleY + (restScaleY - startScaleY) * t;
+      target.scale.x =
+        t < 0.5
+          ? startScaleX + (0 - startScaleX) * (t * 2)
+          : 0 + (restScaleX - 0) * ((t - 0.5) * 2);
+      if (t >= 0.5 && !midpointFired) {
+        midpointFired = true;
+        options.onMidpoint?.();
+      }
+    },
+    onComplete: () => {
+      target.x = restX;
+      target.y = restY;
+      target.rotation = restRotation;
+      target.scale.set(restScaleX, restScaleY);
+      target.skew.x = restSkewX;
+      options.onComplete?.();
+    },
+    ...tickerOpt,
+  });
+}
+
+export interface DiscardCardOptions {
+  /** The card container. */
+  target: Container;
+  /** Resting → exit X delta. Default `+860` (off-screen right). */
+  toX?: number;
+  /** Resting → exit Y delta. Default `-180` (slight upward arc). */
+  toY?: number;
+  /** Resting → exit rotation delta (radians). Default `1.4`. */
+  toRotation?: number;
+  /** Exit scale, multiplied with the resting scale. Default `0.6`. */
+  toScale?: number;
+  /** Exit skew on the X axis (radians). Default `0.4`. */
+  toSkewX?: number;
+  durationMs?: number;
+  ticker?: Ticker;
+  onComplete?(): void;
+}
+
+/**
+ * "Discard" — the card flies off-screen with a spin. Resets to the
+ * resting transform on completion so callers (e.g. the tuner) can
+ * iterate without having to manually re-place it.
+ */
+export function discardCard(options: DiscardCardOptions): TweenHandle {
+  const target = options.target;
+  const total = options.durationMs ?? DEFAULT_DISCARD_MS;
+  const restX = target.x;
+  const restY = target.y;
+  const restRotation = target.rotation;
+  const restScaleX = target.scale.x;
+  const restScaleY = target.scale.y;
+  const restSkewX = target.skew.x;
+  const toScale = options.toScale ?? 0.6;
+  const endX = restX + (options.toX ?? 860);
+  const endY = restY + (options.toY ?? -180);
+  const endRotation = restRotation + (options.toRotation ?? 1.4);
+  const endScaleX = restScaleX * toScale;
+  const endScaleY = restScaleY * toScale;
+  const endSkewX = restSkewX + (options.toSkewX ?? 0.4);
+
+  const tickerOpt: { ticker?: Ticker } = {};
+  if (options.ticker) tickerOpt.ticker = options.ticker;
+
+  return tween({
+    from: 0,
+    to: 1,
+    durationMs: total,
+    // easeInQuad accelerates outward — the card "yeets" away rather
+    // than gliding to a stop.
+    easing: easeInQuad,
+    onUpdate: (t) => {
+      target.x = restX + (endX - restX) * t;
+      target.y = restY + (endY - restY) * t;
+      target.rotation = restRotation + (endRotation - restRotation) * t;
+      target.scale.set(
+        restScaleX + (endScaleX - restScaleX) * t,
+        restScaleY + (endScaleY - restScaleY) * t,
+      );
+      target.skew.x = restSkewX + (endSkewX - restSkewX) * t;
+    },
+    onComplete: () => {
+      // Restore to rest so a sandbox / tuner can keep iterating; for
+      // a real game callers should just remove the card on completion.
+      target.x = restX;
+      target.y = restY;
+      target.rotation = restRotation;
+      target.scale.set(restScaleX, restScaleY);
+      target.skew.x = restSkewX;
+      options.onComplete?.();
+    },
+    ...tickerOpt,
+  });
+}
+
+export interface ShakeCardOptions {
+  target: Container;
+  /** Peak horizontal displacement in pixels. Default 14. */
+  intensityX?: number;
+  /** Peak rotation displacement in radians. Default 0.05. */
+  intensityRotation?: number;
+  /** Number of full back-and-forth oscillations over the duration. Default 4. */
+  cycles?: number;
+  durationMs?: number;
+  ticker?: Ticker;
+  onComplete?(): void;
+}
+
+/**
+ * "Shake" — rapid in-place wobble (X position + rotation), amplitude
+ * decays linearly so the card settles back to rest at completion.
+ * Useful for "no" / contested-action feedback.
+ */
+export function shakeCard(options: ShakeCardOptions): TweenHandle {
+  const target = options.target;
+  const total = options.durationMs ?? DEFAULT_SHAKE_MS;
+  const ix = options.intensityX ?? 14;
+  const ir = options.intensityRotation ?? 0.05;
+  const cycles = options.cycles ?? 4;
+  const restX = target.x;
+  const restRotation = target.rotation;
+
+  const tickerOpt: { ticker?: Ticker } = {};
+  if (options.ticker) tickerOpt.ticker = options.ticker;
+
+  return tween({
+    from: 0,
+    to: 1,
+    durationMs: total,
+    easing: linear,
+    onUpdate: (t) => {
+      const decay = 1 - t;
+      const phase = t * Math.PI * 2 * cycles;
+      const sin = Math.sin(phase);
+      target.x = restX + sin * ix * decay;
+      target.rotation = restRotation + sin * ir * decay;
+    },
+    onComplete: () => {
+      target.x = restX;
+      target.rotation = restRotation;
+      options.onComplete?.();
+    },
+    ...tickerOpt,
   });
 }

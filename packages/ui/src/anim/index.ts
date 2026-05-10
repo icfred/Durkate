@@ -1,12 +1,16 @@
 export {
   type DealCardOptions,
+  type DiscardCardOptions,
   dealCard,
+  discardCard,
   type EntranceAnimOptions,
   type FlipAxis,
   type FlipRevealOptions,
   flipReveal,
   type PlayCardOptions,
   playCard,
+  type ShakeCardOptions,
+  shakeCard,
 } from "./cardAnims.js";
 export { type Anim, parallel, sequence } from "./compose.js";
 export {

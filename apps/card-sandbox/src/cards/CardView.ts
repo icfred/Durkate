@@ -67,6 +67,11 @@ export class CardView extends Container implements Focusable {
   private focused = false;
   private legalState: LegalState = "neutral";
   private isTrump = false;
+  // Body fill colour. Defaults to the standard card-stock surface (cream
+  // when face-up, sunken-dark when face-down) but the sandbox tuner
+  // overrides this via setSurface() so the front face matches whatever
+  // BODY colourway the user selected.
+  private surface: number;
   readonly card: Card | null;
   readonly faceDown: boolean;
   onActivate: (() => void) | undefined;
@@ -75,6 +80,7 @@ export class CardView extends Container implements Focusable {
     super();
     this.card = card;
     this.faceDown = faceDown;
+    this.surface = faceDown ? color.surfaceFocus : color.bgRaised;
 
     this.skinLayer = new Container();
     this.skinLayer.label = "card-skin-layer";
@@ -153,13 +159,21 @@ export class CardView extends Container implements Focusable {
     this.redraw();
   }
 
+  /** Override the card body fill. Used by the sandbox tuner to make
+   *  the face card match the selected BODY colourway. */
+  setSurface(surface: number): void {
+    if (this.surface === surface) return;
+    this.surface = surface;
+    this.redraw();
+  }
+
   activate(): void {
     this.onActivate?.();
   }
 
   private redraw(): void {
     const isFace = this.card !== null && !this.faceDown;
-    const surface = this.faceDown ? color.surfaceFocus : color.bgRaised;
+    const surface = this.surface;
     let border: number = color.border;
     let borderWidth = 2;
     if (this.focused) {
