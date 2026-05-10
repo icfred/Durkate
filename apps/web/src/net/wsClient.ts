@@ -5,6 +5,7 @@ import {
   type EventsMessage,
   parseServerMessage,
   type RoomStateMessage,
+  type SessionAssignedMessage,
   type SnapshotMessage,
 } from "@durak/protocol";
 
@@ -15,6 +16,7 @@ export interface WsClientHandlers {
   onEvents(msg: EventsMessage): void;
   onError(msg: ErrorMessage): void;
   onRoomState(msg: RoomStateMessage): void;
+  onSessionAssigned(msg: SessionAssignedMessage): void;
   onStatus(status: ConnectionStatus, info: { attempts: number; error?: string }): void;
 }
 
@@ -151,6 +153,9 @@ export function connect(options: WsConnectOptions): WsConnection {
         return;
       case "RoomState":
         handlers.onRoomState(result);
+        return;
+      case "SessionAssigned":
+        handlers.onSessionAssigned(result);
         return;
       default: {
         const exhaustive: never = result;

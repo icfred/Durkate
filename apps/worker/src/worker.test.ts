@@ -358,6 +358,18 @@ describe("worker disconnect forfeit", () => {
     const b = await openWs(body.roomId, body.joinToken);
     const qb1 = new MessageQueue(b);
 
+    // Capture the per-seat reconnect token the server hands back via
+    // SessionAssigned. The room-level inviteToken can only be used to
+    // claim a fresh seat — once the game starts there's nothing claimable
+    // and the inviteToken would 403 ("game already started"). Real
+    // clients persist this token in sessionStorage for reloads.
+    const sessionMsg = (await findUntil(
+      qb1,
+      (m): m is { type: "SessionAssigned"; seat: number; token: string } =>
+        m.type === "SessionAssigned",
+    )) as { type: "SessionAssigned"; seat: number; token: string };
+    const seatToken = sessionMsg.token;
+
     await findUntil(qa, isSnapshot);
     await findUntil(qb1, isSnapshot);
     await findUntil(qa, isEvents);
@@ -374,8 +386,8 @@ describe("worker disconnect forfeit", () => {
       return out;
     });
 
-    // Reconnect on the same seat token.
-    const b2 = await openWs(body.roomId, body.joinToken);
+    // Reconnect on the per-seat token (sessionStorage-equivalent).
+    const b2 = await openWs(body.roomId, seatToken);
     const qb2 = new MessageQueue(b2);
 
     // Wait for the DO to clear the disconnect state. The reconnect handler

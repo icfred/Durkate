@@ -146,6 +146,18 @@ export interface AppState {
   startGame: () => void;
   setBotDifficulty: (seat: number, difficulty: BotDifficulty) => void;
   /**
+   * Host-only. Mutates lobby settings on a held room without recreating
+   * it — joined humans stay attached. Each field is independently
+   * optional. The server validates and clamps (e.g. won't shrink
+   * playerCount below the joined-human floor).
+   */
+  changeLobbySettings(change: {
+    playerCount?: number;
+    botCount?: number;
+    rounds?: number;
+    difficulty?: BotDifficulty;
+  }): void;
+  /**
    * Lobby last-interacted-cycle hint. Survives the screen rebuild that
    * happens when PLAYERS or ROUNDS triggers a room recreation, so the
    * lobby can re-focus the same control instead of snapping back to
@@ -161,6 +173,13 @@ export interface AppState {
   roomCreated(args: RoomCreatedPayload): void;
   roomCreationFailed(error: string): void;
   enterLobbyAsJoiner(args: JoinerEntryPayload): void;
+  /**
+   * Persists the per-seat session token issued by the server after a
+   * successful invite-token claim. Reload uses this token to land on the
+   * same seat. Called from the connection layer's onSessionAssigned
+   * handler.
+   */
+  assignSession(seat: SeatIndex, token: string): void;
   setSnapshot(snapshot: Snapshot | null): void;
   appendEvents(events: Event[]): void;
   setConnectionStatus(status: ConnectionStatus, info: { attempts: number; error?: string }): void;
@@ -181,6 +200,7 @@ const INITIAL_ROOM_CREATION: RoomCreationState = { status: "idle" };
 
 const MUTED_STORAGE_KEY = "durak.audio.muted";
 const DEVTOOLS_STORAGE_KEY = "durak.devtools";
+const SESSION_TOKEN_STORAGE_PREFIX = "durak.session.";
 
 interface StorageLike {
   getItem(key: string): string | null;
@@ -191,6 +211,46 @@ function getStorage(): StorageLike | undefined {
   if (typeof globalThis === "undefined") return undefined;
   const candidate = (globalThis as { localStorage?: StorageLike }).localStorage;
   return candidate;
+}
+
+// Per-tab storage for the per-seat session token. sessionStorage (not
+// localStorage) so two tabs of the same invite link land on different
+// seats and reload-resume independently.
+interface SessionStorageLike {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+}
+function getSessionStorage(): SessionStorageLike | undefined {
+  if (typeof globalThis === "undefined") return undefined;
+  return (globalThis as { sessionStorage?: SessionStorageLike }).sessionStorage;
+}
+export function readSessionToken(roomId: string): string | null {
+  const storage = getSessionStorage();
+  if (!storage) return null;
+  try {
+    return storage.getItem(`${SESSION_TOKEN_STORAGE_PREFIX}${roomId}`);
+  } catch {
+    return null;
+  }
+}
+function writeSessionToken(roomId: string, token: string): void {
+  const storage = getSessionStorage();
+  if (!storage) return;
+  try {
+    storage.setItem(`${SESSION_TOKEN_STORAGE_PREFIX}${roomId}`, token);
+  } catch {
+    // sessionStorage can throw in private mode or quota-exceeded; swallow.
+  }
+}
+function clearSessionToken(roomId: string): void {
+  const storage = getSessionStorage();
+  if (!storage) return;
+  try {
+    storage.removeItem(`${SESSION_TOKEN_STORAGE_PREFIX}${roomId}`);
+  } catch {
+    // ignore
+  }
 }
 
 function readMuted(): boolean {
@@ -308,7 +368,12 @@ export const appStore = createStore<AppState>((set, get) => {
     devtools: readDevtools(),
     lastError: null,
     __sender: null,
-    showMenu: () =>
+    showMenu: () => {
+      // Clear the per-tab session token so returning to a room after
+      // leaving doesn't try to land on a stale seat. The room may not
+      // exist any more, or the user may want to create a fresh game.
+      const prevRoom = get().roomCode;
+      if (prevRoom) clearSessionToken(prevRoom);
       set({
         phase: "menu",
         mode: undefined,
@@ -325,7 +390,8 @@ export const appStore = createStore<AppState>((set, get) => {
         eventsTotal: 0,
         room: null,
         gameover: undefined,
-      }),
+      });
+    },
     showLobby: ({ mode, roomCode, token }) =>
       set({
         phase: "lobby",
@@ -367,7 +433,13 @@ export const appStore = createStore<AppState>((set, get) => {
       });
     },
     roomCreationFailed: (error) => set({ roomCreation: { status: "error", error } }),
-    enterLobbyAsJoiner: ({ roomCode, token, playerCount, botCount }) =>
+    enterLobbyAsJoiner: ({ roomCode, token, playerCount, botCount }) => {
+      // Reload-resume: prefer a previously-issued per-seat token over the
+      // URL's invite token so the joiner lands on the same seat after a
+      // refresh. Per-tab via sessionStorage so multiple invite-link tabs
+      // don't fight over a single persisted entry.
+      const persisted = readSessionToken(roomCode);
+      const effectiveToken = persisted ?? token;
       set({
         phase: "lobby",
         mode: "friend",
@@ -375,12 +447,24 @@ export const appStore = createStore<AppState>((set, get) => {
         playerCount,
         botCount,
         roomCode,
-        currentToken: token,
+        currentToken: effectiveToken,
         joinTokens: [],
         shareToken: null,
         roomCreation: { status: "ready" },
         gameover: undefined,
-      }),
+      });
+    },
+    assignSession: (seat, token) => {
+      const roomCode = get().roomCode;
+      if (roomCode) writeSessionToken(roomCode, token);
+      // Update the live token so the next reconnect uses the per-seat
+      // token (not the inviteToken which can't reclaim a seat once the
+      // game has started).
+      set((state) => ({ ...state, currentToken: token, room: state.room }));
+      // `seat` is informational; the snapshot.you.seat field is what
+      // the UI actually reads.
+      void seat;
+    },
     setSnapshot: (snapshot) => set({ snapshot }),
     setRoomMembership: (room) => set({ room }),
     appendEvents: (events) =>
@@ -409,6 +493,20 @@ export const appStore = createStore<AppState>((set, get) => {
     startGame: () => dispatchClient(get, set, "StartGame", { type: "StartGame" }),
     setBotDifficulty: (seat, difficulty) =>
       dispatchClient(get, set, "SetBotDifficulty", { type: "SetBotDifficulty", seat, difficulty }),
+    changeLobbySettings: (change) => {
+      const msg: {
+        type: "LobbySettingsChange";
+        playerCount?: number;
+        botCount?: number;
+        rounds?: number;
+        difficulty?: BotDifficulty;
+      } = { type: "LobbySettingsChange" };
+      if (change.playerCount !== undefined) msg.playerCount = change.playerCount;
+      if (change.botCount !== undefined) msg.botCount = change.botCount;
+      if (change.rounds !== undefined) msg.rounds = change.rounds;
+      if (change.difficulty !== undefined) msg.difficulty = change.difficulty;
+      dispatchClient(get, set, "LobbySettingsChange", msg);
+    },
     lobbyFocusHint: null,
     setLobbyFocusHint: (hint) => set({ lobbyFocusHint: hint }),
     toggleMute: () => {

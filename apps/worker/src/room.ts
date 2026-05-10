@@ -48,6 +48,13 @@ interface PersistedRoom {
   rematchSeats?: boolean[];
   disconnects?: DisconnectState[];
   deadlines?: PersistedDeadlines;
+  /**
+   * Room-level invite token. Any human upgrading the WS with this token
+   * claims the next available seat. Distinct from per-seat tokens (which
+   * land in `seats[].token` after the swap). Persisted so reload after
+   * DO hibernation re-issues the same share link.
+   */
+  inviteToken?: string | null;
   pendingClose?: PendingCloseState | null;
   pendingCloseBy?: SeatIndex | null;
   botFanOut?: { seat: SeatIndex; at: number }[];
@@ -166,6 +173,12 @@ export class Room extends DurableObject<Env> {
   private botDifficulties: (BotDifficulty | null)[] = [];
   private rematchSeats: boolean[] = [false, false];
   private disconnects: DisconnectState[] = [];
+  // Single shareable invite token. Set in `handleInit`; any human who
+  // upgrades the WS with this token claims the first available bot or
+  // null seat (lobbyHold-only) and gets a per-seat token issued via the
+  // `SessionAssigned` server message for reconnects. Replaces the
+  // per-seat-token-as-invite scheme that surfaced N tokens to the host.
+  private inviteToken: string | null = null;
   // Best-of-N match state. `totalRounds === 1` means legacy single-game
   // behaviour: rematch resets via the existing flow, no inter-round
   // screen. For `totalRounds > 1` the host advances rounds via the
@@ -296,6 +309,7 @@ export class Room extends DurableObject<Env> {
     }
     this.matchOver = persisted.matchOver ?? false;
     this.finishOrder = (persisted.finishOrder ?? []) as SeatIndex[];
+    this.inviteToken = persisted.inviteToken ?? null;
     this.alarms.load(persisted.deadlines);
   }
 
@@ -357,29 +371,25 @@ export class Room extends DurableObject<Env> {
     }
     this.botSeats.sort((a, b) => a - b);
     const host = this.addPlayer("Host");
-    const joinTokens: string[] = [];
     const remainingHumans = playerCount - botCount - 1;
-    for (let i = 0; i < remainingHumans; i++) {
-      const guest = this.addPlayer(`Guest ${i + 1}`);
-      joinTokens.push(guest.token);
-    }
-    // Lobby-hold rooms also expose bot-seat tokens as share tokens. A
-    // friend joining via one of these takes that bot's seat (the bot is
-    // dropped from `botSeats` and the seat name is renamed to `Guest`).
-    // Bot tokens are appended after any reserved-human tokens so the
-    // ordering matches the host's expectation: "shareable" first.
-    if (this.lobbyHold) {
-      for (const botSeat of this.botSeats) {
-        const seat = this.seats[botSeat];
-        if (seat) joinTokens.push(seat.token);
-      }
-    }
+    // Non-host human seats are NOT pre-allocated. They stay null until an
+    // invitee claims them via the room-level inviteToken; that's the only
+    // way to seat additional humans now.
+    //
+    // Single shareable invite token. Any human upgrading the WS with this
+    // claims the next available bot/null seat and the server replies with
+    // `SessionAssigned` carrying the per-seat token for reconnects.
+    // Only minted when at least one seat is claimable by a future human
+    // (lobbyHold or any non-host human seats); pure bot rooms get none.
+    const exposesInviteToken = this.lobbyHold || remainingHumans > 0;
+    this.inviteToken = exposesInviteToken ? randomBase64Url(TOKEN_BYTES) : null;
+    const joinTokens = this.inviteToken ? [this.inviteToken] : [];
     const response: CreateRoomResponse = {
       roomId: this.ctx.id.toString(),
       hostToken: host.token,
       joinTokens,
     };
-    if (joinTokens.length === 1) response.joinToken = joinTokens[0];
+    if (this.inviteToken) response.joinToken = this.inviteToken;
     // Schedule abandoned-on-create eviction. The first ws attach cancels it.
     this.alarms.schedule("abandoned", Date.now() + ABANDONED_MS);
     await this.persist();
@@ -394,15 +404,40 @@ export class Room extends DurableObject<Env> {
     if (!token) {
       return new Response("missing token", { status: 401 });
     }
-    const seat = this.seatForToken(token);
+
+    let seat = this.seatForToken(token);
+    let issuedToken: string | null = null;
+
     if (seat === undefined) {
-      return new Response("invalid token", { status: 403 });
-    }
-    if (this.botSeats.includes(seat)) {
-      // Lobby-hold FFA: bot-seat tokens act as "swap" tokens. The
-      // connecting human takes the seat and the bot is dropped from
-      // `botSeats`. Outside lobby-hold the seat is genuinely reserved
-      // for the bot driver, so reject as before.
+      // Per-seat token miss — try the room-level invite token. Picks the
+      // first available bot/null seat, mints a fresh per-seat token, and
+      // hands it back over the WS via SessionAssigned so the client can
+      // persist for reconnects.
+      if (this.inviteToken === null || token !== this.inviteToken) {
+        return new Response("invalid token", { status: 403 });
+      }
+      if (this.engineState !== null && !this.lobbyHold) {
+        return new Response("game already started", { status: 403 });
+      }
+      const claimable = this.firstClaimableSeat();
+      if (claimable === null) {
+        return new Response("no seats available", { status: 403 });
+      }
+      issuedToken = randomBase64Url(TOKEN_BYTES);
+      if (this.botSeats.includes(claimable)) {
+        // Swap out the bot.
+        this.botSeats = this.botSeats.filter((s) => s !== claimable);
+        if (claimable < this.botDifficulties.length) this.botDifficulties[claimable] = null;
+        this.alarms.cancel("bot-think");
+        this.botFanOut.delete(claimable);
+      }
+      this.seats[claimable] = { name: "Guest", token: issuedToken };
+      seat = claimable;
+      await this.persist();
+      this.broadcastRoomState();
+    } else if (this.botSeats.includes(seat)) {
+      // Legacy compat: per-seat token belonging to a bot seat (rooms
+      // created before the inviteToken scheme). Same swap behaviour.
       if (!this.lobbyHold || this.engineState !== null) {
         return new Response("seat reserved for bot", { status: 403 });
       }
@@ -414,12 +449,12 @@ export class Room extends DurableObject<Env> {
         // continue to land on this seat.
         this.seats[seat] = { name: "Guest", token: existing.token };
       }
-      // Clear the per-seat difficulty — the seat is now human.
       if (seat < this.botDifficulties.length) this.botDifficulties[seat] = null;
       this.alarms.cancel("bot-think");
       this.botFanOut.delete(seat);
       this.broadcastRoomState();
     }
+
     if (this.clientForSeat(seat) !== undefined) {
       return new Response("seat already attached", { status: 409 });
     }
@@ -428,6 +463,14 @@ export class Room extends DurableObject<Env> {
     const server = pair[1];
     server.serializeAttachment({ seat } satisfies WsAttachment);
     this.ctx.acceptWebSocket(server);
+    // Hand over the freshly-minted per-seat token if we just claimed via
+    // the invite. Sent before any state broadcast so the client sees
+    // SessionAssigned first and persists the token immediately, reducing
+    // the window where a refresh would re-claim the invite and steal a
+    // different seat.
+    if (issuedToken !== null) {
+      this.send(server, { type: "SessionAssigned", seat, token: issuedToken });
+    }
     // Any attach cancels both abandoned-on-create and idle eviction. They're
     // re-scheduled on close if appropriate.
     this.alarms.cancel("abandoned");
@@ -517,7 +560,123 @@ export class Room extends DurableObject<Env> {
         await this.persist();
         return;
       }
+      case "LobbySettingsChange": {
+        const result = this.handleLobbySettingsChange(seat, msg);
+        if (!result.ok) {
+          this.send(ws, { type: "Error", code: result.reason, message: result.reason });
+        } else {
+          await this.persist();
+        }
+        return;
+      }
     }
+  }
+
+  // Host-only. Mutates lobby settings (player count, bot count, rounds,
+  // bot difficulty) on a held lobby without recreating the room. Joined
+  // humans stay attached. Shrinking `playerCount` clamps at the floor of
+  // `1 + currently-joined humans` — a smaller value would evict someone,
+  // and there's no kick affordance yet.
+  private handleLobbySettingsChange(
+    sender: SeatIndex,
+    change: {
+      playerCount?: number;
+      botCount?: number;
+      rounds?: number;
+      difficulty?: BotDifficulty;
+    },
+  ): { ok: true } | { ok: false; reason: "FORBIDDEN_ACTION" } {
+    if (sender !== 0) return { ok: false, reason: "FORBIDDEN_ACTION" };
+    if (this.engineState !== null) return { ok: false, reason: "FORBIDDEN_ACTION" };
+    if (!this.lobbyHold) return { ok: false, reason: "FORBIDDEN_ACTION" };
+
+    const humanSeats: SeatIndex[] = [];
+    for (let i = 0; i < this.seats.length; i++) {
+      if (this.seats[i] !== null && !this.botSeats.includes(i as SeatIndex)) {
+        humanSeats.push(i as SeatIndex);
+      }
+    }
+    const humanCount = humanSeats.length;
+
+    const nextPlayerCount = change.playerCount ?? this.playerCount;
+    if (!Number.isInteger(nextPlayerCount) || nextPlayerCount < 2 || nextPlayerCount > 6) {
+      return { ok: false, reason: "FORBIDDEN_ACTION" };
+    }
+    // Clamp shrink at the human floor (host always counted in humans).
+    if (nextPlayerCount < humanCount) {
+      return { ok: false, reason: "FORBIDDEN_ACTION" };
+    }
+
+    let nextBotCount = change.botCount ?? this.botSeats.length;
+    if (!Number.isInteger(nextBotCount) || nextBotCount < 0) {
+      return { ok: false, reason: "FORBIDDEN_ACTION" };
+    }
+    // Bots fill what humans don't: cap to the room's spare capacity.
+    const maxBots = nextPlayerCount - humanCount;
+    if (nextBotCount > maxBots) nextBotCount = maxBots;
+    if (nextBotCount < 0) nextBotCount = 0;
+
+    const nextRounds = change.rounds ?? this.totalRounds;
+    if (!Number.isInteger(nextRounds) || nextRounds < 1 || nextRounds > 9) {
+      return { ok: false, reason: "FORBIDDEN_ACTION" };
+    }
+    const nextDifficulty = change.difficulty ?? this.botDifficulty;
+
+    // Apply: rebuild the seats array around the surviving humans. Humans
+    // stay where they sit (seat index preserved); empty front/middle slots
+    // become null; bots refill from the back to nextBotCount.
+    const oldSeats = this.seats.slice();
+    const oldBotDifficulties = this.botDifficulties.slice();
+    const newSeats: (Seat | null)[] = new Array<Seat | null>(nextPlayerCount).fill(null);
+    const newBotDifficulties: (BotDifficulty | null)[] = new Array<BotDifficulty | null>(
+      nextPlayerCount,
+    ).fill(null);
+
+    // Carry over human seats. They keep their original seat index unless
+    // it now lies outside the new playerCount range — in which case we
+    // already rejected via the humanCount floor above (a human on seat 4
+    // implies playerCount >= 5).
+    for (const h of humanSeats) {
+      if (h >= nextPlayerCount) {
+        // Defensive: already guarded above. Reject rather than silently drop.
+        return { ok: false, reason: "FORBIDDEN_ACTION" };
+      }
+      newSeats[h] = oldSeats[h] ?? null;
+    }
+
+    // Bots fill from the back, skipping seats already occupied by humans.
+    const newBotSeats: SeatIndex[] = [];
+    const names = pickBotNames(nextBotCount);
+    let placed = 0;
+    for (let i = nextPlayerCount - 1; i >= 0 && placed < nextBotCount; i--) {
+      if (newSeats[i] !== null) continue;
+      const seatIndex = i as SeatIndex;
+      newBotSeats.push(seatIndex);
+      newSeats[seatIndex] = {
+        name: names[placed] ?? `Bot ${nextBotCount - placed}`,
+        token: randomBase64Url(TOKEN_BYTES),
+      };
+      newBotDifficulties[seatIndex] = nextDifficulty;
+      placed += 1;
+    }
+    newBotSeats.sort((a, b) => a - b);
+
+    // Any remaining empty slots stay null — the host can shrink/grow and
+    // those slots will be filled either by future invitees or by bots
+    // when the host releases the lobby (StartGame).
+
+    this.playerCount = nextPlayerCount;
+    this.seats = newSeats;
+    this.botSeats = newBotSeats;
+    this.botDifficulties = newBotDifficulties;
+    this.botDifficulty = nextDifficulty;
+    this.totalRounds = nextRounds;
+    this.scores = new Array<number>(nextPlayerCount).fill(0);
+    this.rematchSeats = new Array<boolean>(nextPlayerCount).fill(false);
+    void oldBotDifficulties; // kept for future migration if shapes change
+
+    this.broadcastRoomState();
+    return { ok: true };
   }
 
   // Host-only mutation. Only valid before the engine starts (lobby
@@ -756,6 +915,7 @@ export class Room extends DurableObject<Env> {
     this.pendingCloseBy = null;
     this.botFanOut.clear();
     this.pendingThrowIn = null;
+    this.inviteToken = null;
     // Clear all alarm bookkeeping before deleteAll wipes the persisted map.
     this.alarms.cancel("turn-timeout");
     this.alarms.cancel("forfeit");
@@ -912,6 +1072,19 @@ export class Room extends DurableObject<Env> {
       if (s !== null && s !== undefined && s.token === token) return i as SeatIndex;
     }
     return undefined;
+  }
+
+  // Pick the next seat a fresh invite-token claim should land on. Bot
+  // seats first (matches the host's "filling with bots, friends drop in"
+  // mental model), then any genuinely empty seat as a fallback.
+  private firstClaimableSeat(): SeatIndex | null {
+    for (let i = 0; i < this.seats.length; i++) {
+      if (this.botSeats.includes(i as SeatIndex)) return i as SeatIndex;
+    }
+    for (let i = 0; i < this.seats.length; i++) {
+      if (this.seats[i] === null) return i as SeatIndex;
+    }
+    return null;
   }
 
   private seatForWebSocket(ws: WebSocket): SeatIndex | undefined {
@@ -1829,6 +2002,7 @@ export class Room extends DurableObject<Env> {
       matchOver: this.matchOver,
       finishOrder: this.finishOrder.slice(),
       botDifficulties: this.botDifficulties.slice(),
+      inviteToken: this.inviteToken,
     };
     await this.ctx.storage.put(STORAGE_KEY, snapshot);
   }

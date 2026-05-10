@@ -65,12 +65,11 @@ applyBootRouting();
     void runRoomCreation(payload, httpUrl);
   };
 
-  // Lobby cycle debounce. Each PLAYERS/ROUNDS click updates the
-  // pending values immediately (subscribers fan out so the lobby
-  // labels refresh without a screen rebuild) and schedules a single
-  // `startGame` ~300ms after the last click. Without this, every
-  // click fires its own `POST /rooms` and the worker's 10/min/IP
-  // bucket trips after a handful of cycles.
+  // Lobby cycle debounce. Each PLAYERS/ROUNDS click updates the pending
+  // value immediately (subscribers fan out so the lobby labels flip
+  // instantly) and schedules a single `LobbySettingsChange` ~150ms after
+  // the last click. The debounce now only coalesces UI rapid-clicks; the
+  // server applies in-place so joined humans stay attached.
   let pendingPlayers: number | null = null;
   let pendingRounds: number | null = null;
   let cycleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -96,11 +95,6 @@ applyBootRouting();
     if (cycleTimer !== null) clearTimeout(cycleTimer);
     cycleTimer = setTimeout(() => {
       cycleTimer = null;
-      // Bail if the user has already left the lobby (e.g. clicked
-      // START within the 300ms debounce window). Without this guard
-      // the timer fires mid-game, calls runRoomCreation which sets
-      // phase=lobby, and yanks the player out of the in-progress game
-      // into a fresh empty room.
       if (appStore.getState().phase !== "lobby") {
         pendingPlayers = null;
         pendingRounds = null;
@@ -108,18 +102,28 @@ applyBootRouting();
         return;
       }
       const s = appStore.getState();
-      const players = pendingPlayers ?? s.playerCount ?? 2;
-      const rounds = pendingRounds ?? s.room?.match?.totalRounds ?? 3;
+      const change: {
+        playerCount?: number;
+        botCount?: number;
+        rounds?: number;
+      } = {};
+      if (pendingPlayers !== null) {
+        change.playerCount = pendingPlayers;
+        // "Fill remaining seats with bots" intent — server clamps to
+        // (newPlayerCount - currentHumans) so existing humans aren't
+        // booted.
+        change.botCount = Math.max(0, pendingPlayers - 1);
+      }
+      if (pendingRounds !== null) {
+        change.rounds = pendingRounds;
+      }
       pendingPlayers = null;
       pendingRounds = null;
       notifyPending();
-      startGame({
-        playerCount: players as 2 | 3 | 4 | 5 | 6,
-        botCount: Math.max(0, players - 1),
-        difficulty: "medium",
-        rounds,
-      });
-    }, 300);
+      if (Object.keys(change).length > 0) {
+        s.changeLobbySettings(change);
+      }
+    }, 150);
   };
   // Cancel any queued cycle whenever the user leaves the lobby — START
   // (snapshot → phase=game), BACK (phase=menu), or any other phase

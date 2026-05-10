@@ -113,6 +113,7 @@ function makeHandlers(): RecordedHandlers {
     onEvents: (msg) => events.push(msg),
     onError: (msg) => errors.push(msg),
     onRoomState: (msg) => roomStates.push(msg),
+    onSessionAssigned: () => {},
     onStatus: (status, info) => {
       const entry: { status: ConnectionStatus; attempts: number; error?: string } = {
         status,

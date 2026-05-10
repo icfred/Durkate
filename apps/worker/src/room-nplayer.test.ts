@@ -109,13 +109,16 @@ async function readDeadlines(stub: RoomStub): Promise<PersistedDeadlines> {
 }
 
 describe("POST /rooms (N-player shape)", () => {
-  it("creates a 4-player room with 3 bots: 0 join tokens, 3 bot seats", async () => {
+  it("creates a 4-player room with 3 bots: no invite token, 3 bot seats", async () => {
+    // playerCount === 1 host + botCount === 3 bots: no human-claimable seats
+    // and no lobbyHold, so the inviteToken is omitted (joinTokens empty).
     const res = await postRooms({ playerCount: 4, botCount: 3 });
     expect(res.status).toBe(201);
     const body = (await res.json()) as CreateRoomResponse & { joinTokens?: string[] };
     expect(body.roomId.length).toBeGreaterThan(0);
     expect(body.hostToken.length).toBeGreaterThan(0);
     expect(body.joinTokens ?? []).toEqual([]);
+    expect(body.joinToken).toBeUndefined();
 
     const stub = env.ROOMS.get(env.ROOMS.idFromName(body.roomId));
     let pc = 0;
@@ -128,13 +131,17 @@ describe("POST /rooms (N-player shape)", () => {
     expect(botSeats).toEqual([1, 2, 3]);
   });
 
-  it("creates a 6-player room with 2 bots: 3 join tokens, 2 bot seats", async () => {
+  it("creates a 6-player room with 2 bots: single invite token, 2 bot seats", async () => {
+    // 1 host + 2 bots = 3 humans expected. The shared inviteToken
+    // replaces the per-seat token-as-link scheme; each successive joiner
+    // claims the next free seat.
     const res = await postRooms({ playerCount: 6, botCount: 2 });
     expect(res.status).toBe(201);
     const body = (await res.json()) as CreateRoomResponse & { joinTokens?: string[] };
     const tokens = body.joinTokens ?? [];
-    expect(tokens.length).toBe(3);
-    for (const token of tokens) expect(typeof token).toBe("string");
+    expect(tokens.length).toBe(1);
+    expect(typeof body.joinToken).toBe("string");
+    expect(body.joinToken).toBe(tokens[0]);
 
     const stub = env.ROOMS.get(env.ROOMS.idFromName(body.roomId));
     let pc = 0;
@@ -165,6 +172,8 @@ describe("POST /rooms (N-player shape)", () => {
   });
 
   it("legacy mode:bot still works: playerCount=2, botCount=1", async () => {
+    // 1 host + 1 bot, no lobbyHold → no human-claimable seats → no
+    // inviteToken in the response.
     const res = await postRooms({ mode: "bot" });
     expect(res.status).toBe(201);
     const body = (await res.json()) as CreateRoomResponse;
@@ -232,19 +241,16 @@ describe("Spectator semantics", () => {
     // sends a same-phase action — rejected with FORBIDDEN_ACTION.
     const res = await postRooms({ playerCount: 3, botCount: 0 });
     const body = (await res.json()) as CreateRoomResponse & { joinTokens?: string[] };
-    const tokens = body.joinTokens ?? [];
-    expect(tokens.length).toBe(2);
-    const t1 = tokens[0];
-    const t2 = tokens[1];
-    if (!t1 || !t2) throw new Error("expected join tokens");
+    const invite = body.joinToken;
+    if (!invite) throw new Error("missing invite token");
     const stub = env.ROOMS.get(env.ROOMS.idFromName(body.roomId));
 
     const a = await openWs(body.roomId, body.hostToken);
     const qa = new MessageQueue(a);
     await findUntil(qa, isRoomState);
-    const b = await openWs(body.roomId, t1);
+    const b = await openWs(body.roomId, invite);
     const qb = new MessageQueue(b);
-    const c = await openWs(body.roomId, t2);
+    const c = await openWs(body.roomId, invite);
     const qc = new MessageQueue(c);
 
     await findUntil(qa, isSnapshot);
@@ -307,22 +313,18 @@ describe("Multi-disconnect forfeit", () => {
   it("tracks two simultaneous disconnects in a 4-player game; first deadline ends the game", async () => {
     const res = await postRooms({ playerCount: 4, botCount: 0 });
     const body = (await res.json()) as CreateRoomResponse & { joinTokens?: string[] };
-    const tokens = body.joinTokens ?? [];
-    if (tokens.length !== 3) throw new Error("expected 3 join tokens");
-    const t1 = tokens[0];
-    const t2 = tokens[1];
-    const t3 = tokens[2];
-    if (!t1 || !t2 || !t3) throw new Error("missing tokens");
+    const invite = body.joinToken;
+    if (!invite) throw new Error("missing invite token");
     const stub = env.ROOMS.get(env.ROOMS.idFromName(body.roomId));
 
     const wA = await openWs(body.roomId, body.hostToken);
     const qA = new MessageQueue(wA);
     await findUntil(qA, isRoomState);
-    const wB = await openWs(body.roomId, t1);
+    const wB = await openWs(body.roomId, invite);
     const qB = new MessageQueue(wB);
-    const wC = await openWs(body.roomId, t2);
+    const wC = await openWs(body.roomId, invite);
     const qC = new MessageQueue(wC);
-    const wD = await openWs(body.roomId, t3);
+    const wD = await openWs(body.roomId, invite);
     const qD = new MessageQueue(wD);
 
     await findUntil(qA, isSnapshot);

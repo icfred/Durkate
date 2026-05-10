@@ -1,6 +1,13 @@
 import { type Action, type Event, RANKS, SUITS } from "@durak/engine";
 import { z } from "zod";
-import type { ClientMessage, JoinRoom, LeaveRoom, RequestRematch, SubmitAction } from "./client";
+import type {
+  ClientMessage,
+  JoinRoom,
+  LeaveRoom,
+  LobbySettingsChange,
+  RequestRematch,
+  SubmitAction,
+} from "./client";
 import type { ErrorMessage, ServerMessage } from "./server";
 import type { YouView } from "./snapshot";
 
@@ -71,6 +78,14 @@ export const setBotDifficultySchema = z.object({
   difficulty: z.enum(["easy", "medium", "hard"]),
 });
 
+export const lobbySettingsChangeSchema = z.object({
+  type: z.literal("LobbySettingsChange"),
+  playerCount: z.number().int().min(2).max(6).optional(),
+  botCount: z.number().int().min(0).max(5).optional(),
+  rounds: z.number().int().min(1).max(9).optional(),
+  difficulty: z.enum(["easy", "medium", "hard"]).optional(),
+});
+
 export const clientMessageSchema = z.discriminatedUnion("type", [
   joinRoomSchema,
   leaveRoomSchema,
@@ -78,10 +93,14 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   requestRematchSchema,
   startGameSchema,
   setBotDifficultySchema,
+  lobbySettingsChangeSchema,
 ]);
 
 export function parseClientMessage(raw: unknown): ClientMessage {
-  return clientMessageSchema.parse(raw);
+  // Cast: zod widens optional fields (e.g. `LobbySettingsChange.playerCount`)
+  // to `T | undefined`, which collides with `exactOptionalPropertyTypes`.
+  // The runtime shape is verified by `clientMessageSchema.parse`.
+  return clientMessageSchema.parse(raw) as ClientMessage;
 }
 
 const tablePairSchema = z.object({
@@ -209,11 +228,18 @@ export const roomStateMessageSchema = z.object({
   match: matchStateSchema.nullable().optional(),
 });
 
+export const sessionAssignedMessageSchema = z.object({
+  type: z.literal("SessionAssigned"),
+  seat: seatSchema,
+  token: z.string().min(1),
+});
+
 export const serverMessageSchema = z.discriminatedUnion("type", [
   snapshotMessageSchema,
   eventsMessageSchema,
   errorMessageSchema,
   roomStateMessageSchema,
+  sessionAssignedMessageSchema,
 ]);
 
 export function parseServerMessage(raw: unknown): ServerMessage {
@@ -238,7 +264,18 @@ const _requestRematchParity: AssertEqual<
   z.infer<typeof requestRematchSchema>,
   RequestRematch
 > = true;
-const _clientParity: AssertEqual<z.infer<typeof clientMessageSchema>, ClientMessage> = true;
+// Optional fields on LobbySettingsChange defeat structural equality under
+// exactOptionalPropertyTypes — same pattern as RoomState above. Discriminator
+// parity is asserted via the union below; runtime round-trip tests cover
+// the field shape.
+const _lobbySettingsChangeTypeParity: AssertEqual<
+  z.infer<typeof lobbySettingsChangeSchema>["type"],
+  LobbySettingsChange["type"]
+> = true;
+const _clientParity: AssertEqual<
+  z.infer<typeof clientMessageSchema>["type"],
+  ClientMessage["type"]
+> = true;
 const _youViewParity: AssertEqual<z.infer<typeof youViewSchema>, YouView> = true;
 const _errorMessageParity: AssertEqual<z.infer<typeof errorMessageSchema>, ErrorMessage> = true;
 // `RoomStateMessage.disconnect` is optional (`disconnect?: ...`); zod's
@@ -254,6 +291,7 @@ void _joinRoomParity;
 void _leaveRoomParity;
 void _submitActionParity;
 void _requestRematchParity;
+void _lobbySettingsChangeTypeParity;
 void _clientParity;
 void _youViewParity;
 void _errorMessageParity;

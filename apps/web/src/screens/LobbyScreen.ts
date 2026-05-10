@@ -132,9 +132,12 @@ export class LobbyScreen extends Container implements Screen {
   private readonly focus = new FocusManager();
   private readonly panel: Panel;
   private readonly mode: Mode;
-  private readonly playerCount: number;
-  private readonly botCount: number;
-  private readonly humansExpected: number;
+  // Mutable so `update()` can re-derive these from RoomState after a
+  // server-applied LobbySettingsChange (host cycled players/rounds in
+  // place without recreating the room).
+  private playerCount: number;
+  private botCount: number;
+  private humansExpected: number;
   private readonly shareUrls: string[];
   private readonly status: Text;
   private readonly joinedLabel: Text | null;
@@ -504,6 +507,20 @@ export class LobbyScreen extends Container implements Screen {
   }
 
   private update(room: RoomMembership | null): void {
+    // Server can mutate the lobby in place via LobbySettingsChange — pull
+    // playerCount + bot/human split from the live RoomState rather than
+    // the constructor snapshot, otherwise the labels stay frozen at the
+    // values from when the lobby first opened.
+    if (room && room.seats.length > 0) {
+      const seats = room.seats;
+      const liveBotCount = seats.filter((s) => s.kind === "bot").length;
+      this.playerCount = seats.length;
+      this.botCount = liveBotCount;
+      this.humansExpected = humansExpected(this.mode, seats.length, liveBotCount);
+      if (this.playersButton) {
+        this.playersButton.setLabel(`PLAYERS: ${seats.length}`);
+      }
+    }
     const next = deriveStatus(this.mode, this.humansExpected, room, this.holdsForStart);
     let dirty = false;
     if (next !== this.currentStatus) {

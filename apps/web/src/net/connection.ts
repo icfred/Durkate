@@ -72,6 +72,14 @@ export function createConnectionController(
       }
       state.setError(msg.code, msg.message);
     },
+    onSessionAssigned: (msg) => {
+      // Server hands back the per-seat reconnect token after a successful
+      // invite-token claim. Persist it so a refresh / network blip lands
+      // on the same seat instead of trying the inviteToken again (which
+      // would 403 once the game starts or claim a different free seat
+      // mid-lobby).
+      store.getState().assignSession(msg.seat, msg.token);
+    },
     onRoomState: (msg) => {
       const disconnects = msg.disconnects ?? (msg.disconnect ? [msg.disconnect] : []);
       store.getState().setRoomMembership({

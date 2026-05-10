@@ -54,20 +54,18 @@ function buildBaseInRound(playerCount: number): InRoundState {
 describe("Room FFA throw-in window (close-window)", () => {
   it("END_ROUND from attacker opens pendingClose; THROW_IN extends; alarm fires close", async () => {
     // 4-player human-only room, no bots, so we drive everything by hand.
+    // Single shareable inviteToken; each successive WS upgrade with it
+    // claims the next free seat (1, 2, 3).
     const res = await postRooms({ playerCount: 4, botCount: 0 });
     const body = (await res.json()) as CreateRoomResponse & { joinTokens?: string[] };
-    const tokens = body.joinTokens ?? [];
-    expect(tokens.length).toBe(3);
-    const t1 = tokens[0];
-    const t2 = tokens[1];
-    const t3 = tokens[2];
-    if (!t1 || !t2 || !t3) throw new Error("missing tokens");
+    const invite = body.joinToken;
+    if (!invite) throw new Error("missing invite token");
     const stub = env.ROOMS.get(env.ROOMS.idFromName(body.roomId));
 
     const wA = await openWs(body.roomId, body.hostToken);
-    const wB = await openWs(body.roomId, t1);
-    const wC = await openWs(body.roomId, t2);
-    const wD = await openWs(body.roomId, t3);
+    const wB = await openWs(body.roomId, invite);
+    const wC = await openWs(body.roomId, invite);
+    const wD = await openWs(body.roomId, invite);
 
     // Inject a fully-defended table where the only legal next action is
     // END_ROUND from the attacker (seat 0). Defender is seat 1; non-
@@ -187,16 +185,13 @@ describe("Room FFA throw-in window (close-window)", () => {
   it("PASS outside window is rejected with FORBIDDEN_ACTION", async () => {
     const res = await postRooms({ playerCount: 4, botCount: 0 });
     const body = (await res.json()) as CreateRoomResponse & { joinTokens?: string[] };
-    const tokens = body.joinTokens ?? [];
-    const t1 = tokens[0];
-    const t2 = tokens[1];
-    const t3 = tokens[2];
-    if (!t1 || !t2 || !t3) throw new Error("missing tokens");
+    const invite = body.joinToken;
+    if (!invite) throw new Error("missing invite token");
 
     const wA = await openWs(body.roomId, body.hostToken);
-    const wB = await openWs(body.roomId, t1);
-    const wC = await openWs(body.roomId, t2);
-    const wD = await openWs(body.roomId, t3);
+    const wB = await openWs(body.roomId, invite);
+    const wC = await openWs(body.roomId, invite);
+    const wD = await openWs(body.roomId, invite);
 
     const errors: string[] = [];
     wA.addEventListener("message", (event) => {
@@ -510,17 +505,14 @@ describe("Room FFA throw-in window (close-window)", () => {
   it("close-window alarm firing applies the pending action", async () => {
     const res = await postRooms({ playerCount: 4, botCount: 0 });
     const body = (await res.json()) as CreateRoomResponse & { joinTokens?: string[] };
-    const tokens = body.joinTokens ?? [];
-    const t1 = tokens[0];
-    const t2 = tokens[1];
-    const t3 = tokens[2];
-    if (!t1 || !t2 || !t3) throw new Error("missing tokens");
+    const invite = body.joinToken;
+    if (!invite) throw new Error("missing invite token");
     const stub = env.ROOMS.get(env.ROOMS.idFromName(body.roomId));
 
     const wA = await openWs(body.roomId, body.hostToken);
-    const wB = await openWs(body.roomId, t1);
-    const wC = await openWs(body.roomId, t2);
-    const wD = await openWs(body.roomId, t3);
+    const wB = await openWs(body.roomId, invite);
+    const wC = await openWs(body.roomId, invite);
+    const wD = await openWs(body.roomId, invite);
 
     const attack: Card = { suit: "spades", rank: 7 };
     const defense: Card = { suit: "spades", rank: 8 };

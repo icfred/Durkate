@@ -96,4 +96,23 @@ export interface RoomStateMessage {
   match?: MatchState | null;
 }
 
-export type ServerMessage = SnapshotMessage | EventsMessage | ErrorMessage | RoomStateMessage;
+/**
+ * Sent privately to a client right after it claims a seat with the
+ * room-level invite token. Carries the per-seat session token the
+ * client should use for subsequent reconnects (a refresh / network blip
+ * needs to land on the same seat, which the room-level token alone
+ * can't guarantee — every fresh inviteToken connection picks the next
+ * free seat). Clients persist this in sessionStorage keyed by `roomId`.
+ */
+export interface SessionAssignedMessage {
+  type: "SessionAssigned";
+  seat: SeatIndex;
+  token: string;
+}
+
+export type ServerMessage =
+  | SnapshotMessage
+  | EventsMessage
+  | ErrorMessage
+  | RoomStateMessage
+  | SessionAssignedMessage;
